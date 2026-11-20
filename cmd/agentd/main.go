@@ -237,7 +237,11 @@ func newProvider(spec, effort string) (model.Provider, error) {
 	case "scripted":
 		return scripted.Provider(demo.Script), nil
 	case "anthropic":
-		return anthropic.New(anthropic.Config{Model: id, Effort: effort}), nil
+		cfg := anthropic.Config{Model: id, Effort: effort}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			cfg.APIKey = keychainSecret("agentd", "anthropic-api-key")
+		}
+		return anthropic.New(cfg), nil
 	case "ollama":
 		if id == "" {
 			return nil, fmt.Errorf("ollama needs a model id, e.g. ollama/qwen2.5:7b")

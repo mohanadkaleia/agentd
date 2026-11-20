@@ -21,6 +21,7 @@ const (
 )
 
 type Config struct {
+	APIKey    string
 	Model     string
 	MaxTokens int64
 	Effort    string
@@ -39,7 +40,11 @@ func New(cfg Config) *Provider {
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = defaultMaxTokens
 	}
-	return &Provider{client: sdk.NewClient(cfg.Options...), cfg: cfg}
+	opts := cfg.Options
+	if cfg.APIKey != "" {
+		opts = append([]option.RequestOption{option.WithAPIKey(cfg.APIKey)}, opts...)
+	}
+	return &Provider{client: sdk.NewClient(opts...), cfg: cfg}
 }
 
 func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Response, error) {

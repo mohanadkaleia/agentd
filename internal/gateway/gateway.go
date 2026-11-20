@@ -198,6 +198,7 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 	if g.AfterExecute != nil {
 		g.AfterExecute(*a)
 	}
+	ctx = context.WithoutCancel(ctx)
 	if err == nil {
 		return g.finish(ctx, a, Dispatching, Succeeded, res.Output, res.ExternalID)
 	}

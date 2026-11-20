@@ -56,3 +56,22 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 7. A task's tool allowlist is enforced by the gateway, and a worker can never be granted a tool its parent lacks.
 8. Every model call's cost is recorded with the step it produced. When a project's spend reaches its cap the project pauses; raising the cap and resuming continues the same run.
 9. A rate-limited tool reserves its slot in the same transaction that marks the action dispatching, so concurrent workers cannot overshoot.
+
+## Run as a service (macOS)
+
+```bash
+deploy/set-anthropic-key.sh                 # optional: store the key in the login keychain
+deploy/install.sh ollama/qwen2.5:7b         # or: deploy/install.sh anthropic
+deploy/install.sh --dry-run anthropic       # print the rendered plist only
+deploy/uninstall.sh                         # stop and unregister; data is kept
+```
+
+`install.sh` builds a copy of the binary into `~/Library/Application Support/agentd/`, renders
+`~/Library/LaunchAgents/local.agentd.plist`, and starts it. launchd restarts the process if it
+exits; SIGTERM lets an in-flight tool call finish and record its result before the process exits.
+The database lives next to the binary, logs in `~/Library/Logs/agentd/agentd.log`.
+
+The design target is stricter: a dedicated non-admin macOS account running a LaunchDaemon from
+`/Library/LaunchDaemons` with `UserName` set to that account, so the agent cannot read your own
+files or keychain. That needs `sudo` and a new user (`sysadminctl -addUser agentd`); the same plist
+works with the paths changed to that user's home.
