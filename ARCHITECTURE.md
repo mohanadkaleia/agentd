@@ -193,6 +193,22 @@ To make it live, only edge pieces are needed, none of them in the runtime:
 - a **portfolio read tool** (holdings, cost basis) behind the gateway;
 - a **notification delivery adapter** (phone push or email) that drains the outbox.
 
+## Integrations
+
+Integrations live in `internal/integrations/<name>` and plug in at the edges only: they contribute
+tools (which go through the gateway like any other) and event sources (which feed the inbox). The
+runtime never imports them; `cmd/` wires them in.
+
+**Gmail** (`internal/integrations/gmail`): a small REST client, OAuth with PKCE and a loopback
+redirect, credentials in the keychain. Every outgoing message carries a `Message-ID` derived from
+the action's idempotency key; after a crash or an ambiguous error the tool searches Sent/Drafts for
+that id before anything is retried. Gmail's search index can lag, so the send check is repeated a
+few times over several seconds before concluding "not sent"; a lag longer than that could still
+produce a duplicate, which is the one residual risk. `gmail_send` takes exactly one recipient so
+policy can allow-list contacts; anything wider must be a draft. The inbox watcher follows Gmail's
+history from the moment it is connected (no backfill) and recovers from an expired history id by
+re-scanning the last two days, deduplicated by message id.
+
 ## Control surface
 
 The HTTP API (`internal/api`) exposes assignments, tasks with transcripts, the approvals inbox, the
@@ -203,7 +219,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 ## Deliberately not built yet
 
 - Notification delivery channels (the outbox is durable; nothing drains it yet).
-- Event-source adapters (market data, news, Gmail).
+- Event-source adapters for market data and news (Gmail exists).
 - Automatic project completion from `completion.criteria` (today a person runs `agentd complete`).
 - A tool for a task to read the events linked to it after grouping.
 - Budget reservations: concurrent workers can overshoot a cap by one in-flight call each.
@@ -221,6 +237,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/delegation` | `delegate` and `await_workers`: helper agents as child tasks. |
 | `internal/notify` | Notification outbox and the `notify` tool. |
 | `internal/skills` | Skill registry, loaded from `.md` files. |
+| `internal/integrations/gmail` | Gmail tools (search, read, draft, send), inbox watcher, OAuth. |
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |
 | `internal/system` | Emergency stop flag. |
 | `internal/overview` | State, spend, recent activity and next expected action for one assignment. |

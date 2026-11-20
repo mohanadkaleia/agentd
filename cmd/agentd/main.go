@@ -16,6 +16,7 @@ import (
 	"agentd/internal/app"
 	"agentd/internal/assignments"
 	"agentd/internal/demo"
+	"agentd/internal/integrations/gmail"
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
@@ -37,6 +38,8 @@ models:
 
 commands:
     serve [-workers N] [-listen ADDR]    run the supervisor (and the HTTP API when -listen is set)
+    gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
+  gmail status                         show the connected Gmail account
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
   demo                                 seed the airline-refund demo project
@@ -83,6 +86,9 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if args[0] == "gmail" {
+		return gmailCommand(ctx, args[1:])
+	}
 	db, err := store.Open(ctx, *dbPath)
 	if err != nil {
 		return err
@@ -93,6 +99,7 @@ func run() error {
 	workers := cmd.Int("workers", 3, "concurrent workers")
 	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
 	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
+	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
 	coalesce := cmd.String("coalesce", "", "route: payload field whose value groups events into one open task")
@@ -116,20 +123,28 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	a := app.New(db, provider, *modelSpec, tools.NewRegistry(tools.WebSearch{}, mailbox), time.Now)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	registered := []tools.Tool{tools.WebSearch{}, mailbox}
+	var account *gmail.Account
+	if args[0] == "serve" {
+		var extra []tools.Tool
+		account, extra = gmailTools(ctx, log)
+		registered = append(registered, extra...)
+	}
+	a := app.New(db, provider, *modelSpec, tools.NewRegistry(registered...), time.Now)
 	if err := skills.LoadDir(a.Skills, *skillsDir); err != nil {
 		return fmt.Errorf("loading skills: %w", err)
 	}
 
 	switch args[0] {
 	case "serve":
-		log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 		host, _ := os.Hostname()
 		log.Info("agentd serving", "db", *dbPath, "workers", *workers)
 		stopAPI, err := startAPI(ctx, a, *listen, *tokenFile, log)
 		if err != nil {
 			return err
 		}
+		watchGmail(ctx, a, account, *gmailPoll, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		stopAPI()
 		log.Info("agentd stopped")

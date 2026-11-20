@@ -47,6 +47,28 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 | `internal/tools` | Tool interface + registry; `mock.go` holds the simulated web search and mailbox. |
 | `migrations/` | Embedded SQL migrations, applied on open. |
 
+## Gmail
+
+One-time setup (about 10 minutes, in your browser):
+
+1. In Google Cloud Console, create a project and enable the **Gmail API**.
+2. Configure the OAuth consent screen (External, add yourself as a test user).
+3. Create an OAuth client ID of type **Desktop app** and download its JSON.
+4. Run `./bin/agentd gmail auth -client-secret ~/Downloads/client_secret_….json` and approve in the browser.
+
+Scopes are `gmail.readonly` and `gmail.compose` only (no delete, no label changes). The client
+secret and refresh token are stored in the login keychain, never on disk or in the model context.
+`agentd serve` then registers four tools and checks the inbox every minute (`-gmail-poll`):
+
+| Tool | Effect | Notes |
+|---|---|---|
+| `gmail_search`, `gmail_read` | read | Bodies are plain text, truncated, and labelled as untrusted. |
+| `gmail_draft` | write | Up to 10 recipients; nothing is sent. |
+| `gmail_send` | write | Exactly one recipient, so policy can allow-list contacts: `{"mode":"allow","resources":["refunds@airline.com"],"otherwise":"approval"}`. |
+
+New inbox mail becomes `gmail / email.received` events (payload: `message_id`, `thread_id`, `from`,
+`subject`, `snippet`); routes decide which ones become tasks.
+
 ## HTTP API
 
 ```bash
