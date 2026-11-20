@@ -101,9 +101,12 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 		if rn.Steps >= r.MaxSteps {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", r.MaxSteps)})
 		}
-		resp, err := r.Model.Complete(ctx, model.Request{Model: r.ModelID, Messages: msgs, Tools: r.Tools.Definitions()})
+		resp, err := r.Model.Complete(ctx, model.Request{Messages: msgs, Tools: r.Tools.Definitions()})
 		if err != nil {
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
+		}
+		if resp.StopReason == model.StopRefusal || resp.StopReason == model.StopMaxTokens {
+			return r.fail(ctx, lease, task, fmt.Errorf("model stopped with %s", resp.StopReason))
 		}
 		resp.Message.Role = model.RoleAssistant
 		quarantineInvalidArguments(resp.Message.ToolCalls)

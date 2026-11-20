@@ -13,13 +13,22 @@ go build -o bin/agentd ./cmd/agentd
 ./bin/agentd approve <approval-id>
 ```
 
-`go test -race ./...` runs the leasing, transition and crash-recovery suites.
+Pick a model with `-model` (or `AGENTD_MODEL`):
+
+```bash
+./bin/agentd -model ollama/qwen2.5:7b serve      # local, free
+./bin/agentd -model anthropic serve              # claude-opus-5-5; uses ANTHROPIC_API_KEY or `ant auth login`
+./bin/agentd -model anthropic/claude-sonnet-5-5 -effort medium serve
+```
+
+`go test -race ./...` runs the leasing, transition, crash-recovery, adapter and neutrality suites.
 
 ## Layout
 
 | Package | Role |
 |---|---|
-| `internal/model` | Provider-neutral inference + tool-calling types. Adapters live in subpackages (`model/scripted`; `model/anthropic`, `model/ollama` next). |
+| `internal/model` | Provider-neutral inference + tool-calling types. `Message.Native` carries opaque provider state (e.g. Claude thinking blocks) that only the producing adapter replays. |
+| `internal/model/{anthropic,ollama,scripted}` | Adapters. The only packages allowed to import a provider SDK; only `cmd/` may import an adapter (`internal/archtest` enforces both). |
 | `internal/tasks` | Durable task queue: atomic claim, lease renew, versioned transitions. |
 | `internal/runtime` | Agent loop. Checkpoints every model step and tool result; resumes the same run after a crash. |
 | `internal/gateway` | The only path to side effects: action ledger, policy check, approvals, dispatch, reconciliation. |

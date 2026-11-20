@@ -7,18 +7,27 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"agentd/internal/app"
 	"agentd/internal/demo"
+	"agentd/internal/model"
+	"agentd/internal/model/anthropic"
+	"agentd/internal/model/ollama"
 	"agentd/internal/model/scripted"
 	"agentd/internal/store"
 	"agentd/internal/tools"
 )
 
-const usage = `usage: agentd [-db path] <command> [args]
+const usage = `usage: agentd [-db path] [-model spec] [-effort level] <command> [args]
+
+models:
+  scripted                  deterministic demo model (default)
+  anthropic[/model-id]      Claude via the Anthropic API (default claude-opus-5-5)
+  ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
 commands:
   serve [-workers N] [-tool-delay D]   run the supervisor until interrupted
@@ -41,6 +50,8 @@ func run() error {
 	global := flag.NewFlagSet("agentd", flag.ContinueOnError)
 	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")
+	modelSpec := global.String("model", envOr("AGENTD_MODEL", "scripted"), "model provider and id")
+	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -69,7 +80,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	a := app.New(db, scripted.Provider(demo.Script), "scripted-demo", tools.NewRegistry(tools.WebSearch{}, mailbox), time.Now)
+	provider, err := newProvider(*modelSpec, *effort)
+	if err != nil {
+		return err
+	}
+	a := app.New(db, provider, *modelSpec, tools.NewRegistry(tools.WebSearch{}, mailbox), time.Now)
 
 	switch args[0] {
 	case "serve":
@@ -146,6 +161,22 @@ func status(ctx context.Context, a *app.App) error {
 		rows.Close()
 	}
 	return nil
+}
+
+func newProvider(spec, effort string) (model.Provider, error) {
+	name, id, _ := strings.Cut(spec, "/")
+	switch name {
+	case "scripted":
+		return scripted.Provider(demo.Script), nil
+	case "anthropic":
+		return anthropic.New(anthropic.Config{Model: id, Effort: effort}), nil
+	case "ollama":
+		if id == "" {
+			return nil, fmt.Errorf("ollama needs a model id, e.g. ollama/qwen2.5:7b")
+		}
+		return ollama.New(ollama.Config{Model: id, BaseURL: os.Getenv("OLLAMA_HOST")}), nil
+	}
+	return nil, fmt.Errorf("unknown model provider %q", name)
 }
 
 func envOr(key, fallback string) string {

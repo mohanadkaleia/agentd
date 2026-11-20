@@ -361,3 +361,21 @@ func TestUnknownOutcomeBlocksInsteadOfRetrying(t *testing.T) {
 		t.Fatalf("actions = %v, want [needs_reconciliation]", got)
 	}
 }
+
+type refusing struct{}
+
+func (refusing) Complete(context.Context, model.Request) (model.Response, error) {
+	return model.Response{Message: model.Message{Role: model.RoleAssistant}, StopReason: model.StopRefusal}, nil
+}
+
+func TestRefusalIsRetriedNotTreatedAsCompletion(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	h.app.Runtime.Model = refusing{}
+	h.drain()
+	h.expectStatus(tasks.Retryable)
+	var msgs int
+	h.db.QueryRow(`SELECT COUNT(*) FROM run_messages`).Scan(&msgs)
+	if msgs != 2 {
+		t.Fatalf("checkpointed messages = %d, want only system+user (refusal not persisted)", msgs)
+	}
+}
