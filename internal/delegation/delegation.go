@@ -117,7 +117,7 @@ func (d *Delegate) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 		deadline = d.Tasks.Now().Add(time.Duration(in.DeadlineHours * float64(time.Hour)))
 	}
 	id, err := d.Tasks.Create(ctx, tasks.NewTask{
-		ProjectID:    parent.ProjectID,
+		AssignmentID: parent.AssignmentID,
 		ParentTaskID: parent.ID,
 		OriginKey:    "delegate:" + call.IdempotencyKey,
 		Title:        in.Title,

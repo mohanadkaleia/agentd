@@ -28,6 +28,7 @@ type Policy struct {
 
 type Limits struct {
 	MaxLLMSpendUSD float64              `json:"max_llm_spend_usd,omitempty"`
+	BudgetPeriod   Duration             `json:"budget_period,omitzero"`
 	ToolRates      map[string]RateLimit `json:"tool_rate_limits,omitempty"`
 }
 
@@ -64,6 +65,9 @@ func (l Limits) MaxLLMSpendMicros() int64 {
 func (p Policy) Validate() error {
 	if p.Limits.MaxLLMSpendUSD < 0 {
 		return fmt.Errorf("max_llm_spend_usd must not be negative")
+	}
+	if p.Limits.BudgetPeriod.Duration < 0 {
+		return fmt.Errorf("budget_period must not be negative")
 	}
 	for tool, r := range p.Limits.ToolRates {
 		if r.Max < 0 || r.Per.Duration <= 0 {

@@ -26,7 +26,7 @@ type followupArgs struct {
 func (*Followup) Definition() model.ToolDefinition {
 	return model.ToolDefinition{
 		Name:        "schedule_followup",
-		Description: "Schedule a follow-up task in this project to run after a delay, e.g. to check for a reply.",
+		Description: "Schedule a follow-up task in this assignment to run after a delay, e.g. to check for a reply.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"after_hours":{"type":"number","minimum":0.1,"maximum":720},"reason":{"type":"string"}},"required":["after_hours","reason"]}`),
 	}
 }
@@ -59,12 +59,12 @@ func (f *Followup) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	}
 	runAt := f.Tasks.Now().Add(time.Duration(in.AfterHours * float64(time.Hour)))
 	id, err := f.Tasks.Create(ctx, tasks.NewTask{
-		ProjectID:    call.ProjectID,
+		AssignmentID: call.AssignmentID,
 		ParentTaskID: call.TaskID,
 		OriginKey:    "followup:" + call.IdempotencyKey,
 		NextRunAt:    runAt,
 		Title:        "Follow-up: " + in.Reason,
-		Objective:    "Follow up on earlier work in this project. Reason given when scheduled: " + in.Reason,
+		Objective:    "Follow up on earlier work in this assignment. Reason given when scheduled: " + in.Reason,
 	})
 	if err != nil {
 		return tools.Result{}, err

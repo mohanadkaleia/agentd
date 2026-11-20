@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"agentd/internal/assignments"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
-	"agentd/internal/projects"
+	"agentd/internal/skills"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
@@ -20,9 +21,10 @@ import (
 type Runtime struct {
 	DB          *sql.DB
 	Tasks       *tasks.Store
-	Projects    *projects.Store
+	Assignments *assignments.Store
 	Gateway     *gateway.Gateway
 	Tools       tools.Registry
+	Skills      skills.Registry
 	Model       model.Provider
 	ModelID     string
 	Now         func() time.Time
@@ -49,6 +51,9 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 	if err != nil {
 		return r.fail(ctx, lease, task, err)
 	}
+	if _, err := r.Skills.Resolve(task.Skills); err != nil {
+		return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: map[string]string{"error": err.Error()}})
+	}
 	rn, err := r.openRun(ctx, task)
 	if err != nil {
 		return r.fail(ctx, lease, task, err)
@@ -71,7 +76,7 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 
 		if seq, pending := pendingCalls(msgs); len(pending) > 0 {
 			for i, call := range pending {
-				out, err := r.Gateway.Handle(ctx, gateway.Call{RunID: rn.ID, TaskID: task.ID, ProjectID: task.ProjectID, Seq: seq, Call: call})
+				out, err := r.Gateway.Handle(ctx, gateway.Call{RunID: rn.ID, TaskID: task.ID, AssignmentID: task.AssignmentID, Seq: seq, Call: call})
 				if err != nil {
 					return r.fail(ctx, lease, task, err)
 				}
@@ -120,12 +125,12 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 		if rn.Steps >= maxSteps {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", maxSteps)})
 		}
-		reason, err := r.overBudget(ctx, task.ProjectID)
+		reason, err := r.overBudget(ctx, task.AssignmentID)
 		if err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
 		if reason != "" {
-			if err := r.Projects.SetStatus(ctx, task.ProjectID, "paused", reason, "budget"); err != nil {
+			if err := r.Assignments.Pause(ctx, task.AssignmentID, assignments.PausedByBudget, reason, "budget"); err != nil && !errors.Is(err, assignments.ErrTerminated) {
 				return r.fail(ctx, lease, task, err)
 			}
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})

@@ -5,28 +5,33 @@ import (
 	"database/sql"
 	"time"
 
+	"agentd/internal/assignments"
 	"agentd/internal/delegation"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
-	"agentd/internal/projects"
+	"agentd/internal/notify"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
+	"agentd/internal/skills"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
 
 type App struct {
-	DB        *sql.DB
-	Projects  *projects.Store
-	Tasks     *tasks.Store
-	Gateway   *gateway.Gateway
-	Scheduler *scheduler.Scheduler
-	Runtime   *runtime.Runtime
+	DB          *sql.DB
+	Assignments *assignments.Store
+	Tasks       *tasks.Store
+	Gateway     *gateway.Gateway
+	Scheduler   *scheduler.Scheduler
+	Outbox      *notify.Outbox
+	Skills      skills.Registry
+	Runtime     *runtime.Runtime
 }
 
 func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Registry, now func() time.Time) *App {
-	p := &projects.Store{DB: db, Now: now}
+	a := &assignments.Store{DB: db, Now: now}
 	t := &tasks.Store{DB: db, Now: now}
+	outbox := &notify.Outbox{DB: db, Assignments: a, Now: now}
 	all := tools.Registry{}
 	for name, tool := range registry {
 		all[name] = tool
@@ -35,37 +40,47 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		&scheduler.Followup{Tasks: t},
 		&delegation.Delegate{Tasks: t, Tools: all, Limits: delegation.DefaultLimits},
 		&delegation.Await{Tasks: t},
+		&notify.Tool{Outbox: outbox},
+		&assignments.StateTool{Assignments: a},
 	} {
 		all[tool.Definition().Name] = tool
 	}
-	g := &gateway.Gateway{DB: db, Tools: all, Projects: p, Tasks: t, Now: now, ApprovalTTL: 24 * time.Hour}
+	g := &gateway.Gateway{DB: db, Tools: all, Assignments: a, Tasks: t, Now: now, ApprovalTTL: 24 * time.Hour}
 	sch := &scheduler.Scheduler{DB: db, Tasks: t, Now: now}
-	return &App{
-		DB:        db,
-		Projects:  p,
-		Tasks:     t,
-		Gateway:   g,
-		Scheduler: sch,
-		Runtime: &runtime.Runtime{
-			DB:          db,
-			Tasks:       t,
-			Projects:    p,
-			Gateway:     g,
-			Tools:       all,
-			Model:       provider,
-			ModelID:     modelID,
-			Now:         now,
-			LeaseTTL:    30 * time.Second,
-			MaxSteps:    20,
-			BaseBackoff: 5 * time.Second,
+	sk := skills.Registry{}
+	rt := &runtime.Runtime{
+		DB:          db,
+		Tasks:       t,
+		Assignments: a,
+		Gateway:     g,
+		Tools:       all,
+		Skills:      sk,
+		Model:       provider,
+		ModelID:     modelID,
+		Now:         now,
+		LeaseTTL:    30 * time.Second,
+		MaxSteps:    20,
+		BaseBackoff: 5 * time.Second,
 
-			MaxRejectedCompletions: 2,
-			Housekeeping: func(ctx context.Context) error {
-				if _, err := g.ExpireApprovals(ctx); err != nil {
-					return err
-				}
-				return sch.Tick(ctx)
-			},
-		},
+		MaxRejectedCompletions: 2,
+	}
+	rt.Housekeeping = func(ctx context.Context) error {
+		if _, err := g.ExpireApprovals(ctx); err != nil {
+			return err
+		}
+		if err := rt.ResumeWithinBudget(ctx); err != nil {
+			return err
+		}
+		return sch.Tick(ctx)
+	}
+	return &App{
+		DB:          db,
+		Assignments: a,
+		Tasks:       t,
+		Gateway:     g,
+		Scheduler:   sch,
+		Outbox:      outbox,
+		Skills:      sk,
+		Runtime:     rt,
 	}
 }

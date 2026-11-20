@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"agentd/internal/policy"
-	"agentd/internal/projects"
+	"agentd/internal/assignments"
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
 )
@@ -15,10 +14,10 @@ import (
 const ttl = 30 * time.Second
 
 type fixture struct {
-	clock    *testutil.Clock
-	projects *projects.Store
-	tasks    *tasks.Store
-	project  string
+	clock       *testutil.Clock
+	assignments *assignments.Store
+	tasks       *tasks.Store
+	project     string
 }
 
 func setup(t *testing.T) *fixture {
@@ -26,12 +25,12 @@ func setup(t *testing.T) *fixture {
 	db := testutil.Open(t, testutil.DBPath(t))
 	clock := testutil.NewClock()
 	f := &fixture{
-		clock:    clock,
-		projects: &projects.Store{DB: db, Now: clock.Now},
-		tasks:    &tasks.Store{DB: db, Now: clock.Now},
+		clock:       clock,
+		assignments: &assignments.Store{DB: db, Now: clock.Now},
+		tasks:       &tasks.Store{DB: db, Now: clock.Now},
 	}
 	var err error
-	f.project, err = f.projects.Create(context.Background(), "p", "goal", policy.Policy{})
+	f.project, err = f.assignments.CreateProject(context.Background(), assignments.NewProject{Name: "p", Objective: "goal"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +39,7 @@ func setup(t *testing.T) *fixture {
 
 func (f *fixture) newTask(t *testing.T, nt tasks.NewTask) string {
 	t.Helper()
-	nt.ProjectID = f.project
+	nt.AssignmentID = f.project
 	if nt.Title == "" {
 		nt.Title = "t"
 	}
@@ -188,13 +187,13 @@ func TestReleaseTransitions(t *testing.T) {
 func TestPausedProjectIsNotClaimed(t *testing.T) {
 	f := setup(t)
 	f.newTask(t, tasks.NewTask{})
-	if err := f.projects.SetStatus(context.Background(), f.project, "paused", "", "test"); err != nil {
+	if err := f.assignments.Pause(context.Background(), f.project, assignments.PausedByUser, "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if l := f.claim(t, "a"); l != nil {
 		t.Fatal("claimed a task in a paused project")
 	}
-	if err := f.projects.SetStatus(context.Background(), f.project, "active", "", "test"); err != nil {
+	if err := f.assignments.Resume(context.Background(), f.project, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if l := f.claim(t, "a"); l == nil {

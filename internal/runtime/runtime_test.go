@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"agentd/internal/assignments"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -21,15 +22,15 @@ import (
 )
 
 type harness struct {
-	t      *testing.T
-	path   string
-	clock  *testutil.Clock
-	db     *sql.DB
-	app    *app.App
-	model  model.Provider
-	calls  *atomic.Int32
-	taskID string
-	projID string
+	t            *testing.T
+	path         string
+	clock        *testutil.Clock
+	db           *sql.DB
+	app          *app.App
+	model        model.Provider
+	calls        *atomic.Int32
+	taskID       string
+	assignmentID string
 }
 
 func newHarness(t *testing.T, script scripted.Provider) *harness {
@@ -40,7 +41,7 @@ func newHarness(t *testing.T, script scripted.Provider) *harness {
 	})
 	h.boot()
 	var err error
-	h.projID, h.taskID, err = demo.Seed(context.Background(), h.app)
+	h.assignmentID, h.taskID, err = demo.Seed(context.Background(), h.app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestRejectedApprovalIsDenied(t *testing.T) {
 func TestPausedProjectTakesNoNewActions(t *testing.T) {
 	h := newHarness(t, demo.Script)
 	h.drain()
-	if err := h.app.Projects.SetStatus(context.Background(), h.projID, "paused", "", "test"); err != nil {
+	if err := h.app.Assignments.Pause(context.Background(), h.assignmentID, assignments.PausedByUser, "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	h.decideOnly(true)
@@ -271,7 +272,7 @@ func TestPausedProjectTakesNoNewActions(t *testing.T) {
 	if h.sent(demo.AirlineClaims) != 0 {
 		t.Fatal("paused project sent an email")
 	}
-	h.app.Projects.SetStatus(context.Background(), h.projID, "active", "", "test")
+	h.app.Assignments.Resume(context.Background(), h.assignmentID, "test")
 	h.drain()
 	h.expectStatus(tasks.Completed)
 }

@@ -43,21 +43,21 @@ func TestBudgetPausesProjectAndResumesSameRun(t *testing.T) {
 	ctx := context.Background()
 
 	h.drain()
-	p, _ := h.app.Projects.Get(ctx, h.projID)
+	p, _ := h.app.Assignments.Get(ctx, h.assignmentID)
 	if p.Status != "paused" || !strings.Contains(p.StatusReason, "LLM budget exhausted") {
 		t.Fatalf("project = %s (%q), want paused for budget", p.Status, p.StatusReason)
 	}
 	h.expectStatus(tasks.Ready)
-	if got := h.count(`SELECT SUM(cost_micros) FROM model_usage WHERE project_id = ?`, h.projID); got != 3_000_000 {
+	if got := h.count(`SELECT SUM(cost_micros) FROM model_usage WHERE assignment_id = ?`, h.assignmentID); got != 3_000_000 {
 		t.Fatalf("recorded spend = %d micros, want 3000000", got)
 	}
 
 	raised := demo.Policy
 	raised.Limits.MaxLLMSpendUSD = 10
-	if _, err := h.app.Projects.SetPolicy(ctx, h.projID, raised, "test"); err != nil {
+	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, raised, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.app.Projects.SetStatus(ctx, h.projID, "active", "", "test"); err != nil {
+	if err := h.app.Assignments.Resume(ctx, h.assignmentID, "test"); err != nil {
 		t.Fatal(err)
 	}
 	h.drain()
@@ -71,7 +71,7 @@ func TestBudgetPausesProjectAndResumesSameRun(t *testing.T) {
 	if h.sent(demo.AirlineRefunds) != 1 {
 		t.Fatal("refunds email was resent after the budget pause")
 	}
-	if got := h.count(`SELECT policy_version FROM projects WHERE id = ?`, h.projID); got != 2 {
+	if got := h.count(`SELECT policy_version FROM assignments WHERE id = ?`, h.assignmentID); got != 2 {
 		t.Fatalf("policy_version = %d, want 2", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestToolRateLimitDeniesThenRecovers(t *testing.T) {
 	ctx := context.Background()
 	limited := demo.Policy
 	limited.Limits.ToolRates = map[string]policy.RateLimit{"send_email": {Max: 2, Per: policy.Duration{Duration: 24 * time.Hour}}}
-	if _, err := h.app.Projects.SetPolicy(ctx, h.projID, limited, "test"); err != nil {
+	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, limited, "test"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +117,7 @@ func TestToolRateLimitDeniesThenRecovers(t *testing.T) {
 	}
 
 	h.clock.Advance(25 * time.Hour)
-	next, err := h.app.Tasks.Create(ctx, tasks.NewTask{ProjectID: h.projID, Title: "again", Objective: "send again"})
+	next, err := h.app.Tasks.Create(ctx, tasks.NewTask{AssignmentID: h.assignmentID, Title: "again", Objective: "send again"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,5 +137,45 @@ func TestRefusedResponsesStillCountTowardBudget(t *testing.T) {
 	h.drain()
 	if got := h.count(`SELECT SUM(cost_micros) FROM model_usage`); got != 700 {
 		t.Fatalf("spend after a refusal = %d, want 700", got)
+	}
+}
+
+func TestPeriodicBudgetPausesThenAutoResumes(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	ctx := context.Background()
+	periodic := demo.Policy
+	periodic.Limits.MaxLLMSpendUSD = 3
+	periodic.Limits.BudgetPeriod = policy.Duration{Duration: 7 * 24 * time.Hour}
+	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, periodic, "test"); err != nil {
+		t.Fatal(err)
+	}
+	h.app.Runtime.Model = priced{inner: h.model, cost: 1_500_000}
+	h.drain()
+	if a, _ := h.app.Assignments.Get(ctx, h.assignmentID); a.PausedBy != "budget" {
+		t.Fatalf("paused_by = %q, want budget", a.PausedBy)
+	}
+
+	h.clock.Advance(6 * 24 * time.Hour)
+	if err := h.app.Runtime.ResumeWithinBudget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := h.app.Assignments.Get(ctx, h.assignmentID); a.Status != "paused" {
+		t.Fatal("resumed before the spend left the budget window")
+	}
+
+	h.clock.Advance(2 * 24 * time.Hour)
+	if err := h.app.Runtime.ResumeWithinBudget(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := h.app.Assignments.Get(ctx, h.assignmentID); a.Status != "active" {
+		t.Fatalf("status after the window rolled = %s, want active", a.Status)
+	}
+
+	if err := h.app.Assignments.Pause(ctx, h.assignmentID, "user", "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	h.app.Runtime.ResumeWithinBudget(ctx)
+	if a, _ := h.app.Assignments.Get(ctx, h.assignmentID); a.Status != "paused" {
+		t.Fatal("budget housekeeping resumed an assignment the user paused")
 	}
 }

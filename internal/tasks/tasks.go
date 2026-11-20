@@ -36,9 +36,11 @@ type Success struct {
 }
 
 type NewTask struct {
-	ProjectID    string
+	AssignmentID string
 	ParentTaskID string
 	OriginKey    string
+	CoalesceKey  string
+	Skills       []string
 	NextRunAt    time.Time
 	Title        string
 	Objective    string
@@ -54,7 +56,7 @@ type NewTask struct {
 
 type Task struct {
 	ID           string
-	ProjectID    string
+	AssignmentID string
 	ParentTaskID string
 	Title        string
 	Objective    string
@@ -68,6 +70,7 @@ type Task struct {
 	AllowedTools []string
 	MaxSteps     int
 	DeadlineAt   time.Time
+	Skills       []string
 	Result       json.RawMessage
 }
 
@@ -123,7 +126,14 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, er
 	if t.MaxAttempts == 0 {
 		t.MaxAttempts = 3
 	}
-	var next, deadline, allowed, maxSteps any
+	var next, deadline, allowed, maxSteps, skills any
+	if len(t.Skills) > 0 {
+		body, err := json.Marshal(t.Skills)
+		if err != nil {
+			return "", err
+		}
+		skills = string(body)
+	}
 	if !t.NextRunAt.IsZero() {
 		next = t.NextRunAt.UnixMilli()
 	}
@@ -142,11 +152,12 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, er
 	}
 	id := ids.New("tsk")
 	now := s.Now()
-	res, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, parent_task_id, origin_key, title, objective, success_json,
-		status, priority, max_attempts, next_run_at, depth, allowed_tools_json, max_steps, deadline_at, created_at, updated_at)
-		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	res, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, assignment_id, parent_task_id, origin_key, coalesce_key, skills_json,
+		title, objective, success_json, status, priority, max_attempts, next_run_at, depth, allowed_tools_json, max_steps,
+		deadline_at, created_at, updated_at)
+		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (origin_key) WHERE origin_key IS NOT NULL DO NOTHING`,
-		id, t.ProjectID, t.ParentTaskID, t.OriginKey, t.Title, t.Objective, string(success),
+		id, t.AssignmentID, t.ParentTaskID, t.OriginKey, t.CoalesceKey, skills, t.Title, t.Objective, string(success),
 		t.Priority, t.MaxAttempts, next, t.Depth, allowed, maxSteps, deadline, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return "", err
@@ -160,7 +171,7 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, er
 			return "", err
 		}
 	}
-	if err := audit.Record(ctx, tx, now, t.ProjectID, "scheduler", "task.created", id,
+	if err := audit.Record(ctx, tx, now, t.AssignmentID, "scheduler", "task.created", id,
 		map[string]string{"title": t.Title, "origin": t.OriginKey}); err != nil {
 		return "", err
 	}
@@ -179,13 +190,13 @@ func (s *Store) FindByOrigin(ctx context.Context, originKey string) (string, boo
 func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	var t Task
 	var success string
-	var owner, parent, allowed, result sql.NullString
+	var owner, parent, allowed, result, skills sql.NullString
 	var maxSteps, deadline sql.NullInt64
-	err := s.DB.QueryRowContext(ctx, `SELECT id, project_id, parent_task_id, title, objective, status, success_json,
-		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json
+	err := s.DB.QueryRowContext(ctx, `SELECT id, assignment_id, parent_task_id, title, objective, status, success_json,
+		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json, skills_json
 		FROM tasks WHERE id = ?`, id).
-		Scan(&t.ID, &t.ProjectID, &parent, &t.Title, &t.Objective, &t.Status, &success,
-			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result)
+		Scan(&t.ID, &t.AssignmentID, &parent, &t.Title, &t.Objective, &t.Status, &success,
+			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result, &skills)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -199,6 +210,11 @@ func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	}
 	if result.Valid {
 		t.Result = json.RawMessage(result.String)
+	}
+	if skills.Valid {
+		if err := json.Unmarshal([]byte(skills.String), &t.Skills); err != nil {
+			return t, err
+		}
 	}
 	if allowed.Valid {
 		if err := json.Unmarshal([]byte(allowed.String), &t.AllowedTools); err != nil {
@@ -260,18 +276,18 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 		    attempt_count = attempt_count + 1,
 		    result_json = json_object('error', 'lease expired too many times'), updated_at = ?
 		WHERE status = 'running' AND lease_until < ? AND attempt_count + 1 >= max_attempts
-		RETURNING id, project_id`, ms, ms)
+		RETURNING id, assignment_id`, ms, ms)
 	if err != nil {
 		return nil, err
 	}
 	var blocked [][2]string
 	for exhausted.Next() {
-		var id, project string
-		if err := exhausted.Scan(&id, &project); err != nil {
+		var id, assignment string
+		if err := exhausted.Scan(&id, &assignment); err != nil {
 			exhausted.Close()
 			return nil, err
 		}
-		blocked = append(blocked, [2]string{id, project})
+		blocked = append(blocked, [2]string{id, assignment})
 	}
 	exhausted.Close()
 	for _, b := range blocked {
@@ -284,13 +300,13 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 	}
 
 	lease := Lease{Owner: owner, ExpiresAt: time.UnixMilli(ms + ttl.Milliseconds())}
-	var project string
+	var assignment string
 	err = tx.QueryRowContext(ctx, `UPDATE tasks
 		SET attempt_count = attempt_count + CASE WHEN status = 'running' THEN 1 ELSE 0 END,
 		    status = 'running', lease_owner = ?, lease_until = ?, version = version + 1, wake_pending = 0, updated_at = ?
 		WHERE id = (
-			SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
-			WHERE p.status = 'active'
+			SELECT t.id FROM tasks t JOIN assignments a ON a.id = t.assignment_id
+			WHERE a.status = 'active'
 			  AND ((t.status IN ('ready', 'retryable') AND (t.next_run_at IS NULL OR t.next_run_at <= ?))
 			       OR (t.status = 'running' AND t.lease_until < ?))
 			  AND NOT EXISTS (
@@ -298,15 +314,15 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 				WHERE d.task_id = t.id AND dep.status != 'completed')
 			ORDER BY t.priority DESC, t.created_at, t.id
 			LIMIT 1)
-		RETURNING id, project_id, version`,
-		owner, lease.ExpiresAt.UnixMilli(), ms, ms, ms).Scan(&lease.TaskID, &project, &lease.Version)
+		RETURNING id, assignment_id, version`,
+		owner, lease.ExpiresAt.UnixMilli(), ms, ms, ms).Scan(&lease.TaskID, &assignment, &lease.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, tx.Commit()
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := audit.Record(ctx, tx, now, project, owner, "task.leased", lease.TaskID, nil); err != nil {
+	if err := audit.Record(ctx, tx, now, assignment, owner, "task.leased", lease.TaskID, nil); err != nil {
 		return nil, err
 	}
 	return &lease, tx.Commit()
@@ -349,15 +365,15 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 		return err
 	}
 	defer tx.Rollback()
-	var project, status string
+	var assignment, status string
 	err = tx.QueryRowContext(ctx, `UPDATE tasks
 		SET status = CASE WHEN ? = 'waiting_event' AND wake_pending = 1 THEN 'ready' ELSE ? END,
 		    lease_owner = NULL, lease_until = NULL, version = version + 1,
 		    next_run_at = ?, result_json = COALESCE(?, result_json),
 		    attempt_count = attempt_count + ?, updated_at = ?
 		WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running'
-		RETURNING project_id, status`,
-		r.Status, r.Status, next, result, failures, now.UnixMilli(), l.TaskID, l.Owner, l.Version).Scan(&project, &status)
+		RETURNING assignment_id, status`,
+		r.Status, r.Status, next, result, failures, now.UnixMilli(), l.TaskID, l.Owner, l.Version).Scan(&assignment, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrLeaseLost
 	}
@@ -369,7 +385,7 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 			return err
 		}
 	}
-	if err := audit.Record(ctx, tx, now, project, l.Owner, "task."+status, l.TaskID, r.Result); err != nil {
+	if err := audit.Record(ctx, tx, now, assignment, l.Owner, "task."+status, l.TaskID, r.Result); err != nil {
 		return err
 	}
 	return tx.Commit()

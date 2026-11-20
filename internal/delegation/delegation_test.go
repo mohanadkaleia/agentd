@@ -1,6 +1,7 @@
 package delegation_test
 
 import (
+	"agentd/internal/assignments"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -36,7 +37,7 @@ func newHarness(t *testing.T, script scripted.Provider) *harness {
 	h := &harness{t: t, path: testutil.DBPath(t), clock: testutil.NewClock(), script: script, toolsSeen: map[string][]string{}}
 	h.boot()
 	var err error
-	h.project, err = h.app.Projects.Create(context.Background(), "research", "Compare options.", demo.Policy)
+	h.project, err = h.app.Assignments.CreateProject(context.Background(), assignments.NewProject{Name: "research", Objective: "Compare options.", Policy: demo.Policy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func (h *harness) restart() {
 
 func (h *harness) task(nt tasks.NewTask) string {
 	h.t.Helper()
-	nt.ProjectID = h.project
+	nt.AssignmentID = h.project
 	if nt.Title == "" {
 		nt.Title = "task"
 	}

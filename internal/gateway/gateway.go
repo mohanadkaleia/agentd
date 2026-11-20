@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"time"
 
+	"agentd/internal/assignments"
 	"agentd/internal/audit"
 	"agentd/internal/ids"
 	"agentd/internal/model"
 	"agentd/internal/policy"
-	"agentd/internal/projects"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
@@ -47,18 +47,18 @@ type Outcome struct {
 }
 
 type Call struct {
-	RunID     string
-	TaskID    string
-	ProjectID string
-	Seq       int
-	Call      model.ToolCall
+	RunID        string
+	TaskID       string
+	AssignmentID string
+	Seq          int
+	Call         model.ToolCall
 }
 
 type Action struct {
 	ID             string
 	RunID          string
 	TaskID         string
-	ProjectID      string
+	AssignmentID   string
 	ToolName       string
 	Arguments      json.RawMessage
 	ArgumentsHash  string
@@ -71,7 +71,7 @@ type Action struct {
 type Gateway struct {
 	DB           *sql.DB
 	Tools        tools.Registry
-	Projects     *projects.Store
+	Assignments  *assignments.Store
 	Tasks        *tasks.Store
 	Now          func() time.Time
 	ApprovalTTL  time.Duration
@@ -113,7 +113,7 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 		ID:             ids.New("act"),
 		RunID:          c.RunID,
 		TaskID:         c.TaskID,
-		ProjectID:      c.ProjectID,
+		AssignmentID:   c.AssignmentID,
 		ToolName:       c.Call.Name,
 		Arguments:      args,
 		ArgumentsHash:  hex.EncodeToString(sum[:]),
@@ -132,7 +132,7 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 		a.Resource = resource
 	}
 
-	p, err := g.Projects.Get(ctx, c.ProjectID)
+	p, err := g.Assignments.Get(ctx, c.AssignmentID)
 	if err != nil {
 		return a, err
 	}
@@ -142,14 +142,14 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 		return a, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO actions (id, run_id, task_id, project_id, tool_name, arguments_json, arguments_hash,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO actions (id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
 		resource, policy_version, status, idempotency_key, result_json, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.RunID, a.TaskID, a.ProjectID, a.ToolName, string(a.Arguments), a.ArgumentsHash,
+		a.ID, a.RunID, a.TaskID, a.AssignmentID, a.ToolName, string(a.Arguments), a.ArgumentsHash,
 		a.Resource, p.PolicyVersion, a.Status, a.IdempotencyKey, nullable(a.Result), now.UnixMilli(), now.UnixMilli()); err != nil {
 		return a, err
 	}
-	if err := audit.Record(ctx, tx, now, a.ProjectID, "agent", "action."+a.Status, a.ID,
+	if err := audit.Record(ctx, tx, now, a.AssignmentID, "agent", "action."+a.Status, a.ID,
 		map[string]any{"tool": a.ToolName, "resource": a.Resource, "arguments_hash": a.ArgumentsHash}); err != nil {
 		return a, err
 	}
@@ -157,11 +157,11 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 }
 
 func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tools.Tool) (Outcome, error) {
-	p, err := g.Projects.Get(ctx, a.ProjectID)
+	p, err := g.Assignments.Get(ctx, a.AssignmentID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if p.Status != "active" {
+	if p.Status != assignments.Active {
 		return Outcome{Kind: Paused}, nil
 	}
 	task, err := g.Tasks.Get(ctx, a.TaskID)
@@ -172,7 +172,7 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 	if !task.Allows(a.ToolName) {
 		d = policy.Decision{Mode: policy.Deny, Reason: fmt.Sprintf("tool %q is not in this task's allowlist", a.ToolName)}
 	}
-	if err := audit.Record(ctx, g.DB, g.Now(), a.ProjectID, "policy", "policy.evaluated", a.ID, d); err != nil {
+	if err := audit.Record(ctx, g.DB, g.Now(), a.AssignmentID, "policy", "policy.evaluated", a.ID, d); err != nil {
 		return Outcome{}, err
 	}
 	switch d.Mode {
@@ -232,9 +232,9 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 	if limit.Per.Duration > 0 {
 		var used int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM actions
-			WHERE project_id = ? AND tool_name = ? AND id != ? AND dispatched_at > ?
+			WHERE assignment_id = ? AND tool_name = ? AND id != ? AND dispatched_at > ?
 			  AND status IN ('dispatching', 'succeeded', 'needs_reconciliation')`,
-			a.ProjectID, a.ToolName, a.ID, now.Add(-limit.Per.Duration).UnixMilli()).Scan(&used); err != nil {
+			a.AssignmentID, a.ToolName, a.ID, now.Add(-limit.Per.Duration).UnixMilli()).Scan(&used); err != nil {
 			return "", err
 		}
 		if used >= limit.Max {
@@ -249,7 +249,7 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", ErrConflict
 	}
-	if err := audit.Record(ctx, tx, now, a.ProjectID, "gateway", "action.dispatching", a.ID, nil); err != nil {
+	if err := audit.Record(ctx, tx, now, a.AssignmentID, "gateway", "action.dispatching", a.ID, nil); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -269,7 +269,7 @@ func (g *Gateway) recover(ctx context.Context, a *Action, tool tools.Tool) error
 		_, ferr := g.finish(ctx, a, Dispatching, Succeeded, res.Output, res.ExternalID)
 		return ferr
 	}
-	return audit.Record(ctx, g.DB, g.Now(), a.ProjectID, "gateway", "action.reconciled_not_found", a.ID, nil)
+	return audit.Record(ctx, g.DB, g.Now(), a.AssignmentID, "gateway", "action.reconciled_not_found", a.ID, nil)
 }
 
 func (g *Gateway) finish(ctx context.Context, a *Action, from, to string, result json.RawMessage, externalID string) (Outcome, error) {
@@ -287,7 +287,7 @@ func (g *Gateway) finish(ctx context.Context, a *Action, from, to string, result
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Outcome{}, ErrConflict
 	}
-	if err := audit.Record(ctx, tx, now, a.ProjectID, "gateway", "action."+to, a.ID, map[string]string{"external_id": externalID}); err != nil {
+	if err := audit.Record(ctx, tx, now, a.AssignmentID, "gateway", "action."+to, a.ID, map[string]string{"external_id": externalID}); err != nil {
 		return Outcome{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -315,7 +315,7 @@ func (g *Gateway) setStatus(ctx context.Context, a *Action, from, to string) err
 	if n, _ := res.RowsAffected(); n == 0 && from != to {
 		return ErrConflict
 	}
-	if err := audit.Record(ctx, tx, now, a.ProjectID, "gateway", "action."+to, a.ID, nil); err != nil {
+	if err := audit.Record(ctx, tx, now, a.AssignmentID, "gateway", "action."+to, a.ID, nil); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -329,9 +329,9 @@ func (g *Gateway) loadByKey(ctx context.Context, key string) (Action, error) {
 	var a Action
 	var args string
 	var result sql.NullString
-	err := g.DB.QueryRowContext(ctx, `SELECT id, run_id, task_id, project_id, tool_name, arguments_json, arguments_hash,
+	err := g.DB.QueryRowContext(ctx, `SELECT id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
 		resource, status, idempotency_key, result_json FROM actions WHERE idempotency_key = ?`, key).
-		Scan(&a.ID, &a.RunID, &a.TaskID, &a.ProjectID, &a.ToolName, &args, &a.ArgumentsHash,
+		Scan(&a.ID, &a.RunID, &a.TaskID, &a.AssignmentID, &a.ToolName, &args, &a.ArgumentsHash,
 			&a.Resource, &a.Status, &a.IdempotencyKey, &result)
 	a.Arguments = json.RawMessage(args)
 	if result.Valid {
@@ -343,7 +343,7 @@ func (g *Gateway) loadByKey(ctx context.Context, key string) (Action, error) {
 func (g *Gateway) invocation(a Action) tools.Invocation {
 	return tools.Invocation{
 		ActionID:       a.ID,
-		ProjectID:      a.ProjectID,
+		AssignmentID:   a.AssignmentID,
 		TaskID:         a.TaskID,
 		RunID:          a.RunID,
 		IdempotencyKey: a.IdempotencyKey,

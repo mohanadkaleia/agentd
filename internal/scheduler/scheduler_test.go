@@ -127,7 +127,7 @@ func TestScheduleFiresOnTimeAndSkipsMissedSlots(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	_, err := f.app.Scheduler.AddSchedule(ctx, scheduler.Schedule{
-		ProjectID: f.project, Title: "Check inbox", Objective: "Check for airline replies.",
+		AssignmentID: f.project, Title: "Check inbox", Objective: "Check for airline replies.",
 		Every: 24 * time.Hour, FirstAt: f.clock.Now().Add(time.Hour),
 	})
 	if err != nil {
@@ -208,7 +208,7 @@ func TestFollowupReconcilesInsteadOfDuplicating(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	fu := &scheduler.Followup{Tasks: f.app.Tasks}
-	call := tools.Invocation{ProjectID: f.project, IdempotencyKey: "run_x:3:call_4",
+	call := tools.Invocation{AssignmentID: f.project, IdempotencyKey: "run_x:3:call_4",
 		Arguments: json.RawMessage(`{"after_hours":1,"reason":"check"}`)}
 
 	if _, found, _ := fu.Reconcile(ctx, call); found {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agentd/internal/app"
+	"agentd/internal/assignments"
 	"agentd/internal/model"
 	"agentd/internal/policy"
 	"agentd/internal/scheduler"
@@ -32,29 +33,34 @@ var Policy = policy.Policy{Tools: map[string]policy.Rule{
 	ToolRates:      map[string]policy.RateLimit{"send_email": {Max: 5, Per: policy.Duration{Duration: 24 * time.Hour}}},
 }}
 
-func Seed(ctx context.Context, a *app.App) (projectID, taskID string, err error) {
-	projectID, err = a.Projects.Create(ctx, "airline-refund", "Recover the refund for cancelled flight XY123.", Policy)
+func Seed(ctx context.Context, a *app.App) (assignmentID, taskID string, err error) {
+	assignmentID, err = a.Assignments.CreateProject(ctx, assignments.NewProject{
+		Name:       "airline-refund",
+		Objective:  "Recover the refund for cancelled flight XY123.",
+		Policy:     Policy,
+		Completion: assignments.Completion{Criteria: []string{"Refund received or formally refused in writing"}},
+	})
 	if err != nil {
 		return "", "", err
 	}
 	taskID, err = a.Tasks.Create(ctx, tasks.NewTask{
-		ProjectID: projectID,
-		Title:     "Request refund",
-		Objective: "Research the airline refund policy, email the refunds desk, and escalate a formal claim.",
-		Success:   tasks.Success{RequireSucceededTools: []string{"send_email"}},
+		AssignmentID: assignmentID,
+		Title:        "Request refund",
+		Objective:    "Research the airline refund policy, email the refunds desk, and escalate a formal claim.",
+		Success:      tasks.Success{RequireSucceededTools: []string{"send_email"}},
 	})
 	if err != nil {
 		return "", "", err
 	}
 	_, err = a.Scheduler.AddRoute(ctx, scheduler.Route{
-		ProjectID: projectID,
-		Source:    "gmail",
-		Kind:      "email.received",
-		Match:     map[string]string{"thread_id": AirlineThread},
-		Title:     "Handle airline reply",
-		Objective: "The airline replied on the refund thread. Read the reply and decide the next step.",
+		AssignmentID: assignmentID,
+		Source:       "gmail",
+		Kind:         "email.received",
+		Match:        map[string]string{"thread_id": AirlineThread},
+		Title:        "Handle airline reply",
+		Objective:    "The airline replied on the refund thread. Read the reply and decide the next step.",
 	})
-	return projectID, taskID, err
+	return assignmentID, taskID, err
 }
 
 func Script(req model.Request) model.Message {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"strings"
 	"time"
 
 	"agentd/migrations"
@@ -32,6 +33,10 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
+	return migrateThrough(ctx, db, "")
+}
+
+func migrateThrough(ctx context.Context, db *sql.DB, last string) error {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
 		applied_at INTEGER NOT NULL
@@ -47,6 +52,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if e.IsDir() || len(name) < 5 || name[len(name)-4:] != ".sql" {
 			continue
 		}
+		if last != "" && name > last {
+			break
+		}
 		var applied int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, name).Scan(&applied); err != nil {
 			return err
@@ -58,21 +66,68 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
+		if err := apply(ctx, db, name, string(body)); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
-			tx.Rollback()
+	}
+	return nil
+}
+
+const foreignKeysOff = "-- agentd:foreign_keys=off"
+
+func apply(ctx context.Context, db *sql.DB, name, body string) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	rebuild := strings.HasPrefix(body, foreignKeysOff)
+	if rebuild {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+			return err
+		}
+		defer conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys = ON`)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, body); err != nil {
+		return fmt.Errorf("migration %s: %w", name, err)
+	}
+	if rebuild {
+		if err := checkForeignKeys(ctx, tx); err != nil {
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, name, time.Now().UnixMilli()); err != nil {
-			tx.Rollback()
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, name, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var violations []string
+	for rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+		violations = append(violations, fmt.Sprintf("%s row %d -> %s", table, rowid.Int64, parent))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("foreign key violations after rebuild: %s", strings.Join(violations, "; "))
 	}
 	return nil
 }

@@ -7,6 +7,8 @@ A durable, model-agnostic personal agent runtime. Go + SQLite, one process.
 ```bash
 go build -o bin/agentd ./cmd/agentd
 ./bin/agentd demo                        # seed the airline-refund project
+./bin/agentd -skills docs/examples/skills create docs/examples/portfolio-intelligence.json
+./bin/agentd show <assignment-id>        # state, spend, recent activity, next expected action
 ./bin/agentd serve -tool-delay 5s        # kill -9 it while send_email is sleeping
 ./bin/agentd serve                       # restart: the email is reconciled, not resent
 ./bin/agentd status
@@ -17,7 +19,7 @@ Feed it events and schedules:
 
 ```bash
 ./bin/agentd event -source gmail -kind email.received -id gm-001 -payload '{"thread_id":"thread-xy123"}'
-./bin/agentd schedule -project <id> -every 24h -title "Check inbox" -objective "Look for airline replies."
+./bin/agentd schedule -assignment <id> -every 24h -title "Check inbox" -objective "Look for airline replies."
 ```
 
 Pick a model with `-model` (or `AGENTD_MODEL`):
@@ -45,17 +47,10 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 | `internal/tools` | Tool interface + registry; `mock.go` holds the simulated web search and mailbox. |
 | `migrations/` | Embedded SQL migrations, applied on open. |
 
-## Invariants
+## Architecture
 
-1. Every tool call is persisted as an action, keyed `run:step:call`, before it runs.
-2. Policy is evaluated by code on every dispatch; no rule means deny.
-3. An approval binds to the action's exact argument hash and expires.
-4. A crash mid-dispatch is reconciled with the provider before anything is retried; an unknowable outcome blocks the task.
-5. A task completes only when its success criteria have recorded evidence.
-6. Each event, schedule slot, follow-up and delegation creates at most one task, even across crashes.
-7. A task's tool allowlist is enforced by the gateway, and a worker can never be granted a tool its parent lacks.
-8. Every model call's cost is recorded with the step it produced. When a project's spend reaches its cap the project pauses; raising the cap and resuming continues the same run.
-9. A rate-limited tool reserves its slot in the same transaction that marks the action dispatching, so concurrent workers cannot overshoot.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the domain model (Projects, Responsibilities, tasks,
+skills, notifications), the invariants the code enforces, and how a responsibility runs.
 
 ## Run as a service (macOS)
 

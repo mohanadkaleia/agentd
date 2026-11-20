@@ -23,7 +23,7 @@ var (
 
 type Invocation struct {
 	ActionID       string
-	ProjectID      string
+	AssignmentID   string
 	TaskID         string
 	RunID          string
 	IdempotencyKey string

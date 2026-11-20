@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agentd/internal/app"
+	"agentd/internal/assignments"
 	"agentd/internal/demo"
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
@@ -21,6 +22,7 @@ import (
 	"agentd/internal/model/scripted"
 	"agentd/internal/policy"
 	"agentd/internal/scheduler"
+	"agentd/internal/skills"
 	"agentd/internal/store"
 	"agentd/internal/tools"
 )
@@ -35,17 +37,21 @@ models:
 commands:
   serve [-workers N] [-tool-delay D]   run the supervisor until interrupted
   demo                                 seed the airline-refund demo project
-  status                               show projects, tasks, actions, approvals
+  create <assignment.json>             create a project or responsibility, with its routes and schedules
+  show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
+  status                               show assignments, tasks, actions, approvals
   approve <approval-id>                approve a pending action
   reject <approval-id>                 reject a pending action
-  policy <project-id> <policy.json>    replace a project's policy and limits
-  pause <project-id>                   stop new work on a project
-  resume <project-id>                  resume a paused project
+  policy <assignment-id> <policy.json> replace an assignment's policy and limits
+  pause | resume <assignment-id>       stop or restart new work
+  complete | cancel <project-id>       end a project
+  revoke <responsibility-id>           end a responsibility
+  notifications                        list notifications waiting for delivery
   event -source S -kind K [-id X] [-payload JSON]
                                        push an external event into the inbox
-  route -project P -source S -kind K -title T -objective O [-match JSON]
+  route -assignment A -source S -kind K -title T -objective O [-match JSON] [-coalesce FIELD]
                                        turn matching events into tasks
-  schedule -project P -every D -title T -objective O
+  schedule -assignment A -every D -title T -objective O
                                        create a recurring task
 `
 
@@ -62,6 +68,7 @@ func run() error {
 	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")
 	modelSpec := global.String("model", envOr("AGENTD_MODEL", "scripted"), "model provider and id")
 	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
+	skillsDir := global.String("skills", envOr("AGENTD_SKILLS", "skills"), "directory of skill .md files")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -82,7 +89,8 @@ func run() error {
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside send_email after sending, to test crash recovery")
-	project := cmd.String("project", "", "project id")
+	assignment := cmd.String("assignment", "", "assignment id")
+	coalesce := cmd.String("coalesce", "", "route: payload field whose value groups events into one open task")
 	source := cmd.String("source", "", "event source, e.g. gmail")
 	kind := cmd.String("kind", "", "event kind, e.g. email.received")
 	externalID := cmd.String("id", "", "external id used to drop duplicate events")
@@ -104,6 +112,9 @@ func run() error {
 		return err
 	}
 	a := app.New(db, provider, *modelSpec, tools.NewRegistry(tools.WebSearch{}, mailbox), time.Now)
+	if err := skills.LoadDir(a.Skills, *skillsDir); err != nil {
+		return fmt.Errorf("loading skills: %w", err)
+	}
 
 	switch args[0] {
 	case "serve":
@@ -114,11 +125,11 @@ func run() error {
 		log.Info("agentd stopped")
 		return nil
 	case "demo":
-		projectID, taskID, err := demo.Seed(ctx, a)
+		assignmentID, taskID, err := demo.Seed(ctx, a)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("project %s\ntask    %s\n", projectID, taskID)
+		fmt.Printf("project %s\ntask    %s\n", assignmentID, taskID)
 		return nil
 	case "status":
 		return status(ctx, a)
@@ -127,9 +138,26 @@ func run() error {
 			return fmt.Errorf("%s needs an approval id", args[0])
 		}
 		return a.Gateway.Decide(ctx, cmd.Arg(0), args[0] == "approve", "cli")
+	case "create":
+		if cmd.NArg() != 1 {
+			return fmt.Errorf("create needs a JSON file")
+		}
+		id, err := createFromFile(ctx, a, cmd.Arg(0))
+		if err != nil {
+			return err
+		}
+		fmt.Println(id)
+		return nil
+	case "show":
+		if cmd.NArg() != 1 {
+			return fmt.Errorf("show needs an assignment id")
+		}
+		return show(ctx, a, cmd.Arg(0))
+	case "notifications":
+		return notifications(ctx, a)
 	case "policy":
 		if cmd.NArg() != 2 {
-			return fmt.Errorf("policy needs a project id and a JSON file")
+			return fmt.Errorf("policy needs an assignment id and a JSON file")
 		}
 		body, err := os.ReadFile(cmd.Arg(1))
 		if err != nil {
@@ -139,18 +167,28 @@ func run() error {
 		if err := json.Unmarshal(body, &p); err != nil {
 			return fmt.Errorf("%s: %w", cmd.Arg(1), err)
 		}
-		version, err := a.Projects.SetPolicy(ctx, cmd.Arg(0), p, "cli")
+		version, err := a.Assignments.SetPolicy(ctx, cmd.Arg(0), p, "cli")
 		if err != nil {
 			return err
 		}
 		fmt.Println("policy version", version)
 		return nil
-	case "pause", "resume":
+	case "pause", "resume", "complete", "cancel", "revoke":
 		if cmd.NArg() != 1 {
-			return fmt.Errorf("%s needs a project id", args[0])
+			return fmt.Errorf("%s needs an assignment id", args[0])
 		}
-		status := map[string]string{"pause": "paused", "resume": "active"}[args[0]]
-		return a.Projects.SetStatus(ctx, cmd.Arg(0), status, "", "cli")
+		id := cmd.Arg(0)
+		switch args[0] {
+		case "pause":
+			return a.Assignments.Pause(ctx, id, assignments.PausedByUser, "", "cli")
+		case "resume":
+			return a.Assignments.Resume(ctx, id, "cli")
+		case "complete":
+			return a.Assignments.Complete(ctx, id, "cli")
+		case "cancel":
+			return a.Assignments.Cancel(ctx, id, "cli")
+		}
+		return a.Assignments.Revoke(ctx, id, "cli")
 	case "event":
 		id, dup, err := a.Scheduler.Ingest(ctx, scheduler.Event{Source: *source, Kind: *kind, ExternalID: *externalID, Payload: json.RawMessage(*payload)})
 		if err != nil {
@@ -163,14 +201,15 @@ func run() error {
 		if err := json.Unmarshal([]byte(*match), &filter); err != nil {
 			return fmt.Errorf("-match: %w", err)
 		}
-		id, err := a.Scheduler.AddRoute(ctx, scheduler.Route{ProjectID: *project, Source: *source, Kind: *kind, Match: filter, Title: *title, Objective: *objective})
+		id, err := a.Scheduler.AddRoute(ctx, scheduler.Route{AssignmentID: *assignment, Source: *source, Kind: *kind, Match: filter,
+			CoalesceField: *coalesce, Title: *title, Objective: *objective})
 		if err != nil {
 			return err
 		}
 		fmt.Println("route", id)
 		return nil
 	case "schedule":
-		id, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{ProjectID: *project, Title: *title, Objective: *objective, Every: *every})
+		id, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{AssignmentID: *assignment, Title: *title, Objective: *objective, Every: *every})
 		if err != nil {
 			return err
 		}
@@ -189,10 +228,10 @@ func status(ctx context.Context, a *app.App) error {
 		title string
 		query string
 	}{
-		{"PROJECTS", `SELECT p.id, p.name, p.status, COALESCE(p.status_reason, ''),
-			printf('spent $%.4f / $%s', COALESCE((SELECT SUM(cost_micros) FROM model_usage u WHERE u.project_id = p.id), 0) / 1e6,
+		{"ASSIGNMENTS", `SELECT p.id, p.kind, p.name, p.status, COALESCE(p.status_reason, ''),
+			printf('spent $%.4f / $%s', COALESCE((SELECT SUM(cost_micros) FROM model_usage u WHERE u.assignment_id = p.id), 0) / 1e6,
 				COALESCE(json_extract(p.policy_json, '$.limits.max_llm_spend_usd'), 'unlimited'))
-			FROM projects p ORDER BY p.created_at`},
+			FROM assignments p ORDER BY p.created_at`},
 		{"TASKS", `SELECT id, title, status, attempt_count,
 			COALESCE(datetime(next_run_at / 1000, 'unixepoch', 'localtime'), '-'), COALESCE(result_json, '') FROM tasks ORDER BY created_at`},
 		{"EVENTS", `SELECT id, source, kind, COALESCE(external_id, ''), CASE WHEN processed_at IS NULL THEN 'pending' ELSE 'routed:' || routed_count END FROM events ORDER BY received_at`},
