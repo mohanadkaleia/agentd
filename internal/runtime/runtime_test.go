@@ -312,12 +312,28 @@ func TestUntrustedToolCallsAreDenied(t *testing.T) {
 
 func TestCompletionWithoutEvidenceIsRejected(t *testing.T) {
 	h := newHarness(t, func(model.Request) model.Message { return model.Message{Content: "All done!"} })
-	h.app.Runtime.MaxSteps = 3
 	h.drain()
 	h.expectStatus(tasks.Blocked)
 	if got := h.calls.Load(); got != 3 {
-		t.Fatalf("model calls = %d, want 3 (rejected each time until step limit)", got)
+		t.Fatalf("model calls = %d, want 3 (two rejections, then blocked well before the step limit)", got)
 	}
+}
+
+func TestToolWorkResetsRejectedCompletions(t *testing.T) {
+	turn := 0
+	h := newHarness(t, func(model.Request) model.Message {
+		turn++
+		switch turn {
+		case 3:
+			return model.Message{ToolCalls: []model.ToolCall{{ID: "s", Name: "web_search", Arguments: json.RawMessage(`{"query":"q"}`)}}}
+		case 6:
+			return model.Message{ToolCalls: []model.ToolCall{{ID: "e", Name: "send_email",
+				Arguments: json.RawMessage(`{"to":"refunds@airline.example","subject":"s","body":"b"}`)}}}
+		}
+		return model.Message{Content: "done"}
+	})
+	h.drain()
+	h.expectStatus(tasks.Completed)
 }
 
 type flaky struct{}

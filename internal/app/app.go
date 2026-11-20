@@ -41,6 +41,8 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 			LeaseTTL:    30 * time.Second,
 			MaxSteps:    20,
 			BaseBackoff: 5 * time.Second,
+
+			MaxRejectedCompletions: 2,
 		},
 	}
 }

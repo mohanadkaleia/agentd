@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"agentd/internal/gateway"
@@ -28,7 +29,11 @@ type Runtime struct {
 	LeaseTTL    time.Duration
 	MaxSteps    int
 	BaseBackoff time.Duration
+
+	MaxRejectedCompletions int
 }
+
+const rejectedCompletionPrefix = "Completion rejected:"
 
 func (r *Runtime) RunOnce(ctx context.Context, owner string) (bool, error) {
 	lease, err := r.Tasks.ClaimReady(ctx, owner, r.LeaseTTL)
@@ -90,8 +95,12 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 				}
 				return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Completed, Result: map[string]string{"summary": last.Content}})
 			}
+			if rejectedCompletions(msgs) >= r.MaxRejectedCompletions {
+				return r.block(ctx, lease, rn.ID, map[string]string{
+					"error": fmt.Sprintf("model claimed completion %d times without evidence of %v", r.MaxRejectedCompletions+1, missing)})
+			}
 			nudge := model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
-				"Completion rejected: no successful %v action is recorded for this task. Continue working.", missing)}
+				"%s no successful %v action is recorded for this task. Continue working.", rejectedCompletionPrefix, missing)}
 			if err := r.appendMessage(ctx, rn.ID, len(msgs), nudge); err != nil {
 				return r.fail(ctx, lease, task, err)
 			}
@@ -122,6 +131,16 @@ func quarantineInvalidArguments(calls []model.ToolCall) {
 			calls[i].Arguments, _ = json.Marshal(string(c.Arguments))
 		}
 	}
+}
+
+func rejectedCompletions(msgs []model.Message) int {
+	n := 0
+	for i := len(msgs) - 1; i >= 0 && msgs[i].Role != model.RoleTool; i-- {
+		if msgs[i].Role == model.RoleUser && strings.HasPrefix(msgs[i].Content, rejectedCompletionPrefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func pendingCalls(msgs []model.Message) (int, []model.ToolCall) {
