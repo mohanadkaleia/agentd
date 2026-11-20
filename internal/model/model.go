@@ -58,9 +58,11 @@ type Request struct {
 type Usage struct {
 	InputTokens  int64
 	OutputTokens int64
+	CostMicros   int64
 }
 
 type Response struct {
+	Model      string
 	Message    Message
 	Usage      Usage
 	StopReason StopReason

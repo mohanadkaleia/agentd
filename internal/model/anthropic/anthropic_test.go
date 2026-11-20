@@ -81,7 +81,7 @@ func TestRoundTripPreservesNativeBlocksAndMergesToolResults(t *testing.T) {
 	if got := string(first.Message.ToolCalls[0].Arguments); got != `{"query": "refund"}` && got != `{"query":"refund"}` {
 		t.Fatalf("tool arguments = %s", got)
 	}
-	if first.Usage.InputTokens != 120 {
+	if first.Usage.InputTokens != 120 || first.Usage.CostMicros != 1280 || first.Model != DefaultModel {
 		t.Fatalf("usage = %+v", first.Usage)
 	}
 

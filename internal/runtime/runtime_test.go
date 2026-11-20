@@ -262,7 +262,7 @@ func TestRejectedApprovalIsDenied(t *testing.T) {
 func TestPausedProjectTakesNoNewActions(t *testing.T) {
 	h := newHarness(t, demo.Script)
 	h.drain()
-	if err := h.app.Projects.SetStatus(context.Background(), h.projID, "paused"); err != nil {
+	if err := h.app.Projects.SetStatus(context.Background(), h.projID, "paused", "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	h.decideOnly(true)
@@ -271,7 +271,7 @@ func TestPausedProjectTakesNoNewActions(t *testing.T) {
 	if h.sent(demo.AirlineClaims) != 0 {
 		t.Fatal("paused project sent an email")
 	}
-	h.app.Projects.SetStatus(context.Background(), h.projID, "active")
+	h.app.Projects.SetStatus(context.Background(), h.projID, "active", "", "test")
 	h.drain()
 	h.expectStatus(tasks.Completed)
 }

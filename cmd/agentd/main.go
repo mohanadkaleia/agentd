@@ -19,6 +19,7 @@ import (
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
 	"agentd/internal/model/scripted"
+	"agentd/internal/policy"
 	"agentd/internal/scheduler"
 	"agentd/internal/store"
 	"agentd/internal/tools"
@@ -37,6 +38,7 @@ commands:
   status                               show projects, tasks, actions, approvals
   approve <approval-id>                approve a pending action
   reject <approval-id>                 reject a pending action
+  policy <project-id> <policy.json>    replace a project's policy and limits
   pause <project-id>                   stop new work on a project
   resume <project-id>                  resume a paused project
   event -source S -kind K [-id X] [-payload JSON]
@@ -125,12 +127,30 @@ func run() error {
 			return fmt.Errorf("%s needs an approval id", args[0])
 		}
 		return a.Gateway.Decide(ctx, cmd.Arg(0), args[0] == "approve", "cli")
+	case "policy":
+		if cmd.NArg() != 2 {
+			return fmt.Errorf("policy needs a project id and a JSON file")
+		}
+		body, err := os.ReadFile(cmd.Arg(1))
+		if err != nil {
+			return err
+		}
+		var p policy.Policy
+		if err := json.Unmarshal(body, &p); err != nil {
+			return fmt.Errorf("%s: %w", cmd.Arg(1), err)
+		}
+		version, err := a.Projects.SetPolicy(ctx, cmd.Arg(0), p, "cli")
+		if err != nil {
+			return err
+		}
+		fmt.Println("policy version", version)
+		return nil
 	case "pause", "resume":
 		if cmd.NArg() != 1 {
 			return fmt.Errorf("%s needs a project id", args[0])
 		}
 		status := map[string]string{"pause": "paused", "resume": "active"}[args[0]]
-		return a.Projects.SetStatus(ctx, cmd.Arg(0), status)
+		return a.Projects.SetStatus(ctx, cmd.Arg(0), status, "", "cli")
 	case "event":
 		id, dup, err := a.Scheduler.Ingest(ctx, scheduler.Event{Source: *source, Kind: *kind, ExternalID: *externalID, Payload: json.RawMessage(*payload)})
 		if err != nil {
@@ -169,7 +189,10 @@ func status(ctx context.Context, a *app.App) error {
 		title string
 		query string
 	}{
-		{"PROJECTS", `SELECT id, name, status FROM projects ORDER BY created_at`},
+		{"PROJECTS", `SELECT p.id, p.name, p.status, COALESCE(p.status_reason, ''),
+			printf('spent $%.4f / $%s', COALESCE((SELECT SUM(cost_micros) FROM model_usage u WHERE u.project_id = p.id), 0) / 1e6,
+				COALESCE(json_extract(p.policy_json, '$.limits.max_llm_spend_usd'), 'unlimited'))
+			FROM projects p ORDER BY p.created_at`},
 		{"TASKS", `SELECT id, title, status, attempt_count,
 			COALESCE(datetime(next_run_at / 1000, 'unixepoch', 'localtime'), '-'), COALESCE(result_json, '') FROM tasks ORDER BY created_at`},
 		{"EVENTS", `SELECT id, source, kind, COALESCE(external_id, ''), CASE WHEN processed_at IS NULL THEN 'pending' ELSE 'routed:' || routed_count END FROM events ORDER BY received_at`},

@@ -188,13 +188,13 @@ func TestReleaseTransitions(t *testing.T) {
 func TestPausedProjectIsNotClaimed(t *testing.T) {
 	f := setup(t)
 	f.newTask(t, tasks.NewTask{})
-	if err := f.projects.SetStatus(context.Background(), f.project, "paused"); err != nil {
+	if err := f.projects.SetStatus(context.Background(), f.project, "paused", "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if l := f.claim(t, "a"); l != nil {
 		t.Fatal("claimed a task in a paused project")
 	}
-	if err := f.projects.SetStatus(context.Background(), f.project, "active"); err != nil {
+	if err := f.projects.SetStatus(context.Background(), f.project, "active", "", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if l := f.claim(t, "a"); l == nil {

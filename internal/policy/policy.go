@@ -1,8 +1,10 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 )
 
 type Mode string
@@ -20,7 +22,55 @@ type Rule struct {
 }
 
 type Policy struct {
-	Tools map[string]Rule `json:"tools"`
+	Tools  map[string]Rule `json:"tools"`
+	Limits Limits          `json:"limits,omitzero"`
+}
+
+type Limits struct {
+	MaxLLMSpendUSD float64              `json:"max_llm_spend_usd,omitempty"`
+	ToolRates      map[string]RateLimit `json:"tool_rate_limits,omitempty"`
+}
+
+type RateLimit struct {
+	Max int      `json:"max"`
+	Per Duration `json:"per"`
+}
+
+type Duration struct {
+	time.Duration
+}
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.String())
+}
+
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("duration must be a string like \"24h\": %w", err)
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	d.Duration = v
+	return nil
+}
+
+func (l Limits) MaxLLMSpendMicros() int64 {
+	return int64(l.MaxLLMSpendUSD * 1e6)
+}
+
+func (p Policy) Validate() error {
+	if p.Limits.MaxLLMSpendUSD < 0 {
+		return fmt.Errorf("max_llm_spend_usd must not be negative")
+	}
+	for tool, r := range p.Limits.ToolRates {
+		if r.Max < 0 || r.Per.Duration <= 0 {
+			return fmt.Errorf("rate limit for %q needs max >= 0 and a positive window", tool)
+		}
+	}
+	return nil
 }
 
 type Decision struct {

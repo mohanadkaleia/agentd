@@ -184,12 +184,15 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 			return out, err
 		}
 	}
-	return g.dispatch(ctx, a, tool)
+	return g.dispatch(ctx, a, tool, p.Policy.Limits.ToolRates[a.ToolName])
 }
 
-func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool) (Outcome, error) {
-	if err := g.setStatus(ctx, a, a.Status, Dispatching); err != nil {
-		return Outcome{}, err
+func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limit policy.RateLimit) (Outcome, error) {
+	if reason, err := g.beginDispatch(ctx, a, limit); err != nil || reason != "" {
+		if err != nil {
+			return Outcome{}, err
+		}
+		return g.finish(ctx, a, a.Status, Denied, errorJSON(reason), "")
 	}
 	res, err := tool.Execute(ctx, g.invocation(*a))
 	if g.AfterExecute != nil {
@@ -216,6 +219,43 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool) (Out
 	default:
 		return g.finish(ctx, a, Dispatching, Failed, errorJSON(err.Error()), "")
 	}
+}
+
+func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.RateLimit) (string, error) {
+	now := g.Now()
+	tx, err := g.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	if limit.Per.Duration > 0 {
+		var used int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM actions
+			WHERE project_id = ? AND tool_name = ? AND id != ? AND dispatched_at > ?
+			  AND status IN ('dispatching', 'succeeded', 'needs_reconciliation')`,
+			a.ProjectID, a.ToolName, a.ID, now.Add(-limit.Per.Duration).UnixMilli()).Scan(&used); err != nil {
+			return "", err
+		}
+		if used >= limit.Max {
+			return fmt.Sprintf("rate limit reached: %d %s per %s", limit.Max, a.ToolName, limit.Per.Duration), nil
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE actions SET status = 'dispatching', dispatched_at = ?, updated_at = ?
+		WHERE id = ? AND status = ?`, now.UnixMilli(), now.UnixMilli(), a.ID, a.Status)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", ErrConflict
+	}
+	if err := audit.Record(ctx, tx, now, a.ProjectID, "gateway", "action.dispatching", a.ID, nil); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	a.Status = Dispatching
+	return "", nil
 }
 
 func (g *Gateway) recover(ctx context.Context, a *Action, tool tools.Tool) error {

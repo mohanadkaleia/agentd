@@ -119,7 +119,9 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return model.Response{}, fmt.Errorf("ollama: decode response: %w", err)
 	}
-	return toResponse(out), nil
+	result := toResponse(out)
+	result.Model = modelID
+	return result, nil
 }
 
 func toTools(defs []model.ToolDefinition) []tool {

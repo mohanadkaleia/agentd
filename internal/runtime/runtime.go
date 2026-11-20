@@ -120,16 +120,29 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 		if rn.Steps >= maxSteps {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", maxSteps)})
 		}
+		reason, err := r.overBudget(ctx, task.ProjectID)
+		if err != nil {
+			return r.fail(ctx, lease, task, err)
+		}
+		if reason != "" {
+			if err := r.Projects.SetStatus(ctx, task.ProjectID, "paused", reason, "budget"); err != nil {
+				return r.fail(ctx, lease, task, err)
+			}
+			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
+		}
 		resp, err := r.Model.Complete(ctx, model.Request{Messages: msgs, Tools: r.Tools.Definitions(task.Allows)})
 		if err != nil {
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
 		}
 		if resp.StopReason == model.StopRefusal || resp.StopReason == model.StopMaxTokens {
+			if err := r.recordUsage(ctx, r.DB, task, rn.ID, resp); err != nil {
+				return r.fail(ctx, lease, task, err)
+			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model stopped with %s", resp.StopReason))
 		}
 		resp.Message.Role = model.RoleAssistant
 		quarantineInvalidArguments(resp.Message.ToolCalls)
-		if err := r.appendModelMessage(ctx, &rn, len(msgs), resp.Message); err != nil {
+		if err := r.appendModelMessage(ctx, task, &rn, len(msgs), resp); err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
 	}

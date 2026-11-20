@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"agentd/internal/audit"
 	"agentd/internal/ids"
 	"agentd/internal/model"
 	"agentd/internal/tasks"
@@ -81,7 +82,8 @@ func (r *Runtime) appendMessage(ctx context.Context, runID string, seq int, m mo
 	return err
 }
 
-func (r *Runtime) appendModelMessage(ctx context.Context, rn *run, seq int, m model.Message) error {
+func (r *Runtime) appendModelMessage(ctx context.Context, t tasks.Task, rn *run, seq int, resp model.Response) error {
+	m := resp.Message
 	body, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -98,11 +100,25 @@ func (r *Runtime) appendModelMessage(ctx context.Context, rn *run, seq int, m mo
 	if _, err := tx.ExecContext(ctx, `UPDATE runs SET step_count = step_count + 1 WHERE id = ?`, rn.ID); err != nil {
 		return err
 	}
+	if err := r.recordUsage(ctx, tx, t, rn.ID, resp); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	rn.Steps++
 	return nil
+}
+
+func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, runID string, resp model.Response) error {
+	modelID := resp.Model
+	if modelID == "" {
+		modelID = r.ModelID
+	}
+	_, err := ex.ExecContext(ctx, `INSERT INTO model_usage (project_id, task_id, run_id, model, input_tokens, output_tokens, cost_micros, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, t.ProjectID, t.ID, runID, modelID,
+		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CostMicros, r.Now().UnixMilli())
+	return err
 }
 
 func (r *Runtime) finishRun(ctx context.Context, runID, status string, cause any) error {
@@ -132,4 +148,23 @@ func (r *Runtime) missingEvidence(ctx context.Context, t tasks.Task) ([]string, 
 		}
 	}
 	return missing, nil
+}
+
+func (r *Runtime) overBudget(ctx context.Context, projectID string) (string, error) {
+	p, err := r.Projects.Get(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	limit := p.Policy.Limits.MaxLLMSpendMicros()
+	if limit == 0 {
+		return "", nil
+	}
+	var spent int64
+	if err := r.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage WHERE project_id = ?`, projectID).Scan(&spent); err != nil {
+		return "", err
+	}
+	if spent < limit {
+		return "", nil
+	}
+	return fmt.Sprintf("LLM budget exhausted: spent $%.4f of $%.2f", float64(spent)/1e6, p.Policy.Limits.MaxLLMSpendUSD), nil
 }

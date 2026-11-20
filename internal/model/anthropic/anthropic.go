@@ -175,10 +175,12 @@ func toResponse(resp *sdk.BetaMessage) (model.Response, error) {
 		}
 	}
 	msg.Content = strings.Join(text, "\n")
+	in, out := resp.Usage.InputTokens, resp.Usage.OutputTokens
 	return model.Response{
+		Model:      string(resp.Model),
 		Message:    msg,
 		StopReason: stopReason(resp.StopReason, len(msg.ToolCalls) > 0),
-		Usage:      model.Usage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens},
+		Usage:      model.Usage{InputTokens: in, OutputTokens: out, CostMicros: CostMicros(string(resp.Model), in, out)},
 	}, nil
 }
 

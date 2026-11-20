@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agentd/internal/app"
 	"agentd/internal/model"
@@ -26,6 +27,9 @@ var Policy = policy.Policy{Tools: map[string]policy.Rule{
 	"delegate":          {Mode: policy.Allow},
 	"await_workers":     {Mode: policy.Allow},
 	"send_email":        {Mode: policy.Allow, Resources: []string{AirlineRefunds}, Otherwise: policy.RequireApproval},
+}, Limits: policy.Limits{
+	MaxLLMSpendUSD: 3,
+	ToolRates:      map[string]policy.RateLimit{"send_email": {Max: 5, Per: policy.Duration{Duration: 24 * time.Hour}}},
 }}
 
 func Seed(ctx context.Context, a *app.App) (projectID, taskID string, err error) {
