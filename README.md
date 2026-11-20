@@ -47,6 +47,30 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 | `internal/tools` | Tool interface + registry; `mock.go` holds the simulated web search and mailbox. |
 | `migrations/` | Embedded SQL migrations, applied on open. |
 
+## HTTP API
+
+```bash
+./bin/agentd serve -listen 127.0.0.1:7777     # token is created in ./api-token (0600) on first run
+curl -H "Authorization: Bearer $(cat api-token)" localhost:7777/api/assignments
+```
+
+Every request needs the bearer token. The default is loopback only; to reach it from your phone,
+bind to the Mac mini's Tailscale address (e.g. `-listen 100.x.y.z:7777`), never `0.0.0.0`.
+
+| Endpoint | |
+|---|---|
+| `GET/POST /api/assignments`, `GET /api/assignments/{id}` | list, create (same JSON as `agentd create`), overview |
+| `POST /api/assignments/{id}/{pause,resume,complete,cancel,revoke}`, `PUT /api/assignments/{id}/policy` | lifecycle, policy |
+| `GET /api/tasks?assignment=&status=`, `GET /api/tasks/{id}` | tasks, transcript |
+| `GET /api/approvals`, `POST /api/approvals/{id}/{approve,reject}` | approvals inbox |
+| `GET /api/notifications`, `POST /api/notifications/{id}/delivered` | notification outbox |
+| `POST /api/events` | event intake for webhooks and source adapters |
+| `GET /api/activity`, `GET /api/events/stream` | audit log, live SSE stream (resumes with `Last-Event-ID`) |
+| `GET /api/usage` | spend per assignment, current period and lifetime |
+| `GET /api/system`, `POST /api/system/emergency-stop`, `POST /api/system/resume` | emergency stop |
+
+`agentd halt [reason]` and `agentd unhalt` do the same from the terminal.
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the domain model (Projects, Responsibilities, tasks,

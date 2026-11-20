@@ -8,84 +8,19 @@ import (
 	"text/tabwriter"
 
 	"agentd/internal/app"
-	"agentd/internal/assignments"
 	"agentd/internal/overview"
-	"agentd/internal/policy"
-	"agentd/internal/scheduler"
 )
-
-type assignmentFile struct {
-	Kind          assignments.Kind                `json:"kind"`
-	Name          string                          `json:"name"`
-	Objective     string                          `json:"objective"`
-	Policy        policy.Policy                   `json:"policy"`
-	Completion    assignments.Completion          `json:"completion"`
-	Notifications *assignments.NotificationPolicy `json:"notifications"`
-	Routes        []routeFile                     `json:"routes"`
-	Schedules     []scheduleFile                  `json:"schedules"`
-}
-
-type routeFile struct {
-	Source        string            `json:"source"`
-	Kind          string            `json:"kind"`
-	Match         map[string]string `json:"match"`
-	CoalesceField string            `json:"coalesce_field"`
-	Skills        []string          `json:"skills"`
-	Title         string            `json:"title"`
-	Objective     string            `json:"objective"`
-}
-
-type scheduleFile struct {
-	Every     policy.Duration `json:"every"`
-	Skills    []string        `json:"skills"`
-	Title     string          `json:"title"`
-	Objective string          `json:"objective"`
-}
 
 func createFromFile(ctx context.Context, a *app.App, path string) (string, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	var f assignmentFile
-	if err := json.Unmarshal(body, &f); err != nil {
+	var spec app.Spec
+	if err := json.Unmarshal(body, &spec); err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
-	var id string
-	switch f.Kind {
-	case assignments.KindProject:
-		id, err = a.Assignments.CreateProject(ctx, assignments.NewProject{
-			Name: f.Name, Objective: f.Objective, Policy: f.Policy, Completion: f.Completion,
-		})
-	case assignments.KindResponsibility:
-		if f.Notifications == nil {
-			return "", fmt.Errorf("a responsibility needs a notifications policy")
-		}
-		id, err = a.Assignments.CreateResponsibility(ctx, assignments.NewResponsibility{
-			Name: f.Name, Objective: f.Objective, Policy: f.Policy, Notifications: *f.Notifications,
-		})
-	default:
-		return "", fmt.Errorf("kind must be %q or %q", assignments.KindProject, assignments.KindResponsibility)
-	}
-	if err != nil {
-		return "", err
-	}
-	for _, r := range f.Routes {
-		if _, err := a.Scheduler.AddRoute(ctx, scheduler.Route{
-			AssignmentID: id, Source: r.Source, Kind: r.Kind, Match: r.Match, CoalesceField: r.CoalesceField,
-			Skills: r.Skills, Title: r.Title, Objective: r.Objective,
-		}); err != nil {
-			return id, err
-		}
-	}
-	for _, s := range f.Schedules {
-		if _, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{
-			AssignmentID: id, Every: s.Every.Duration, Skills: s.Skills, Title: s.Title, Objective: s.Objective,
-		}); err != nil {
-			return id, err
-		}
-	}
-	return id, nil
+	return a.Create(ctx, spec)
 }
 
 func show(ctx context.Context, a *app.App, id string) error {

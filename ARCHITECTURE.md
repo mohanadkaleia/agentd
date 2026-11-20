@@ -172,6 +172,8 @@ Each layer removes work before the next, more expensive one:
 9. A rate-limited tool reserves its slot in the same transaction that marks the action dispatching.
 10. A responsibility always has a periodic budget and a notification policy, and can never complete; only a person can revoke it.
 11. Only adapters import provider SDKs, and only `cmd/` picks an adapter (`internal/archtest`).
+12. Emergency stop is a durable flag checked at every point of execution: no task is claimed, no model call starts, and no tool dispatches while it is set. Intake (events, schedules) keeps recording work for later. A model call already in flight finishes, but its tool calls do not run.
+13. The HTTP API refuses every request without the bearer token, including when no token is configured.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -190,6 +192,13 @@ To make it live, only edge pieces are needed, none of them in the runtime:
 - an **event source** that emits `market/price.moved` and `news/article.published` events;
 - a **portfolio read tool** (holdings, cost basis) behind the gateway;
 - a **notification delivery adapter** (phone push or email) that drains the outbox.
+
+## Control surface
+
+The HTTP API (`internal/api`) exposes assignments, tasks with transcripts, the approvals inbox, the
+notification outbox, event intake, the audit log as a live SSE stream, usage, and the emergency stop.
+It is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
+the same stores and gateway as the runtime. Provider-native model payloads never leave the process.
 
 ## Deliberately not built yet
 
@@ -212,6 +221,8 @@ To make it live, only edge pieces are needed, none of them in the runtime:
 | `internal/delegation` | `delegate` and `await_workers`: helper agents as child tasks. |
 | `internal/notify` | Notification outbox and the `notify` tool. |
 | `internal/skills` | Skill registry, loaded from `.md` files. |
+| `internal/api` | Authenticated HTTP API and SSE activity stream. |
+| `internal/system` | Emergency stop flag. |
 | `internal/overview` | State, spend, recent activity and next expected action for one assignment. |
 | `internal/model/*` | Provider-neutral model interface and adapters (Anthropic, Ollama, scripted). |
 | `internal/store`, `migrations/` | SQLite open, migrations (including safe table rebuilds). |

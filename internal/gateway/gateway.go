@@ -15,6 +15,7 @@ import (
 	"agentd/internal/ids"
 	"agentd/internal/model"
 	"agentd/internal/policy"
+	"agentd/internal/system"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
@@ -163,6 +164,9 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 	}
 	if p.Status != assignments.Active {
 		return Outcome{Kind: Paused}, nil
+	}
+	if s, err := system.Get(ctx, g.DB); err != nil || s.Halted {
+		return Outcome{Kind: Paused}, err
 	}
 	task, err := g.Tasks.Get(ctx, a.TaskID)
 	if err != nil {

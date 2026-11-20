@@ -306,7 +306,8 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 		    status = 'running', lease_owner = ?, lease_until = ?, version = version + 1, wake_pending = 0, updated_at = ?
 		WHERE id = (
 			SELECT t.id FROM tasks t JOIN assignments a ON a.id = t.assignment_id
-			WHERE a.status = 'active'
+						WHERE a.status = 'active'
+			  AND NOT EXISTS (SELECT 1 FROM system_state WHERE key = 'halted')
 			  AND ((t.status IN ('ready', 'retryable') AND (t.next_run_at IS NULL OR t.next_run_at <= ?))
 			       OR (t.status = 'running' AND t.lease_until < ?))
 			  AND NOT EXISTS (

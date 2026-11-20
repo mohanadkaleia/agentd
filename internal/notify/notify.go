@@ -106,6 +106,30 @@ func (o *Outbox) Notify(ctx context.Context, n Notification) (Result, error) {
 	return res, tx.Commit()
 }
 
+var ErrNotPending = errors.New("notification is not pending")
+
+func (o *Outbox) MarkDelivered(ctx context.Context, id string) error {
+	now := o.Now()
+	tx, err := o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var assignmentID string
+	err = tx.QueryRowContext(ctx, `UPDATE notifications SET status = 'delivered', delivered_at = ?
+		WHERE id = ? AND status = 'pending' RETURNING assignment_id`, now.UnixMilli(), id).Scan(&assignmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotPending
+	}
+	if err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, now, assignmentID, "user", "notification.delivered", id, nil); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (o *Outbox) Find(ctx context.Context, assignmentID, dedupKey string) (Result, bool, error) {
 	var r Result
 	err := o.DB.QueryRowContext(ctx, `SELECT id, status, COALESCE(suppressed_reason, '') FROM notifications

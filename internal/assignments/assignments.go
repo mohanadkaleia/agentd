@@ -38,6 +38,7 @@ var (
 	ErrWrongKind  = errors.New("operation does not apply to this kind of assignment")
 	ErrNotPaused  = errors.New("assignment is not paused")
 	ErrTerminated = errors.New("assignment is not in a state that allows this")
+	ErrInvalid    = errors.New("invalid assignment")
 )
 
 type Severity string
@@ -72,13 +73,13 @@ type NotificationPolicy struct {
 
 func (n NotificationPolicy) Validate() error {
 	if n.MinSeverity.Rank() == 0 {
-		return fmt.Errorf("notification min_severity must be info, attention or action")
+		return fmt.Errorf("%w: notification min_severity must be info, attention or action", ErrInvalid)
 	}
 	if n.DedupWindow.Duration <= 0 {
-		return fmt.Errorf("notification dedup_window must be positive")
+		return fmt.Errorf("%w: notification dedup_window must be positive", ErrInvalid)
 	}
 	if n.MaxPerDay <= 0 {
-		return fmt.Errorf("notification max_per_day must be positive")
+		return fmt.Errorf("%w: notification max_per_day must be positive", ErrInvalid)
 	}
 	return nil
 }
@@ -141,14 +142,14 @@ func (s *Store) CreateResponsibility(ctx context.Context, r NewResponsibility) (
 
 func validateResponsibilityPolicy(p policy.Policy) error {
 	if p.Limits.MaxLLMSpendUSD <= 0 || p.Limits.BudgetPeriod.Duration <= 0 {
-		return fmt.Errorf("a responsibility needs limits.max_llm_spend_usd and limits.budget_period")
+		return fmt.Errorf("%w: a responsibility needs limits.max_llm_spend_usd and limits.budget_period", ErrInvalid)
 	}
 	return nil
 }
 
 func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p policy.Policy, completion, notifications any) (string, error) {
 	if err := p.Validate(); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	body, err := json.Marshal(p)
 	if err != nil {
@@ -280,7 +281,7 @@ func (s *Store) SetPolicy(ctx context.Context, id string, p policy.Policy, actor
 		}
 	}
 	if err := p.Validate(); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	body, err := json.Marshal(p)
 	if err != nil {
@@ -305,7 +306,7 @@ func (s *Store) SetPolicy(ctx context.Context, id string, p policy.Policy, actor
 
 func (s *Store) SetState(ctx context.Context, id string, state json.RawMessage, actor string) error {
 	if !json.Valid(state) || len(state) == 0 || state[0] != '{' {
-		return fmt.Errorf("state must be a JSON object")
+		return fmt.Errorf("%w: state must be a JSON object", ErrInvalid)
 	}
 	now := s.Now()
 	tx, err := s.DB.BeginTx(ctx, nil)

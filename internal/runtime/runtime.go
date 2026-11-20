@@ -14,6 +14,7 @@ import (
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/skills"
+	"agentd/internal/system"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
@@ -124,6 +125,12 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 
 		if rn.Steps >= maxSteps {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", maxSteps)})
+		}
+		if s, err := system.Get(ctx, r.DB); err != nil || s.Halted {
+			if err != nil {
+				return r.fail(ctx, lease, task, err)
+			}
+			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 		}
 		reason, err := r.overBudget(ctx, task.AssignmentID)
 		if err != nil {

@@ -24,6 +24,7 @@ import (
 	"agentd/internal/scheduler"
 	"agentd/internal/skills"
 	"agentd/internal/store"
+	"agentd/internal/system"
 	"agentd/internal/tools"
 )
 
@@ -35,7 +36,9 @@ models:
   ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
 commands:
-  serve [-workers N] [-tool-delay D]   run the supervisor until interrupted
+    serve [-workers N] [-listen ADDR]    run the supervisor (and the HTTP API when -listen is set)
+  halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
+  unhalt                               lift the emergency stop
   demo                                 seed the airline-refund demo project
   create <assignment.json>             create a project or responsibility, with its routes and schedules
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
@@ -88,6 +91,8 @@ func run() error {
 
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
+	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
+	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
 	coalesce := cmd.String("coalesce", "", "route: payload field whose value groups events into one open task")
@@ -121,9 +126,23 @@ func run() error {
 		log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 		host, _ := os.Hostname()
 		log.Info("agentd serving", "db", *dbPath, "workers", *workers)
+		stopAPI, err := startAPI(ctx, a, *listen, *tokenFile, log)
+		if err != nil {
+			return err
+		}
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
+		stopAPI()
 		log.Info("agentd stopped")
 		return nil
+	case "halt":
+		reason := strings.Join(cmd.Args(), " ")
+		if err := system.Halt(ctx, db, time.Now(), "cli", reason); err != nil {
+			return err
+		}
+		fmt.Println("halted: no task will start, no tool will run, no model call will be made until `agentd unhalt`")
+		return nil
+	case "unhalt":
+		return system.Resume(ctx, db, time.Now(), "cli")
 	case "demo":
 		assignmentID, taskID, err := demo.Seed(ctx, a)
 		if err != nil {
