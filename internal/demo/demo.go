@@ -23,6 +23,8 @@ const (
 var Policy = policy.Policy{Tools: map[string]policy.Rule{
 	"web_search":        {Mode: policy.Allow},
 	"schedule_followup": {Mode: policy.Allow},
+	"delegate":          {Mode: policy.Allow},
+	"await_workers":     {Mode: policy.Allow},
 	"send_email":        {Mode: policy.Allow, Resources: []string{AirlineRefunds}, Otherwise: policy.RequireApproval},
 }}
 

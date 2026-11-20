@@ -15,6 +15,7 @@ import (
 	"agentd/internal/model"
 	"agentd/internal/policy"
 	"agentd/internal/projects"
+	"agentd/internal/tasks"
 	"agentd/internal/tools"
 )
 
@@ -35,6 +36,7 @@ type Kind int
 const (
 	Continue Kind = iota
 	WaitApproval
+	WaitEvent
 	Paused
 	Blocked
 )
@@ -70,6 +72,7 @@ type Gateway struct {
 	DB           *sql.DB
 	Tools        tools.Registry
 	Projects     *projects.Store
+	Tasks        *tasks.Store
 	Now          func() time.Time
 	ApprovalTTL  time.Duration
 	AfterExecute func(Action)
@@ -161,7 +164,14 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 	if p.Status != "active" {
 		return Outcome{Kind: Paused}, nil
 	}
+	task, err := g.Tasks.Get(ctx, a.TaskID)
+	if err != nil {
+		return Outcome{}, err
+	}
 	d := policy.Evaluate(p.Policy, a.ToolName, a.Resource)
+	if !task.Allows(a.ToolName) {
+		d = policy.Decision{Mode: policy.Deny, Reason: fmt.Sprintf("tool %q is not in this task's allowlist", a.ToolName)}
+	}
 	if err := audit.Record(ctx, g.DB, g.Now(), a.ProjectID, "policy", "policy.evaluated", a.ID, d); err != nil {
 		return Outcome{}, err
 	}
@@ -187,6 +197,12 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool) (Out
 	}
 	if err == nil {
 		return g.finish(ctx, a, Dispatching, Succeeded, res.Output, res.ExternalID)
+	}
+	if errors.Is(err, tools.ErrNotReady) {
+		if err := g.setStatus(ctx, a, Dispatching, Prepared); err != nil {
+			return Outcome{}, err
+		}
+		return Outcome{Kind: WaitEvent}, nil
 	}
 	if errors.Is(err, tools.ErrNotExecuted) || tool.Effect() == tools.EffectRead {
 		return g.finish(ctx, a, Dispatching, Failed, errorJSON(err.Error()), "")

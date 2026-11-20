@@ -40,6 +40,7 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 | `internal/runtime` | Agent loop. Checkpoints every model step and tool result; resumes the same run after a crash. |
 | `internal/gateway` | The only path to side effects: action ledger, policy check, approvals, dispatch, reconciliation. |
 | `internal/scheduler` | Event inbox (deduped by source + external id), deterministic routes that turn events into tasks, recurring schedules, and the `schedule_followup` tool. Every task it creates carries an origin key, so retries and restarts never double-create. |
+| `internal/delegation` | `delegate` and `await_workers`. Workers are durable child tasks with a tool allowlist that is a subset of their parent's; depth ≤ 2, ≤ 3 active workers per parent. A waiting parent holds no worker slot and is woken when a worker finishes. |
 | `internal/policy` | Fail-closed per-tool rules, scoped by resource. |
 | `internal/tools` | Tool interface + registry; `mock.go` holds the simulated web search and mailbox. |
 | `migrations/` | Embedded SQL migrations, applied on open. |
@@ -51,4 +52,5 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 3. An approval binds to the action's exact argument hash and expires.
 4. A crash mid-dispatch is reconciled with the provider before anything is retried; an unknowable outcome blocks the task.
 5. A task completes only when its success criteria have recorded evidence.
-6. Each event, schedule slot and follow-up creates at most one task, even across crashes.
+6. Each event, schedule slot, follow-up and delegation creates at most one task, even across crashes.
+7. A task's tool allowlist is enforced by the gateway, and a worker can never be granted a tool its parent lacks.

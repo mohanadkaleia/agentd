@@ -16,7 +16,10 @@ const (
 	EffectWrite Effect = "write"
 )
 
-var ErrNotExecuted = errors.New("tool call was not executed")
+var (
+	ErrNotExecuted = errors.New("tool call was not executed")
+	ErrNotReady    = errors.New("tool cannot complete yet")
+)
 
 type Invocation struct {
 	ActionID       string
@@ -56,10 +59,12 @@ func (r Registry) Lookup(name string) (Tool, bool) {
 	return t, ok
 }
 
-func (r Registry) Definitions() []model.ToolDefinition {
+func (r Registry) Definitions(allowed func(name string) bool) []model.ToolDefinition {
 	defs := make([]model.ToolDefinition, 0, len(r))
-	for _, t := range r {
-		defs = append(defs, t.Definition())
+	for name, t := range r {
+		if allowed(name) {
+			defs = append(defs, t.Definition())
+		}
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs

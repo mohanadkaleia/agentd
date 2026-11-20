@@ -219,3 +219,50 @@ func TestDependenciesGateClaims(t *testing.T) {
 		t.Fatal("dependent task not claimable after dependency completed")
 	}
 }
+
+func TestChildFinishingWhileParentRunsIsNotLost(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	parent := f.newTask(t, tasks.NewTask{Title: "parent", Priority: 1})
+	child := f.newTask(t, tasks.NewTask{Title: "child", ParentTaskID: parent, Depth: 1})
+
+	parentLease := f.claim(t, "p")
+	childLease := f.claim(t, "c")
+	if parentLease.TaskID != parent || childLease.TaskID != child {
+		t.Fatal("unexpected claim order")
+	}
+	if err := f.tasks.Release(ctx, *childLease, tasks.Release{Status: tasks.Completed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.tasks.Release(ctx, *parentLease, tasks.Release{Status: tasks.WaitingEvent}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.status(t, parent).Status; got != tasks.Ready {
+		t.Fatalf("parent = %s, want ready (the child's wakeup arrived before it started waiting)", got)
+	}
+}
+
+func TestChildFinishingWakesWaitingParent(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	parent := f.newTask(t, tasks.NewTask{Title: "parent", Priority: 1})
+	child := f.newTask(t, tasks.NewTask{Title: "child", ParentTaskID: parent, Depth: 1})
+
+	parentLease := f.claim(t, "p")
+	if err := f.tasks.Release(ctx, *parentLease, tasks.Release{Status: tasks.WaitingEvent}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.status(t, parent).Status; got != tasks.WaitingEvent {
+		t.Fatalf("parent = %s, want waiting_event", got)
+	}
+	childLease := f.claim(t, "c")
+	if childLease == nil || childLease.TaskID != child {
+		t.Fatal("child not claimable while parent waits")
+	}
+	if err := f.tasks.Release(ctx, *childLease, tasks.Release{Status: tasks.Blocked}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.status(t, parent).Status; got != tasks.Ready {
+		t.Fatalf("parent = %s, want ready after child finished", got)
+	}
+}

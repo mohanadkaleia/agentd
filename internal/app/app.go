@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"agentd/internal/delegation"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/projects"
@@ -30,9 +31,14 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	for name, tool := range registry {
 		all[name] = tool
 	}
-	followup := &scheduler.Followup{Tasks: t}
-	all[followup.Definition().Name] = followup
-	g := &gateway.Gateway{DB: db, Tools: all, Projects: p, Now: now, ApprovalTTL: 24 * time.Hour}
+	for _, tool := range []tools.Tool{
+		&scheduler.Followup{Tasks: t},
+		&delegation.Delegate{Tasks: t, Tools: all, Limits: delegation.DefaultLimits},
+		&delegation.Await{Tasks: t},
+	} {
+		all[tool.Definition().Name] = tool
+	}
+	g := &gateway.Gateway{DB: db, Tools: all, Projects: p, Tasks: t, Now: now, ApprovalTTL: 24 * time.Hour}
 	sch := &scheduler.Scheduler{DB: db, Tasks: t, Now: now}
 	return &App{
 		DB:        db,

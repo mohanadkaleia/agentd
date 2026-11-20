@@ -53,6 +53,13 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 	if err != nil {
 		return r.fail(ctx, lease, task, err)
 	}
+	if !task.DeadlineAt.IsZero() && !r.Now().Before(task.DeadlineAt) {
+		return r.block(ctx, lease, rn.ID, map[string]string{"error": "deadline passed"})
+	}
+	maxSteps := r.MaxSteps
+	if task.MaxSteps > 0 && task.MaxSteps < maxSteps {
+		maxSteps = task.MaxSteps
+	}
 	for {
 		if lease, err = r.Tasks.Renew(ctx, lease, r.LeaseTTL); err != nil {
 			return err
@@ -71,6 +78,8 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 				switch out.Kind {
 				case gateway.WaitApproval:
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.WaitingApproval})
+				case gateway.WaitEvent:
+					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.WaitingEvent})
 				case gateway.Paused:
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 				case gateway.Blocked:
@@ -108,10 +117,10 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 			continue
 		}
 
-		if rn.Steps >= r.MaxSteps {
-			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", r.MaxSteps)})
+		if rn.Steps >= maxSteps {
+			return r.block(ctx, lease, rn.ID, map[string]string{"error": fmt.Sprintf("step limit of %d reached", maxSteps)})
 		}
-		resp, err := r.Model.Complete(ctx, model.Request{Messages: msgs, Tools: r.Tools.Definitions()})
+		resp, err := r.Model.Complete(ctx, model.Request{Messages: msgs, Tools: r.Tools.Definitions(task.Allows)})
 		if err != nil {
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
 		}

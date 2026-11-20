@@ -14,11 +14,17 @@ import (
 const (
 	Ready           = "ready"
 	Running         = "running"
+	WaitingEvent    = "waiting_event"
 	WaitingApproval = "waiting_approval"
 	Retryable       = "retryable"
 	Blocked         = "blocked"
 	Completed       = "completed"
+	Cancelled       = "cancelled"
 )
+
+func Terminal(status string) bool {
+	return status == Completed || status == Blocked || status == Cancelled
+}
 
 var (
 	ErrLeaseLost = errors.New("task lease lost")
@@ -40,11 +46,16 @@ type NewTask struct {
 	Priority     int
 	MaxAttempts  int
 	DependsOn    []string
+	Depth        int
+	AllowedTools []string
+	MaxSteps     int
+	DeadlineAt   time.Time
 }
 
 type Task struct {
 	ID           string
 	ProjectID    string
+	ParentTaskID string
 	Title        string
 	Objective    string
 	Status       string
@@ -53,6 +64,23 @@ type Task struct {
 	MaxAttempts  int
 	Version      int64
 	LeaseOwner   string
+	Depth        int
+	AllowedTools []string
+	MaxSteps     int
+	DeadlineAt   time.Time
+	Result       json.RawMessage
+}
+
+func (t Task) Allows(tool string) bool {
+	if t.AllowedTools == nil {
+		return true
+	}
+	for _, name := range t.AllowedTools {
+		if name == tool {
+			return true
+		}
+	}
+	return false
 }
 
 type Lease struct {
@@ -95,18 +123,31 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, er
 	if t.MaxAttempts == 0 {
 		t.MaxAttempts = 3
 	}
-	var next any
+	var next, deadline, allowed, maxSteps any
 	if !t.NextRunAt.IsZero() {
 		next = t.NextRunAt.UnixMilli()
+	}
+	if !t.DeadlineAt.IsZero() {
+		deadline = t.DeadlineAt.UnixMilli()
+	}
+	if t.AllowedTools != nil {
+		body, err := json.Marshal(t.AllowedTools)
+		if err != nil {
+			return "", err
+		}
+		allowed = string(body)
+	}
+	if t.MaxSteps > 0 {
+		maxSteps = t.MaxSteps
 	}
 	id := ids.New("tsk")
 	now := s.Now()
 	res, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, parent_task_id, origin_key, title, objective, success_json,
-		status, priority, max_attempts, next_run_at, created_at, updated_at)
-		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+		status, priority, max_attempts, next_run_at, depth, allowed_tools_json, max_steps, deadline_at, created_at, updated_at)
+		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (origin_key) WHERE origin_key IS NOT NULL DO NOTHING`,
 		id, t.ProjectID, t.ParentTaskID, t.OriginKey, t.Title, t.Objective, string(success),
-		t.Priority, t.MaxAttempts, next, now.UnixMilli(), now.UnixMilli())
+		t.Priority, t.MaxAttempts, next, t.Depth, allowed, maxSteps, deadline, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return "", err
 	}
@@ -138,18 +179,71 @@ func (s *Store) FindByOrigin(ctx context.Context, originKey string) (string, boo
 func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	var t Task
 	var success string
-	var owner sql.NullString
-	err := s.DB.QueryRowContext(ctx, `SELECT id, project_id, title, objective, status, success_json, attempt_count, max_attempts, version, lease_owner
+	var owner, parent, allowed, result sql.NullString
+	var maxSteps, deadline sql.NullInt64
+	err := s.DB.QueryRowContext(ctx, `SELECT id, project_id, parent_task_id, title, objective, status, success_json,
+		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json
 		FROM tasks WHERE id = ?`, id).
-		Scan(&t.ID, &t.ProjectID, &t.Title, &t.Objective, &t.Status, &success, &t.AttemptCount, &t.MaxAttempts, &t.Version, &owner)
+		Scan(&t.ID, &t.ProjectID, &parent, &t.Title, &t.Objective, &t.Status, &success,
+			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
 	if err != nil {
 		return t, err
 	}
-	t.LeaseOwner = owner.String
+	t.LeaseOwner, t.ParentTaskID = owner.String, parent.String
+	t.MaxSteps = int(maxSteps.Int64)
+	if deadline.Valid {
+		t.DeadlineAt = time.UnixMilli(deadline.Int64)
+	}
+	if result.Valid {
+		t.Result = json.RawMessage(result.String)
+	}
+	if allowed.Valid {
+		if err := json.Unmarshal([]byte(allowed.String), &t.AllowedTools); err != nil {
+			return t, err
+		}
+		if t.AllowedTools == nil {
+			t.AllowedTools = []string{}
+		}
+	}
 	return t, json.Unmarshal([]byte(success), &t.Success)
+}
+
+func (s *Store) Children(ctx context.Context, parentID string) ([]Task, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	var idsList []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		idsList = append(idsList, id)
+	}
+	rows.Close()
+	out := make([]Task, 0, len(idsList))
+	for _, id := range idsList {
+		t, err := s.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func wakeParent(ctx context.Context, tx *sql.Tx, now time.Time, taskID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE tasks
+		SET wake_pending = 1,
+		    status = CASE WHEN status = 'waiting_event' THEN 'ready' ELSE status END,
+		    updated_at = ?
+		WHERE id = (SELECT parent_task_id FROM tasks WHERE id = ?)`, now.UnixMilli(), taskID)
+	return err
 }
 
 func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration) (*Lease, error) {
@@ -181,6 +275,9 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 	}
 	exhausted.Close()
 	for _, b := range blocked {
+		if err := wakeParent(ctx, tx, now, b[0]); err != nil {
+			return nil, err
+		}
 		if err := audit.Record(ctx, tx, now, b[1], "scheduler", "task.blocked", b[0], map[string]string{"reason": "lease expired too many times"}); err != nil {
 			return nil, err
 		}
@@ -190,7 +287,7 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 	var project string
 	err = tx.QueryRowContext(ctx, `UPDATE tasks
 		SET attempt_count = attempt_count + CASE WHEN status = 'running' THEN 1 ELSE 0 END,
-		    status = 'running', lease_owner = ?, lease_until = ?, version = version + 1, updated_at = ?
+		    status = 'running', lease_owner = ?, lease_until = ?, version = version + 1, wake_pending = 0, updated_at = ?
 		WHERE id = (
 			SELECT t.id FROM tasks t JOIN projects p ON p.id = t.project_id
 			WHERE p.status = 'active'
@@ -252,21 +349,27 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 		return err
 	}
 	defer tx.Rollback()
-	var project string
+	var project, status string
 	err = tx.QueryRowContext(ctx, `UPDATE tasks
-		SET status = ?, lease_owner = NULL, lease_until = NULL, version = version + 1,
+		SET status = CASE WHEN ? = 'waiting_event' AND wake_pending = 1 THEN 'ready' ELSE ? END,
+		    lease_owner = NULL, lease_until = NULL, version = version + 1,
 		    next_run_at = ?, result_json = COALESCE(?, result_json),
 		    attempt_count = attempt_count + ?, updated_at = ?
 		WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running'
-		RETURNING project_id`,
-		r.Status, next, result, failures, now.UnixMilli(), l.TaskID, l.Owner, l.Version).Scan(&project)
+		RETURNING project_id, status`,
+		r.Status, r.Status, next, result, failures, now.UnixMilli(), l.TaskID, l.Owner, l.Version).Scan(&project, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrLeaseLost
 	}
 	if err != nil {
 		return err
 	}
-	if err := audit.Record(ctx, tx, now, project, l.Owner, "task."+r.Status, l.TaskID, r.Result); err != nil {
+	if Terminal(status) {
+		if err := wakeParent(ctx, tx, now, l.TaskID); err != nil {
+			return err
+		}
+	}
+	if err := audit.Record(ctx, tx, now, project, l.Owner, "task."+status, l.TaskID, r.Result); err != nil {
 		return err
 	}
 	return tx.Commit()
