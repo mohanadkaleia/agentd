@@ -21,6 +21,7 @@ var ErrNotExecuted = errors.New("tool call was not executed")
 type Invocation struct {
 	ActionID       string
 	ProjectID      string
+	TaskID         string
 	RunID          string
 	IdempotencyKey string
 	Name           string

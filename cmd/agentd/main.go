@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
 	"agentd/internal/model/scripted"
+	"agentd/internal/scheduler"
 	"agentd/internal/store"
 	"agentd/internal/tools"
 )
@@ -37,6 +39,12 @@ commands:
   reject <approval-id>                 reject a pending action
   pause <project-id>                   stop new work on a project
   resume <project-id>                  resume a paused project
+  event -source S -kind K [-id X] [-payload JSON]
+                                       push an external event into the inbox
+  route -project P -source S -kind K -title T -objective O [-match JSON]
+                                       turn matching events into tasks
+  schedule -project P -every D -title T -objective O
+                                       create a recurring task
 `
 
 func main() {
@@ -72,6 +80,15 @@ func run() error {
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside send_email after sending, to test crash recovery")
+	project := cmd.String("project", "", "project id")
+	source := cmd.String("source", "", "event source, e.g. gmail")
+	kind := cmd.String("kind", "", "event kind, e.g. email.received")
+	externalID := cmd.String("id", "", "external id used to drop duplicate events")
+	payload := cmd.String("payload", "{}", "event payload JSON")
+	match := cmd.String("match", "{}", "route filter: JSON object of payload field values")
+	title := cmd.String("title", "", "task title")
+	objective := cmd.String("objective", "", "task objective")
+	every := cmd.Duration("every", 0, "schedule interval, e.g. 24h")
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -114,6 +131,31 @@ func run() error {
 		}
 		status := map[string]string{"pause": "paused", "resume": "active"}[args[0]]
 		return a.Projects.SetStatus(ctx, cmd.Arg(0), status)
+	case "event":
+		id, dup, err := a.Scheduler.Ingest(ctx, scheduler.Event{Source: *source, Kind: *kind, ExternalID: *externalID, Payload: json.RawMessage(*payload)})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("event %s duplicate=%v\n", id, dup)
+		return nil
+	case "route":
+		var filter map[string]string
+		if err := json.Unmarshal([]byte(*match), &filter); err != nil {
+			return fmt.Errorf("-match: %w", err)
+		}
+		id, err := a.Scheduler.AddRoute(ctx, scheduler.Route{ProjectID: *project, Source: *source, Kind: *kind, Match: filter, Title: *title, Objective: *objective})
+		if err != nil {
+			return err
+		}
+		fmt.Println("route", id)
+		return nil
+	case "schedule":
+		id, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{ProjectID: *project, Title: *title, Objective: *objective, Every: *every})
+		if err != nil {
+			return err
+		}
+		fmt.Println("schedule", id)
+		return nil
 	default:
 		global.Usage()
 		return fmt.Errorf("unknown command %q", args[0])
@@ -128,7 +170,10 @@ func status(ctx context.Context, a *app.App) error {
 		query string
 	}{
 		{"PROJECTS", `SELECT id, name, status FROM projects ORDER BY created_at`},
-		{"TASKS", `SELECT id, title, status, attempt_count, COALESCE(result_json, '') FROM tasks ORDER BY created_at`},
+		{"TASKS", `SELECT id, title, status, attempt_count,
+			COALESCE(datetime(next_run_at / 1000, 'unixepoch', 'localtime'), '-'), COALESCE(result_json, '') FROM tasks ORDER BY created_at`},
+		{"EVENTS", `SELECT id, source, kind, COALESCE(external_id, ''), CASE WHEN processed_at IS NULL THEN 'pending' ELSE 'routed:' || routed_count END FROM events ORDER BY received_at`},
+		{"SCHEDULES", `SELECT id, title, interval_ms / 1000 || 's', datetime(next_fire_at / 1000, 'unixepoch', 'localtime') FROM schedules ORDER BY created_at`},
 		{"ACTIONS", `SELECT id, tool_name, resource, status FROM actions ORDER BY created_at`},
 		{"APPROVALS", `SELECT ap.id, a.tool_name, a.resource, ap.status FROM approvals ap JOIN actions a ON a.id = ap.action_id ORDER BY ap.requested_at`},
 		{"MOCK MAILBOX", `SELECT recipient, subject, message_id FROM mock_mailbox ORDER BY sent_at`},

@@ -13,6 +13,13 @@ go build -o bin/agentd ./cmd/agentd
 ./bin/agentd approve <approval-id>
 ```
 
+Feed it events and schedules:
+
+```bash
+./bin/agentd event -source gmail -kind email.received -id gm-001 -payload '{"thread_id":"thread-xy123"}'
+./bin/agentd schedule -project <id> -every 24h -title "Check inbox" -objective "Look for airline replies."
+```
+
 Pick a model with `-model` (or `AGENTD_MODEL`):
 
 ```bash
@@ -32,6 +39,7 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 | `internal/tasks` | Durable task queue: atomic claim, lease renew, versioned transitions. |
 | `internal/runtime` | Agent loop. Checkpoints every model step and tool result; resumes the same run after a crash. |
 | `internal/gateway` | The only path to side effects: action ledger, policy check, approvals, dispatch, reconciliation. |
+| `internal/scheduler` | Event inbox (deduped by source + external id), deterministic routes that turn events into tasks, recurring schedules, and the `schedule_followup` tool. Every task it creates carries an origin key, so retries and restarts never double-create. |
 | `internal/policy` | Fail-closed per-tool rules, scoped by resource. |
 | `internal/tools` | Tool interface + registry; `mock.go` holds the simulated web search and mailbox. |
 | `migrations/` | Embedded SQL migrations, applied on open. |
@@ -43,3 +51,4 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 3. An approval binds to the action's exact argument hash and expires.
 4. A crash mid-dispatch is reconciled with the provider before anything is retried; an unknowable outcome blocks the task.
 5. A task completes only when its success criteria have recorded evidence.
+6. Each event, schedule slot and follow-up creates at most one task, even across crashes.

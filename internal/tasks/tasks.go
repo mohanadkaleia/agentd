@@ -30,13 +30,16 @@ type Success struct {
 }
 
 type NewTask struct {
-	ProjectID   string
-	Title       string
-	Objective   string
-	Success     Success
-	Priority    int
-	MaxAttempts int
-	DependsOn   []string
+	ProjectID    string
+	ParentTaskID string
+	OriginKey    string
+	NextRunAt    time.Time
+	Title        string
+	Objective    string
+	Success      Success
+	Priority     int
+	MaxAttempts  int
+	DependsOn    []string
 }
 
 type Task struct {
@@ -72,6 +75,19 @@ type Store struct {
 }
 
 func (s *Store) Create(ctx context.Context, t NewTask) (string, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := s.CreateTx(ctx, tx, t)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, error) {
 	success, err := json.Marshal(t.Success)
 	if err != nil {
 		return "", err
@@ -79,27 +95,44 @@ func (s *Store) Create(ctx context.Context, t NewTask) (string, error) {
 	if t.MaxAttempts == 0 {
 		t.MaxAttempts = 3
 	}
+	var next any
+	if !t.NextRunAt.IsZero() {
+		next = t.NextRunAt.UnixMilli()
+	}
 	id := ids.New("tsk")
 	now := s.Now()
-	tx, err := s.DB.BeginTx(ctx, nil)
+	res, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, parent_task_id, origin_key, title, objective, success_json,
+		status, priority, max_attempts, next_run_at, created_at, updated_at)
+		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, 'ready', ?, ?, ?, ?, ?)
+		ON CONFLICT (origin_key) WHERE origin_key IS NOT NULL DO NOTHING`,
+		id, t.ProjectID, t.ParentTaskID, t.OriginKey, t.Title, t.Objective, string(success),
+		t.Priority, t.MaxAttempts, next, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, title, objective, success_json, status, priority, max_attempts, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?)`,
-		id, t.ProjectID, t.Title, t.Objective, string(success), t.Priority, t.MaxAttempts, now.UnixMilli(), now.UnixMilli()); err != nil {
-		return "", err
+	if n, _ := res.RowsAffected(); n == 0 {
+		err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE origin_key = ?`, t.OriginKey).Scan(&id)
+		return id, err
 	}
 	for _, dep := range t.DependsOn {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)`, id, dep); err != nil {
 			return "", err
 		}
 	}
-	if err := audit.Record(ctx, tx, now, t.ProjectID, "user", "task.created", id, map[string]string{"title": t.Title}); err != nil {
+	if err := audit.Record(ctx, tx, now, t.ProjectID, "scheduler", "task.created", id,
+		map[string]string{"title": t.Title, "origin": t.OriginKey}); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	return id, nil
+}
+
+func (s *Store) FindByOrigin(ctx context.Context, originKey string) (string, bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM tasks WHERE origin_key = ?`, originKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return id, err == nil, err
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Task, error) {

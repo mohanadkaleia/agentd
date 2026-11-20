@@ -287,6 +287,7 @@ func (g *Gateway) invocation(a Action) tools.Invocation {
 	return tools.Invocation{
 		ActionID:       a.ID,
 		ProjectID:      a.ProjectID,
+		TaskID:         a.TaskID,
 		RunID:          a.RunID,
 		IdempotencyKey: a.IdempotencyKey,
 		Name:           a.ToolName,

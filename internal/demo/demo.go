@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agentd/internal/app"
 	"agentd/internal/model"
 	"agentd/internal/policy"
+	"agentd/internal/scheduler"
 	"agentd/internal/tasks"
 )
+
+const AirlineThread = "thread-xy123"
 
 const (
 	AirlineRefunds = "refunds@airline.example"
@@ -17,8 +21,9 @@ const (
 )
 
 var Policy = policy.Policy{Tools: map[string]policy.Rule{
-	"web_search": {Mode: policy.Allow},
-	"send_email": {Mode: policy.Allow, Resources: []string{AirlineRefunds}, Otherwise: policy.RequireApproval},
+	"web_search":        {Mode: policy.Allow},
+	"schedule_followup": {Mode: policy.Allow},
+	"send_email":        {Mode: policy.Allow, Resources: []string{AirlineRefunds}, Otherwise: policy.RequireApproval},
 }}
 
 func Seed(ctx context.Context, a *app.App) (projectID, taskID string, err error) {
@@ -32,10 +37,24 @@ func Seed(ctx context.Context, a *app.App) (projectID, taskID string, err error)
 		Objective: "Research the airline refund policy, email the refunds desk, and escalate a formal claim.",
 		Success:   tasks.Success{RequireSucceededTools: []string{"send_email"}},
 	})
+	if err != nil {
+		return "", "", err
+	}
+	_, err = a.Scheduler.AddRoute(ctx, scheduler.Route{
+		ProjectID: projectID,
+		Source:    "gmail",
+		Kind:      "email.received",
+		Match:     map[string]string{"thread_id": AirlineThread},
+		Title:     "Handle airline reply",
+		Objective: "The airline replied on the refund thread. Read the reply and decide the next step.",
+	})
 	return projectID, taskID, err
 }
 
 func Script(req model.Request) model.Message {
+	if objective := firstUserMessage(req.Messages); !strings.HasPrefix(objective, "Research the airline refund policy") {
+		return model.Message{Content: "Acknowledged: " + firstLine(objective)}
+	}
 	done := 0
 	for _, m := range req.Messages {
 		if m.Role == model.RoleTool {
@@ -59,7 +78,24 @@ func Script(req model.Request) model.Message {
 			"to": AirlineClaims, "subject": "Formal claim: flight XY123",
 			"body": "I am filing a formal claim for the cancelled flight XY123.",
 		})
+	case 3:
+		return model.Message{ToolCalls: []model.ToolCall{{ID: "call_4", Name: "schedule_followup",
+			Arguments: json.RawMessage(`{"after_hours":72,"reason":"No reply yet from the airline refunds desk"}`)}}}
 	default:
 		return model.Message{Content: "Refund requested and formal claim handled."}
 	}
+}
+
+func firstUserMessage(msgs []model.Message) string {
+	for _, m := range msgs {
+		if m.Role == model.RoleUser {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }

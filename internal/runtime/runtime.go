@@ -31,6 +31,7 @@ type Runtime struct {
 	BaseBackoff time.Duration
 
 	MaxRejectedCompletions int
+	Housekeeping           func(context.Context) error
 }
 
 const rejectedCompletionPrefix = "Completion rejected:"
@@ -196,15 +197,26 @@ func (r *Runtime) fail(ctx context.Context, lease tasks.Lease, task tasks.Task, 
 }
 
 func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll time.Duration, log *slog.Logger) {
-	done := make(chan struct{}, workers)
+	done := make(chan struct{}, workers+1)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for ctx.Err() == nil {
+			if r.Housekeeping != nil {
+				if err := r.Housekeeping(ctx); err != nil && ctx.Err() == nil {
+					log.Error("housekeeping", "err", err)
+				}
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(poll):
+			}
+		}
+	}()
 	for i := range workers {
 		id := fmt.Sprintf("%s-w%d", owner, i)
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for ctx.Err() == nil {
-				if _, err := r.Gateway.ExpireApprovals(ctx); err != nil && ctx.Err() == nil {
-					log.Error("expire approvals", "err", err)
-				}
 				worked, err := r.RunOnce(ctx, id)
 				if err != nil && ctx.Err() == nil {
 					log.Error("task attempt failed", "worker", id, "err", err)
@@ -218,7 +230,7 @@ func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll tim
 			}
 		}()
 	}
-	for range workers {
+	for range workers + 1 {
 		<-done
 	}
 }
