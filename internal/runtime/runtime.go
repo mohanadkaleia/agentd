@@ -148,29 +148,36 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 			}
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 		}
-		reason, err := r.overBudget(ctx, task.AssignmentID)
+		req := model.Request{Messages: msgs, Tools: r.Tools.Definitions(task.Allows)}
+		res, err := r.reserve(ctx, task, rn.ID, req)
 		if err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
-		if reason != "" {
-			if err := r.Assignments.Pause(ctx, task.AssignmentID, assignments.PausedByBudget, reason, "budget"); err != nil && !errors.Is(err, assignments.ErrTerminated) {
+		if res.exhausted != "" {
+			if err := r.Assignments.Pause(ctx, task.AssignmentID, assignments.PausedByBudget, res.exhausted, "budget"); err != nil && !errors.Is(err, assignments.ErrTerminated) {
 				return r.fail(ctx, lease, task, err)
 			}
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 		}
-		resp, err := r.Model.Complete(ctx, model.Request{Messages: msgs, Tools: r.Tools.Definitions(task.Allows)})
+		if res.wait {
+			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready, NextRunAt: r.Now().Add(r.BaseBackoff)})
+		}
+		resp, err := r.Model.Complete(ctx, req)
 		if err != nil {
+			if merr := r.markReservation(context.WithoutCancel(ctx), r.DB, res.id, "unknown"); merr != nil {
+				err = errors.Join(err, merr)
+			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
 		}
 		if resp.StopReason == model.StopRefusal || resp.StopReason == model.StopMaxTokens {
-			if err := r.recordUsage(ctx, r.DB, task, rn.ID, resp); err != nil {
+			if err := r.recordUsage(ctx, r.DB, task, rn.ID, res.id, resp); err != nil {
 				return r.fail(ctx, lease, task, err)
 			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model stopped with %s", resp.StopReason))
 		}
 		resp.Message.Role = model.RoleAssistant
 		quarantineInvalidArguments(resp.Message.ToolCalls)
-		if err := r.appendModelMessage(ctx, lease, task, &rn, len(msgs), resp); err != nil {
+		if err := r.appendModelMessage(ctx, lease, task, &rn, len(msgs), res.id, resp); err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
 	}

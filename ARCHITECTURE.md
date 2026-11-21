@@ -157,7 +157,7 @@ Each layer removes work before the next, more expensive one:
 | Runtime | Checkpointed runs; restarts resume, never replay | Re-asking the model for steps already taken. |
 | Gateway | Action ledger + reconcile before retry | Repeating a side effect whose outcome is unknown. |
 | Outbox | Dedup key within a window, severity floor, daily cap | Alerting the user twice about the same issue, or too often. |
-| Budget | Per-period cap checked before each call | Runaway spend; the responsibility pauses and resumes itself next period. |
+| Budget | Worst-case cost reserved atomically before each call, settled with the real cost after | Runaway spend, including several workers each passing the check at once; the responsibility pauses and resumes itself next period. |
 
 ## Invariants
 
@@ -231,7 +231,13 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 - **Unconfirmed Gmail sends wait.** A send Gmail never shows in Sent (a lost message, or a lag
   that never ends) stays blocked until a person resolves it. Safer than a duplicate, but it needs
   attention: `agentd status` lists it.
-- **Budget reservations.** Concurrent workers can overshoot a spend cap by one in-flight call each.
+- **Budget overshoot is one call.** Before each model call the runtime reserves the provider's
+  worst-case cost (prompt bytes / 2 as input tokens, plus the full max-tokens output). While another
+  call's reservation is open, a call that would not fit waits. When nothing is in flight, one call
+  may start as long as spend is under the cap, so the cap can be exceeded by at most that one call.
+  A call that errors keeps its reservation (status `unknown`) until the budget window rolls past
+  it, because the provider may have billed it. A server-side fallback to a pricier model is not in
+  the estimate. Ollama reports no cost and reserves nothing.
 - **In-flight model calls.** An emergency stop does not cancel a model request already in progress;
   its tool calls will not run.
 

@@ -59,6 +59,22 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 	return toResponse(resp)
 }
 
+func (p *Provider) MaxCostMicros(req model.Request) int64 {
+	modelID := req.Model
+	if modelID == "" {
+		modelID = p.cfg.Model
+	}
+	maxTokens := p.cfg.MaxTokens
+	if req.MaxTokens > 0 {
+		maxTokens = int64(req.MaxTokens)
+	}
+	body, _ := json.Marshal(struct {
+		Messages []model.Message
+		Tools    []model.ToolDefinition
+	}{req.Messages, req.Tools})
+	return CostMicros(modelID, int64(len(body))/2+1, maxTokens)
+}
+
 func (p *Provider) params(req model.Request) (sdk.BetaMessageNewParams, error) {
 	modelID := req.Model
 	if modelID == "" {

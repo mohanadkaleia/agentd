@@ -14,15 +14,16 @@ import (
 )
 
 type Overview struct {
-	Assignment  assignments.Assignment
-	SpentMicros int64
-	LimitMicros int64
-	OpenTasks   []Task
-	Recent      []Activity
-	Next        Expected
-	Undelivered int
-	Blocked     int
-	PendingAsk  int
+	Assignment     assignments.Assignment
+	SpentMicros    int64
+	ReservedMicros int64
+	LimitMicros    int64
+	OpenTasks      []Task
+	Recent         []Activity
+	Next           Expected
+	Undelivered    int
+	Blocked        int
+	PendingAsk     int
 }
 
 type Task struct {
@@ -60,9 +61,11 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 		return o, err
 	}
 	o.Assignment = a
-	if o.SpentMicros, o.LimitMicros, err = rt.Spend(ctx, a); err != nil {
+	b, err := rt.Budget(ctx, a)
+	if err != nil {
 		return o, err
 	}
+	o.SpentMicros, o.ReservedMicros, o.LimitMicros = b.SpentMicros, b.ReservedMicros, b.LimitMicros
 	if o.OpenTasks, err = openTasks(ctx, rt.DB, id); err != nil {
 		return o, err
 	}

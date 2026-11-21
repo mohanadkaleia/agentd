@@ -41,7 +41,11 @@ func show(ctx context.Context, a *app.App, id string) error {
 			limit += " per " + p.String()
 		}
 	}
-	fmt.Fprintf(w, "spend\t$%.4f of %s\n", float64(o.SpentMicros)/1e6, limit)
+	spend := fmt.Sprintf("$%.4f of %s", float64(o.SpentMicros)/1e6, limit)
+	if o.ReservedMicros > 0 {
+		spend += fmt.Sprintf(" (+$%.4f held for in-flight calls)", float64(o.ReservedMicros)/1e6)
+	}
+	fmt.Fprintf(w, "spend\t%s\n", spend)
 	fmt.Fprintf(w, "state\t%s\n", overview.StateSummary(as.State))
 	fmt.Fprintf(w, "next\t%s\n", o.Next)
 	fmt.Fprintf(w, "waiting\t%d approvals, %d undelivered notifications\n", o.PendingAsk, o.Undelivered)

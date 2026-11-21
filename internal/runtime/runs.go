@@ -113,7 +113,7 @@ func (r *Runtime) appendMessage(ctx context.Context, runID string, seq int, m mo
 	return err
 }
 
-func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t tasks.Task, rn *run, seq int, resp model.Response) error {
+func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t tasks.Task, rn *run, seq int, reservationID int64, resp model.Response) error {
 	m := resp.Message
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -124,7 +124,7 @@ func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t t
 		return err
 	}
 	defer tx.Rollback()
-	if err := r.recordUsage(ctx, tx, t, rn.ID, resp); err != nil {
+	if err := r.recordUsage(ctx, tx, t, rn.ID, reservationID, resp); err != nil {
 		return err
 	}
 	if err := tasks.HoldsLease(ctx, tx, lease, r.Now()); err != nil {
@@ -161,7 +161,10 @@ func (r *Runtime) unseenEvents(ctx context.Context, t tasks.Task) (int, error) {
 	return scheduler.UnseenEvents(ctx, r.DB, t.ID)
 }
 
-func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, runID string, resp model.Response) error {
+func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, runID string, reservationID int64, resp model.Response) error {
+	if err := r.markReservation(ctx, ex, reservationID, "settled"); err != nil {
+		return err
+	}
 	modelID := resp.Model
 	if modelID == "" {
 		modelID = r.ModelID
@@ -201,30 +204,111 @@ func systemPrompt(a assignments.Assignment) string {
 		"Use the available tools to complete the task. %s", a.Name, a.Objective, common)
 }
 
+type Budget struct {
+	SpentMicros    int64
+	ReservedMicros int64
+	LimitMicros    int64
+}
+
+func (b Budget) exhausted() bool {
+	return b.LimitMicros > 0 && b.SpentMicros+b.ReservedMicros >= b.LimitMicros
+}
+
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func (r *Runtime) Budget(ctx context.Context, a assignments.Assignment) (Budget, error) {
+	return r.budgetOn(ctx, r.DB, a)
+}
+
+func (r *Runtime) budgetOn(ctx context.Context, q queryer, a assignments.Assignment) (Budget, error) {
+	b := Budget{LimitMicros: a.Policy.Limits.MaxLLMSpendMicros()}
+	since := int64(0)
+	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
+		since = r.Now().Add(-p).UnixMilli()
+	}
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage
+		WHERE assignment_id = ? AND created_at > ?`, a.ID, since).Scan(&b.SpentMicros); err != nil {
+		return b, err
+	}
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(SUM(estimate_micros), 0) FROM model_reservations
+		WHERE assignment_id = ? AND status != 'settled' AND created_at > ?`, a.ID, since).Scan(&b.ReservedMicros)
+	return b, err
+}
+
+func exhaustedReason(a assignments.Assignment, b Budget) string {
+	period := "in total"
+	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
+		period = "per " + p.String()
+	}
+	reason := fmt.Sprintf("LLM budget exhausted: spent $%.4f of $%.2f %s", float64(b.SpentMicros)/1e6, a.Policy.Limits.MaxLLMSpendUSD, period)
+	if b.ReservedMicros > 0 {
+		reason += fmt.Sprintf(", with $%.4f held for calls whose cost is not yet known", float64(b.ReservedMicros)/1e6)
+	}
+	return reason
+}
+
+type reservation struct {
+	id        int64
+	exhausted string
+	wait      bool
+}
+
+func (r *Runtime) reserve(ctx context.Context, t tasks.Task, runID string, req model.Request) (reservation, error) {
+	a, err := r.Assignments.Get(ctx, t.AssignmentID)
+	if err != nil {
+		return reservation{}, err
+	}
+	if a.Policy.Limits.MaxLLMSpendMicros() <= 0 {
+		return reservation{}, nil
+	}
+	var estimate int64
+	if e, ok := r.Model.(model.CostEstimator); ok {
+		estimate = max(e.MaxCostMicros(req), 0)
+	}
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return reservation{}, err
+	}
+	defer tx.Rollback()
+	b, err := r.budgetOn(ctx, tx, a)
+	if err != nil {
+		return reservation{}, err
+	}
+	if b.exhausted() {
+		return reservation{exhausted: exhaustedReason(a, b)}, nil
+	}
+	if b.ReservedMicros > 0 && b.SpentMicros+b.ReservedMicros+estimate > b.LimitMicros {
+		return reservation{wait: true}, nil
+	}
+	var res reservation
+	if err := tx.QueryRowContext(ctx, `INSERT INTO model_reservations (assignment_id, task_id, run_id, estimate_micros, status, created_at)
+		VALUES (?, ?, ?, ?, 'reserved', ?) RETURNING id`, t.AssignmentID, t.ID, runID, estimate, r.Now().UnixMilli()).Scan(&res.id); err != nil {
+		return reservation{}, err
+	}
+	return res, tx.Commit()
+}
+
+func (r *Runtime) markReservation(ctx context.Context, ex audit.Execer, id int64, status string) error {
+	if id == 0 {
+		return nil
+	}
+	_, err := ex.ExecContext(ctx, `UPDATE model_reservations SET status = ?, settled_at = ? WHERE id = ? AND status = 'reserved'`,
+		status, r.Now().UnixMilli(), id)
+	return err
+}
+
 func (r *Runtime) overBudget(ctx context.Context, assignmentID string) (string, error) {
 	a, err := r.Assignments.Get(ctx, assignmentID)
 	if err != nil {
 		return "", err
 	}
-	spent, limit, err := r.Spend(ctx, a)
-	if err != nil || limit == 0 || spent < limit {
+	b, err := r.Budget(ctx, a)
+	if err != nil || !b.exhausted() {
 		return "", err
 	}
-	period := "in total"
-	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
-		period = "per " + p.String()
-	}
-	return fmt.Sprintf("LLM budget exhausted: spent $%.4f of $%.2f %s", float64(spent)/1e6, a.Policy.Limits.MaxLLMSpendUSD, period), nil
-}
-
-func (r *Runtime) Spend(ctx context.Context, a assignments.Assignment) (spent, limit int64, err error) {
-	since := int64(0)
-	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
-		since = r.Now().Add(-p).UnixMilli()
-	}
-	err = r.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage
-		WHERE assignment_id = ? AND created_at > ?`, a.ID, since).Scan(&spent)
-	return spent, a.Policy.Limits.MaxLLMSpendMicros(), err
+	return exhaustedReason(a, b), nil
 }
 
 func (r *Runtime) ResumeWithinBudget(ctx context.Context) error {

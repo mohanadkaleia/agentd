@@ -198,6 +198,7 @@ type assignmentDetail struct {
 	Notifications *assignments.NotificationPolicy `json:"notifications,omitempty"`
 	State         json.RawMessage                 `json:"state"`
 	SpentUSD      float64                         `json:"spent_usd"`
+	ReservedUSD   float64                         `json:"reserved_usd,omitempty"`
 	BudgetUSD     float64                         `json:"budget_usd,omitempty"`
 	BudgetPeriod  string                          `json:"budget_period,omitempty"`
 	Next          expected                        `json:"next"`
@@ -236,7 +237,7 @@ func (s *Server) getAssignment(w http.ResponseWriter, r *http.Request) error {
 		assignmentSummary: assignmentSummary{ID: a.ID, Kind: a.Kind, Name: a.Name, Status: a.Status, StatusReason: a.StatusReason},
 		Objective:         a.Objective, Policy: a.Policy, PolicyVersion: a.PolicyVersion,
 		Completion: a.Completion, Notifications: a.Notifications, State: a.State,
-		SpentUSD: float64(o.SpentMicros) / 1e6, BudgetUSD: float64(o.LimitMicros) / 1e6,
+		SpentUSD: float64(o.SpentMicros) / 1e6, ReservedUSD: float64(o.ReservedMicros) / 1e6, BudgetUSD: float64(o.LimitMicros) / 1e6,
 		Next:      expected{At: timePtr(o.Next.At), What: o.Next.What},
 		OpenTasks: []openTask{}, Recent: []activityRow{},
 		Approvals: o.PendingAsk, Undelivered: o.Undelivered,
@@ -677,6 +678,7 @@ type usageRow struct {
 	AssignmentID string  `json:"assignment_id"`
 	Name         string  `json:"name"`
 	SpentUSD     float64 `json:"spent_usd"`
+	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
 	BudgetUSD    float64 `json:"budget_usd,omitempty"`
 	BudgetPeriod string  `json:"budget_period,omitempty"`
 	LifetimeUSD  float64 `json:"lifetime_usd"`
@@ -711,11 +713,12 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		spent, limit, err := s.App.Runtime.Spend(ctx, a)
+		b, err := s.App.Runtime.Budget(ctx, a)
 		if err != nil {
 			return err
 		}
-		u := usageRow{AssignmentID: a.ID, Name: a.Name, SpentUSD: float64(spent) / 1e6, BudgetUSD: float64(limit) / 1e6,
+		u := usageRow{AssignmentID: a.ID, Name: a.Name, SpentUSD: float64(b.SpentMicros) / 1e6, ReservedUSD: float64(b.ReservedMicros) / 1e6,
+			BudgetUSD:   float64(b.LimitMicros) / 1e6,
 			LifetimeUSD: float64(t.micro) / 1e6, ModelCalls: t.calls}
 		if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
 			u.BudgetPeriod = p.String()

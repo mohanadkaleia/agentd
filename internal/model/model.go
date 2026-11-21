@@ -71,3 +71,7 @@ type Response struct {
 type Provider interface {
 	Complete(ctx context.Context, req Request) (Response, error)
 }
+
+type CostEstimator interface {
+	MaxCostMicros(req Request) int64
+}

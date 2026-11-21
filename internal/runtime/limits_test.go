@@ -3,8 +3,10 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,5 +179,96 @@ func TestPeriodicBudgetPausesThenAutoResumes(t *testing.T) {
 	h.app.Runtime.ResumeWithinBudget(ctx)
 	if a, _ := h.app.Assignments.Get(ctx, h.assignmentID); a.Status != "paused" {
 		t.Fatal("budget housekeeping resumed an assignment the user paused")
+	}
+}
+
+type estimated struct {
+	estimate int64
+	cost     int64
+	entered  chan struct{}
+	release  chan struct{}
+	fail     bool
+	calls    atomic.Int32
+}
+
+func (e *estimated) MaxCostMicros(model.Request) int64 { return e.estimate }
+
+func (e *estimated) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	if e.calls.Add(1) == 1 && e.entered != nil {
+		e.entered <- struct{}{}
+		<-e.release
+	}
+	if e.fail {
+		return model.Response{}, errors.New("connection reset after the request was sent")
+	}
+	return model.Response{Model: "test-model", Message: model.Message{Content: "done"},
+		Usage: model.Usage{CostMicros: e.cost}}, nil
+}
+
+func budgeted(t *testing.T, h *harness, usd float64) {
+	t.Helper()
+	p := demo.Policy
+	p.Limits.MaxLLMSpendUSD = usd
+	if _, err := h.app.Assignments.SetPolicy(context.Background(), h.assignmentID, p, "test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentWorkersCannotOvercommitBudget(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	ctx := context.Background()
+	budgeted(t, h, 1)
+	provider := &estimated{estimate: 600_000, cost: 300_000, entered: make(chan struct{}), release: make(chan struct{})}
+	h.app.Runtime.Model = provider
+	if _, err := h.app.Tasks.Create(ctx, tasks.NewTask{AssignmentID: h.assignmentID, Title: "second", Objective: "o"}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.app.Runtime.RunOnce(ctx, "w1")
+	}()
+	<-provider.entered
+
+	if _, err := h.app.Runtime.RunOnce(ctx, "w2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("model calls = %d while one call held $0.60 of a $1 budget; want the second worker to wait", got)
+	}
+	if got := h.count(`SELECT COUNT(*) FROM tasks WHERE status = 'ready' AND next_run_at > ?`, h.clock.Now().UnixMilli()); got != 1 {
+		t.Fatalf("deferred ready tasks = %d, want the second worker's task deferred", got)
+	}
+
+	close(provider.release)
+	<-done
+	h.clock.Advance(time.Minute)
+	h.drain()
+	if got := provider.calls.Load(); got < 2 {
+		t.Fatalf("model calls = %d, want the waiting worker to run once the first call settled at $0.30", got)
+	}
+	if got := h.count(`SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage`); got > 1_000_000+provider.estimate {
+		t.Fatalf("spend = %d micros, more than one call past the $1 budget", got)
+	}
+	if got := h.count(`SELECT COUNT(*) FROM model_reservations WHERE status != 'settled'`); got != 0 {
+		t.Fatalf("open reservations = %d, want all settled", got)
+	}
+}
+
+func TestFailedModelCallKeepsItsReservation(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	ctx := context.Background()
+	budgeted(t, h, 1)
+	h.app.Runtime.Model = &estimated{estimate: 400_000, fail: true}
+	if _, err := h.app.Runtime.RunOnce(ctx, "w"); err == nil {
+		t.Fatal("want the model error")
+	}
+	if got := h.count(`SELECT COUNT(*) FROM model_reservations WHERE status = 'unknown' AND estimate_micros = 400000`); got != 1 {
+		t.Fatalf("unknown reservations = %d, want the failed call's estimate kept", got)
+	}
+	a, _ := h.app.Assignments.Get(ctx, h.assignmentID)
+	if b, _ := h.app.Runtime.Budget(ctx, a); b.ReservedMicros != 400_000 {
+		t.Fatalf("reserved = %d, want 400000 still counted", b.ReservedMicros)
 	}
 }
