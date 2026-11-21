@@ -227,8 +227,11 @@ func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	return t, json.Unmarshal([]byte(success), &t.Success)
 }
 
-func (s *Store) Children(ctx context.Context, parentID string) ([]Task, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id`, parentID)
+const WorkerOriginPrefix = "delegate:"
+
+func (s *Store) Workers(ctx context.Context, parentID string) ([]Task, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_task_id = ? AND origin_key LIKE ?
+		ORDER BY created_at, id`, parentID, WorkerOriginPrefix+"%")
 	if err != nil {
 		return nil, err
 	}

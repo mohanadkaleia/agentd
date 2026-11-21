@@ -36,32 +36,42 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	if err != nil {
 		return rn, err
 	}
-	rn.ID = ids.New("run")
-	if _, err := r.DB.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
-		rn.ID, t.ID, r.ModelID, r.Now().UnixMilli()); err != nil {
-		return rn, err
-	}
 	loaded, err := r.Skills.Resolve(t.Skills)
 	if err != nil {
 		return rn, err
 	}
-	system := systemPrompt(p) + skills.Prompt(loaded)
+	rn.ID = ids.New("run")
+	now := r.Now()
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return rn, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
+		rn.ID, t.ID, r.ModelID, now.UnixMilli()); err != nil {
+		return rn, err
+	}
 	initial := []model.Message{
-		{Role: model.RoleSystem, Content: system},
+		{Role: model.RoleSystem, Content: systemPrompt(p) + skills.Prompt(loaded)},
 		{Role: model.RoleUser, Content: t.Objective},
 	}
-	if extra, n, err := scheduler.LinkedEvents(ctx, r.DB, t.ID, true, r.Now()); err != nil {
+	if extra, n, err := scheduler.LinkedEvents(ctx, tx, t.ID, true, now); err != nil {
 		return rn, err
 	} else if n > 0 {
 		initial = append(initial, model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
 			"%d more event(s) for this task arrived before you started:\n%s", n, extra)})
 	}
 	for i, m := range initial {
-		if err := r.appendMessage(ctx, rn.ID, i, m); err != nil {
+		body, err := json.Marshal(m)
+		if err != nil {
+			return rn, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO run_messages (run_id, seq, message_json, created_at) VALUES (?, ?, ?, ?)`,
+			rn.ID, i, string(body), now.UnixMilli()); err != nil {
 			return rn, err
 		}
 	}
-	return rn, nil
+	return rn, tx.Commit()
 }
 
 func (r *Runtime) loadMessages(ctx context.Context, runID string) ([]model.Message, error) {

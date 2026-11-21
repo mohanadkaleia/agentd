@@ -187,7 +187,7 @@ func TestParentWaitsForWorkersAndResumesAfterRestart(t *testing.T) {
 	if got := h.get(parent).Status; got != tasks.WaitingEvent {
 		t.Fatalf("parent after delegating = %s, want waiting_event", got)
 	}
-	children, _ := h.app.Tasks.Children(context.Background(), parent)
+	children, _ := h.app.Tasks.Workers(context.Background(), parent)
 	if len(children) != 2 || children[0].Depth != 1 || !children[0].Allows("web_search") || children[0].Allows("send_email") {
 		t.Fatalf("children = %+v", children)
 	}
@@ -236,7 +236,7 @@ func TestWorkerCannotEscalatePermissions(t *testing.T) {
 	if n, _ := tools.SentCount(context.Background(), h.app.DB, demo.AirlineRefunds); n != 0 {
 		t.Fatal("worker sent an email outside its allowlist")
 	}
-	if children, _ := h.app.Tasks.Children(context.Background(), worker); len(children) != 0 {
+	if children, _ := h.app.Tasks.Workers(context.Background(), worker); len(children) != 0 {
 		t.Fatal("escalating delegation created a task")
 	}
 }
@@ -262,7 +262,7 @@ func TestDepthAndActiveWorkerLimits(t *testing.T) {
 	if got := h.actions("delegate"); len(got) != 1 || got[0] != gateway.Failed {
 		t.Fatalf("depth-2 delegate = %v, want [failed]", got)
 	}
-	if children, _ := h.app.Tasks.Children(context.Background(), deep); len(children) != 0 {
+	if children, _ := h.app.Tasks.Workers(context.Background(), deep); len(children) != 0 {
 		t.Fatal("delegation beyond max depth created a task")
 	}
 
@@ -276,7 +276,7 @@ func TestDepthAndActiveWorkerLimits(t *testing.T) {
 	if statuses[gateway.Succeeded] != 3 || statuses[gateway.Failed] != 1 {
 		t.Fatalf("delegate statuses = %v, want 3 succeeded and 1 failed", statuses)
 	}
-	if children, _ := h.app.Tasks.Children(context.Background(), top); len(children) != 3 {
+	if children, _ := h.app.Tasks.Workers(context.Background(), top); len(children) != 3 {
 		t.Fatalf("active workers = %d, want 3", len(children))
 	}
 }

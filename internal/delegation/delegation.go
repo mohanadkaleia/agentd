@@ -94,7 +94,7 @@ func (d *Delegate) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 			return tools.Result{}, refuse(fmt.Sprintf("cannot grant %q: this task does not have it", name))
 		}
 	}
-	children, err := d.Tasks.Children(ctx, parent.ID)
+	children, err := d.Tasks.Workers(ctx, parent.ID)
 	if err != nil {
 		return tools.Result{}, err
 	}
@@ -119,7 +119,7 @@ func (d *Delegate) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	id, err := d.Tasks.Create(ctx, tasks.NewTask{
 		AssignmentID: parent.AssignmentID,
 		ParentTaskID: parent.ID,
-		OriginKey:    "delegate:" + call.IdempotencyKey,
+		OriginKey:    tasks.WorkerOriginPrefix + call.IdempotencyKey,
 		Title:        in.Title,
 		Objective: "You are a helper agent working on one part of a larger task. Do only this, then reply with your findings.\n\n" +
 			in.Objective,
@@ -135,7 +135,7 @@ func (d *Delegate) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 }
 
 func (d *Delegate) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
-	id, found, err := d.Tasks.FindByOrigin(ctx, "delegate:"+call.IdempotencyKey)
+	id, found, err := d.Tasks.FindByOrigin(ctx, tasks.WorkerOriginPrefix+call.IdempotencyKey)
 	if err != nil || !found {
 		return tools.Result{}, false, err
 	}
@@ -177,7 +177,7 @@ func (a *Await) Execute(ctx context.Context, call tools.Invocation) (tools.Resul
 	if err := json.Unmarshal(call.Arguments, &in); err != nil {
 		return tools.Result{}, refuse(err.Error())
 	}
-	children, err := a.Tasks.Children(ctx, call.TaskID)
+	children, err := a.Tasks.Workers(ctx, call.TaskID)
 	if err != nil {
 		return tools.Result{}, err
 	}

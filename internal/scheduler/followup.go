@@ -57,6 +57,10 @@ func (f *Followup) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("%w: %v", tools.ErrNotExecuted, err)
 	}
+	origin, err := f.Tasks.Get(ctx, call.TaskID)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	runAt := f.Tasks.Now().Add(time.Duration(in.AfterHours * float64(time.Hour)))
 	id, err := f.Tasks.Create(ctx, tasks.NewTask{
 		AssignmentID: call.AssignmentID,
@@ -65,6 +69,10 @@ func (f *Followup) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 		NextRunAt:    runAt,
 		Title:        "Follow-up: " + in.Reason,
 		Objective:    "Follow up on earlier work in this assignment. Reason given when scheduled: " + in.Reason,
+		Depth:        origin.Depth,
+		AllowedTools: origin.AllowedTools,
+		MaxSteps:     origin.MaxSteps,
+		Skills:       origin.Skills,
 	})
 	if err != nil {
 		return tools.Result{}, err
