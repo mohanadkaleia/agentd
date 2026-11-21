@@ -144,6 +144,17 @@ Notifications the agent raises can be pushed to your phone through the free [ntf
 `agentd serve` then delivers pending notifications, retrying on failure. Pushes say only which
 assignment needs attention; `ntfy setup -full` includes the title and text. `agentd ntfy off` stops it.
 
+## Command center
+
+With `-listen` set, agentd also serves a small web app at the same address: assignments with their
+next action, spend, criteria and obligations; the approvals inbox showing the exact arguments and
+their hash; actions with an unknown outcome to settle; undelivered notifications; a live activity
+feed; task transcripts; and the emergency stop. It is Vue's runtime build (vendored, no build step,
+no CDN) under a strict Content-Security-Policy. Sign in by pasting the API token once: the browser
+gets an HttpOnly, SameSite=Strict session cookie (12 hours, kept in memory, so a restart signs you
+out), every change also needs a CSRF header, and cross-origin requests are refused. Over Tailscale,
+open `http://<tailscale-ip>:7777/` on your phone.
+
 ## HTTP API
 
 ```bash

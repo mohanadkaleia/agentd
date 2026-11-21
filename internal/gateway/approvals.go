@@ -20,6 +20,7 @@ type Approval struct {
 	ActionID      string
 	AssignmentID  string
 	ToolName      string
+	Resource      string
 	Arguments     string
 	ArgumentsHash string
 	Status        string
@@ -167,7 +168,7 @@ func (g *Gateway) ExpireApprovals(ctx context.Context) (int, error) {
 }
 
 func (g *Gateway) PendingApprovals(ctx context.Context) ([]Approval, error) {
-	rows, err := g.DB.QueryContext(ctx, `SELECT ap.id, ap.action_id, a.assignment_id, a.tool_name, a.arguments_json, ap.arguments_hash, ap.status, ap.expires_at
+	rows, err := g.DB.QueryContext(ctx, `SELECT ap.id, ap.action_id, a.assignment_id, a.tool_name, a.resource, a.arguments_json, ap.arguments_hash, ap.status, ap.expires_at
 		FROM approvals ap JOIN actions a ON a.id = ap.action_id
 		WHERE ap.status = 'pending' ORDER BY ap.requested_at`)
 	if err != nil {
@@ -178,7 +179,7 @@ func (g *Gateway) PendingApprovals(ctx context.Context) ([]Approval, error) {
 	for rows.Next() {
 		var ap Approval
 		var expires int64
-		if err := rows.Scan(&ap.ID, &ap.ActionID, &ap.AssignmentID, &ap.ToolName, &ap.Arguments, &ap.ArgumentsHash, &ap.Status, &expires); err != nil {
+		if err := rows.Scan(&ap.ID, &ap.ActionID, &ap.AssignmentID, &ap.ToolName, &ap.Resource, &ap.Arguments, &ap.ArgumentsHash, &ap.Status, &expires); err != nil {
 			return nil, err
 		}
 		ap.ExpiresAt = time.UnixMilli(expires)

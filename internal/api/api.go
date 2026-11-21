@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -33,6 +32,7 @@ type Server struct {
 	Token      string
 	Log        *slog.Logger
 	StreamPoll time.Duration
+	sessions   sessions
 }
 
 type handler func(w http.ResponseWriter, r *http.Request) error
@@ -66,13 +66,24 @@ func (s *Server) Handler() http.Handler {
 	for pattern, h := range routes {
 		mux.HandleFunc(pattern, s.wrap(h))
 	}
-	return s.authenticate(mux)
+	root := http.NewServeMux()
+	root.Handle("/api/", s.authenticate(mux))
+	root.HandleFunc("POST /ui/session", s.wrap(s.login))
+	root.HandleFunc("GET /ui/session", s.wrap(s.currentSession))
+	root.HandleFunc("DELETE /ui/session", s.wrap(s.logout))
+	root.Handle("/", uiHandler())
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.sameOrigin(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request refused"})
+			return
+		}
+		root.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if s.Token == "" || !ok || subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) != 1 {
+		if !s.bearer(r) && !s.cookieAuth(r) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="agentd"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
@@ -158,23 +169,54 @@ type assignmentSummary struct {
 	StatusReason string           `json:"status_reason,omitempty"`
 }
 
+type assignmentListRow struct {
+	assignmentSummary
+	Next        expected `json:"next"`
+	SpentUSD    float64  `json:"spent_usd"`
+	BudgetUSD   float64  `json:"budget_usd,omitempty"`
+	Approvals   int      `json:"pending_approvals"`
+	Blocked     int      `json:"blocked_tasks"`
+	Overdue     int      `json:"overdue_obligations"`
+	Undelivered int      `json:"undelivered_notifications"`
+}
+
 func (s *Server) listAssignments(w http.ResponseWriter, r *http.Request) error {
-	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id, kind, name, status, COALESCE(status_reason, '')
-		FROM assignments ORDER BY created_at, id`)
+	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id FROM assignments ORDER BY created_at, id`)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	out := []assignmentSummary{}
+	var ids []string
 	for rows.Next() {
-		var a assignmentSummary
-		if err := rows.Scan(&a.ID, &a.Kind, &a.Name, &a.Status, &a.StatusReason); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return err
 		}
-		out = append(out, a)
+		ids = append(ids, id)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	out := []assignmentListRow{}
+	for _, id := range ids {
+		o, err := overview.Get(r.Context(), s.App.Runtime, id)
+		if err != nil {
+			return err
+		}
+		a := o.Assignment
+		row := assignmentListRow{
+			assignmentSummary: assignmentSummary{ID: a.ID, Kind: a.Kind, Name: a.Name, Status: a.Status, StatusReason: a.StatusReason},
+			Next:              expected{At: timePtr(o.Next.At), What: o.Next.What},
+			SpentUSD:          float64(o.SpentMicros) / 1e6, BudgetUSD: float64(o.LimitMicros) / 1e6,
+			Approvals: o.PendingAsk, Blocked: o.Blocked, Undelivered: o.Undelivered,
+		}
+		for _, ob := range o.Obligations {
+			if ob.Overdue {
+				row.Overdue++
+			}
+		}
+		out = append(out, row)
 	}
 	return ok(w, out)
 }
@@ -484,7 +526,9 @@ type approvalRow struct {
 	ActionID     string          `json:"action_id"`
 	AssignmentID string          `json:"assignment_id"`
 	Tool         string          `json:"tool"`
+	Resource     string          `json:"resource,omitempty"`
 	Arguments    json.RawMessage `json:"arguments"`
+	ArgumentsSHA string          `json:"arguments_sha256"`
 	ExpiresAt    time.Time       `json:"expires_at"`
 }
 
@@ -496,7 +540,7 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request) error {
 	out := []approvalRow{}
 	for _, p := range pending {
 		out = append(out, approvalRow{ID: p.ID, ActionID: p.ActionID, AssignmentID: p.AssignmentID, Tool: p.ToolName,
-			Arguments: json.RawMessage(p.Arguments), ExpiresAt: p.ExpiresAt})
+			Resource: p.Resource, Arguments: json.RawMessage(p.Arguments), ArgumentsSHA: p.ArgumentsHash, ExpiresAt: p.ExpiresAt})
 	}
 	return ok(w, out)
 }
