@@ -35,6 +35,7 @@ type Runtime struct {
 
 	MaxRejectedCompletions int
 	Housekeeping           func(context.Context) error
+	HeartbeatEvery         time.Duration
 }
 
 const rejectedCompletionPrefix = "Completion rejected:"
@@ -47,7 +48,9 @@ func (r *Runtime) RunOnce(ctx context.Context, owner string) (bool, error) {
 	return true, r.execute(ctx, *lease)
 }
 
-func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
+func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
+	ctx, stopHeartbeat := r.heartbeat(parent, lease)
+	defer stopHeartbeat()
 	task, err := r.Tasks.Get(ctx, lease.TaskID)
 	if err != nil {
 		return r.fail(ctx, lease, task, err)
@@ -74,10 +77,13 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 		if err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
+		if len(msgs) < 2 {
+			return r.block(ctx, lease, rn.ID, map[string]string{"error": "run has no opening messages"})
+		}
 
 		if seq, pending := pendingCalls(msgs); len(pending) > 0 {
 			for i, call := range pending {
-				out, err := r.Gateway.Handle(ctx, gateway.Call{RunID: rn.ID, TaskID: task.ID, AssignmentID: task.AssignmentID, Seq: seq, Call: call})
+				out, err := r.Gateway.Handle(ctx, gateway.Call{RunID: rn.ID, TaskID: task.ID, AssignmentID: task.AssignmentID, Seq: seq, Call: call, Lease: lease})
 				if err != nil {
 					return r.fail(ctx, lease, task, err)
 				}
@@ -118,10 +124,8 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 				continue
 			}
 			if len(missing) == 0 {
-				if err := r.finishRun(ctx, rn.ID, "completed", nil); err != nil {
-					return r.fail(ctx, lease, task, err)
-				}
-				return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Completed, Result: map[string]string{"summary": last.Content}})
+				return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Completed, Result: map[string]string{"summary": last.Content},
+					FinishRun: rn.ID, RunStatus: "completed"})
 			}
 			if rejectedCompletions(msgs) >= r.MaxRejectedCompletions {
 				return r.block(ctx, lease, rn.ID, map[string]string{
@@ -166,7 +170,7 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 		}
 		resp.Message.Role = model.RoleAssistant
 		quarantineInvalidArguments(resp.Message.ToolCalls)
-		if err := r.appendModelMessage(ctx, task, &rn, len(msgs), resp); err != nil {
+		if err := r.appendModelMessage(ctx, lease, task, &rn, len(msgs), resp); err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
 	}
@@ -216,10 +220,36 @@ func pendingCalls(msgs []model.Message) (int, []model.ToolCall) {
 }
 
 func (r *Runtime) block(ctx context.Context, lease tasks.Lease, runID string, cause map[string]string) error {
-	if err := r.finishRun(ctx, runID, "blocked", cause); err != nil {
-		return err
+	return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: cause, FinishRun: runID, RunStatus: "blocked"})
+}
+
+func (r *Runtime) heartbeat(parent context.Context, lease tasks.Lease) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	every := r.HeartbeatEvery
+	if every <= 0 {
+		every = r.LeaseTTL / 3
 	}
-	return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: cause})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := r.Tasks.Renew(ctx, lease, r.LeaseTTL); errors.Is(err, tasks.ErrLeaseLost) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() {
+		cancel()
+		<-done
+	}
 }
 
 func (r *Runtime) fail(ctx context.Context, lease tasks.Lease, task tasks.Task, cause error) error {

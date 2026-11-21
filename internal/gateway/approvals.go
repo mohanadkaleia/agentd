@@ -188,7 +188,11 @@ func (g *Gateway) PendingApprovals(ctx context.Context) ([]Approval, error) {
 }
 
 func wakeTask(ctx context.Context, tx *sql.Tx, now time.Time, actionID string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'ready', next_run_at = NULL, updated_at = ?
-		WHERE id = (SELECT task_id FROM actions WHERE id = ?) AND status = 'waiting_approval'`, now.UnixMilli(), actionID)
+	_, err := tx.ExecContext(ctx, `UPDATE tasks
+		SET wake_pending = 1,
+		    status = CASE WHEN status = 'waiting_approval' THEN 'ready' ELSE status END,
+		    next_run_at = CASE WHEN status = 'waiting_approval' THEN NULL ELSE next_run_at END,
+		    updated_at = ?
+		WHERE id = (SELECT task_id FROM actions WHERE id = ?)`, now.UnixMilli(), actionID)
 	return err
 }

@@ -98,6 +98,8 @@ type Release struct {
 	NextRunAt    time.Time
 	Result       any
 	CountFailure bool
+	FinishRun    string
+	RunStatus    string
 }
 
 type Store struct {
@@ -332,6 +334,29 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 	return &lease, tx.Commit()
 }
 
+func runError(r Release) any {
+	if r.RunStatus != "blocked" || r.Result == nil {
+		return nil
+	}
+	body, err := json.Marshal(r.Result)
+	if err != nil {
+		return nil
+	}
+	return string(body)
+}
+
+func HoldsLease(ctx context.Context, tx *sql.Tx, l Lease) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running'`,
+		l.TaskID, l.Owner, l.Version).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
 func (s *Store) Renew(ctx context.Context, l Lease, ttl time.Duration) (Lease, error) {
 	until := s.Now().Add(ttl)
 	res, err := s.DB.ExecContext(ctx, `UPDATE tasks SET lease_until = ?, updated_at = ?
@@ -371,7 +396,7 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 	defer tx.Rollback()
 	var assignment, status string
 	err = tx.QueryRowContext(ctx, `UPDATE tasks
-		SET status = CASE WHEN ? = 'waiting_event' AND wake_pending = 1 THEN 'ready' ELSE ? END,
+				SET status = CASE WHEN ? IN ('waiting_event', 'waiting_approval') AND wake_pending = 1 THEN 'ready' ELSE ? END,
 		    lease_owner = NULL, lease_until = NULL, version = version + 1,
 		    next_run_at = ?, result_json = COALESCE(?, result_json),
 		    attempt_count = attempt_count + ?, updated_at = ?
@@ -383,6 +408,12 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 	}
 	if err != nil {
 		return err
+	}
+	if r.FinishRun != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, finished_at = ?, error_json = ? WHERE id = ?`,
+			r.RunStatus, now.UnixMilli(), runError(r), r.FinishRun); err != nil {
+			return err
+		}
 	}
 	if Terminal(status) {
 		if err := wakeParent(ctx, tx, now, l.TaskID); err != nil {

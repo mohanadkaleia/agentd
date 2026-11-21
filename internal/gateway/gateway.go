@@ -53,6 +53,7 @@ type Call struct {
 	AssignmentID string
 	Seq          int
 	Call         model.ToolCall
+	Lease        tasks.Lease
 }
 
 type Action struct {
@@ -101,7 +102,7 @@ func (g *Gateway) Handle(ctx context.Context, c Call) (Outcome, error) {
 	case NeedsReconciliation:
 		return Outcome{Kind: Blocked, Content: string(a.Result)}, nil
 	}
-	return g.authorizeAndDispatch(ctx, &a, tool)
+	return g.authorizeAndDispatch(ctx, &a, tool, c.Lease)
 }
 
 func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, error) {
@@ -157,7 +158,7 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 	return a, tx.Commit()
 }
 
-func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tools.Tool) (Outcome, error) {
+func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tools.Tool, lease tasks.Lease) (Outcome, error) {
 	p, err := g.Assignments.Get(ctx, a.AssignmentID)
 	if err != nil {
 		return Outcome{}, err
@@ -188,11 +189,14 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 			return out, err
 		}
 	}
-	return g.dispatch(ctx, a, tool, p.Policy.Limits.ToolRates[a.ToolName])
+	return g.dispatch(ctx, a, tool, p.Policy.Limits.ToolRates[a.ToolName], lease)
 }
 
-func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limit policy.RateLimit) (Outcome, error) {
-	if reason, err := g.beginDispatch(ctx, a, limit); err != nil || reason != "" {
+func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limit policy.RateLimit, lease tasks.Lease) (Outcome, error) {
+	if reason, err := g.beginDispatch(ctx, a, limit, lease); err != nil || reason != "" {
+		if errors.Is(err, errHalted) {
+			return Outcome{Kind: Paused}, nil
+		}
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -226,13 +230,27 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 	}
 }
 
-func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.RateLimit) (string, error) {
+var errHalted = errors.New("system is halted")
+
+func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.RateLimit, lease tasks.Lease) (string, error) {
 	now := g.Now()
 	tx, err := g.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
+	if lease.Owner != "" {
+		if err := tasks.HoldsLease(ctx, tx, lease); err != nil {
+			return "", err
+		}
+	}
+	var halted int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM system_state WHERE key = 'halted'`).Scan(&halted); err != nil {
+		return "", err
+	}
+	if halted > 0 {
+		return "", errHalted
+	}
 	if limit.Per.Duration > 0 {
 		var used int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM actions

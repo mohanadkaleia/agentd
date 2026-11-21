@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"agentd/internal/model"
 )
@@ -32,7 +33,7 @@ func New(cfg Config) *Provider {
 		cfg.BaseURL = DefaultBaseURL
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
+		cfg.HTTPClient = &http.Client{Timeout: 10 * time.Minute}
 	}
 	return &Provider{cfg: cfg}
 }

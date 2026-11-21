@@ -24,9 +24,15 @@ type run struct {
 
 func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	var rn run
-	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count FROM runs WHERE task_id = ? AND status = 'running'
-		ORDER BY started_at DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps)
+	var status string
+	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count, status FROM runs WHERE task_id = ?
+		ORDER BY started_at DESC, rowid DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps, &status)
 	if err == nil {
+		if status != "running" {
+			if _, err := r.DB.ExecContext(ctx, `UPDATE runs SET status = 'running', finished_at = NULL WHERE id = ?`, rn.ID); err != nil {
+				return rn, err
+			}
+		}
 		return rn, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -105,7 +111,7 @@ func (r *Runtime) appendMessage(ctx context.Context, runID string, seq int, m mo
 	return err
 }
 
-func (r *Runtime) appendModelMessage(ctx context.Context, t tasks.Task, rn *run, seq int, resp model.Response) error {
+func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t tasks.Task, rn *run, seq int, resp model.Response) error {
 	m := resp.Message
 	body, err := json.Marshal(m)
 	if err != nil {
@@ -116,14 +122,20 @@ func (r *Runtime) appendModelMessage(ctx context.Context, t tasks.Task, rn *run,
 		return err
 	}
 	defer tx.Rollback()
+	if err := r.recordUsage(ctx, tx, t, rn.ID, resp); err != nil {
+		return err
+	}
+	if err := tasks.HoldsLease(ctx, tx, lease); err != nil {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return commitErr
+		}
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO run_messages (run_id, seq, message_json, created_at) VALUES (?, ?, ?, ?)`,
 		rn.ID, seq, string(body), r.Now().UnixMilli()); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE runs SET step_count = step_count + 1 WHERE id = ?`, rn.ID); err != nil {
-		return err
-	}
-	if err := r.recordUsage(ctx, tx, t, rn.ID, resp); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -155,20 +167,6 @@ func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task
 	_, err := ex.ExecContext(ctx, `INSERT INTO model_usage (assignment_id, task_id, run_id, model, input_tokens, output_tokens, cost_micros, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, t.AssignmentID, t.ID, runID, modelID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CostMicros, r.Now().UnixMilli())
-	return err
-}
-
-func (r *Runtime) finishRun(ctx context.Context, runID, status string, cause any) error {
-	var errJSON any
-	if cause != nil {
-		b, err := json.Marshal(cause)
-		if err != nil {
-			return err
-		}
-		errJSON = string(b)
-	}
-	_, err := r.DB.ExecContext(ctx, `UPDATE runs SET status = ?, finished_at = ?, error_json = ? WHERE id = ?`,
-		status, r.Now().UnixMilli(), errJSON, runID)
 	return err
 }
 

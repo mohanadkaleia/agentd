@@ -52,8 +52,12 @@ func (c Credentials) config(redirect string, endpoint oauth2.Endpoint) *oauth2.C
 	return &oauth2.Config{ClientID: c.ClientID, ClientSecret: c.ClientSecret, Endpoint: endpoint, Scopes: Scopes, RedirectURL: redirect}
 }
 
+const requestTimeout = time.Minute
+
 func (c Credentials) HTTPClient(ctx context.Context) *http.Client {
-	return c.config("", googleEndpoint).Client(ctx, &oauth2.Token{RefreshToken: c.RefreshToken})
+	client := c.config("", googleEndpoint).Client(ctx, &oauth2.Token{RefreshToken: c.RefreshToken})
+	client.Timeout = requestTimeout
+	return client
 }
 
 func Authorize(ctx context.Context, c Credentials, open func(url string) error) (Credentials, error) {
