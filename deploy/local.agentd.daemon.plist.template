@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.agentd</string>
+    <key>UserName</key>
+    <string>__USER__</string>
+    <key>GroupName</key>
+    <string>staff</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/Library/Application Support/agentd/bin/agentd</string>
+        <string>-db</string>
+        <string>__HOME__/Library/Application Support/agentd/agentd.db</string>
+        <string>-skills</string>
+        <string>__HOME__/Library/Application Support/agentd/skills</string>
+        <string>-model</string>
+        <string>__MODEL__</string>
+        <string>serve</string>
+        <string>-workers</string>
+        <string>__WORKERS__</string>__LISTEN_ARGS__
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTD_SECRETS_DIR</key>
+        <string>__HOME__/Library/Application Support/agentd/secrets</string>
+    </dict>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Library/Application Support/agentd</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/agentd/agentd.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/agentd/agentd.log</string>
+</dict>
+</plist>

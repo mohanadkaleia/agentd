@@ -244,7 +244,8 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 - **Keychain scope.** Secrets (Gmail refresh token, optional Anthropic key) are stored with
   `/usr/bin/security`, which makes that tool their trusted reader. Any process running as the same
   macOS user can read them without a prompt. The keychain protects against other users, not against
-  malware running as you. The design-doc target, a dedicated non-admin account for agentd, closes this.
+  malware running as you. `deploy/provision-user.sh` moves agentd to a dedicated non-admin account
+  with owner-only secret files instead ([docs/isolation.md](docs/isolation.md)); it is opt-in.
 - **Unconfirmed Gmail sends wait.** A send Gmail never shows in Sent (a lost message, or a lag
   that never ends) stays blocked until a person resolves it. Safer than a duplicate, but it needs
   attention: `agentd status` lists it.

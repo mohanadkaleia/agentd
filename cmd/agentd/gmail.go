@@ -97,7 +97,8 @@ func gmailCommand(ctx context.Context, args []string) error {
 		defer cancel()
 		creds, err = gmail.Authorize(authCtx, creds, func(url string) error {
 			fmt.Println("Opening your browser to connect Gmail. If it does not open, visit:\n" + url)
-			return exec.Command("/usr/bin/open", url).Run()
+			exec.Command("/usr/bin/open", url).Run()
+			return nil
 		})
 		if err != nil {
 			return err
@@ -106,7 +107,7 @@ func gmailCommand(ctx context.Context, args []string) error {
 		if err := keychainStoreHex("agentd", gmailKeychainAccount, raw); err != nil {
 			return err
 		}
-		fmt.Println("Gmail connected; credentials stored in the login keychain. Restart agentd to use it.")
+		fmt.Println("Gmail connected and credentials stored. Restart agentd to use it.")
 		return nil
 	case "status":
 		account, err := gmailAccount(ctx)

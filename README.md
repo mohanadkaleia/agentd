@@ -171,7 +171,7 @@ deploy/uninstall.sh                         # stop and unregister; data is kept
 exits; SIGTERM lets an in-flight tool call finish and record its result before the process exits.
 The database lives next to the binary, logs in `~/Library/Logs/agentd/agentd.log`.
 
-The design target is stricter: a dedicated non-admin macOS account running a LaunchDaemon from
-`/Library/LaunchDaemons` with `UserName` set to that account, so the agent cannot read your own
-files or keychain. That needs `sudo` and a new user (`sysadminctl -addUser agentd`); the same plist
-works with the paths changed to that user's home.
+For a stronger boundary, `deploy/provision-user.sh` runs agentd as its own non-admin account under a
+LaunchDaemon, so it cannot read your files and you cannot read its secrets without `sudo`. It only
+prints its plan until you add `--apply`; see [docs/isolation.md](docs/isolation.md) for the threat
+model, migration, verification and rollback.

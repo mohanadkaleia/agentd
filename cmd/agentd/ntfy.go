@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"time"
 
 	"agentd/internal/assignments"
@@ -66,7 +65,7 @@ func ntfyCommand(ctx context.Context, args []string) error {
 		if err := keychainStoreHex("agentd", ntfyKeychainAccount, raw); err != nil {
 			return err
 		}
-		fmt.Printf("Saved to the login keychain. In the ntfy phone app, subscribe to:\n\n  %s\n\n", cfg.TopicURL)
+		fmt.Printf("Saved. In the ntfy phone app, subscribe to:\n\n  %s\n\n", cfg.TopicURL)
 		fmt.Println("Treat that topic name like a password: anyone who knows it can read what is sent to it.")
 		fmt.Println("Then run `agentd ntfy test`, and restart `agentd serve` to start delivering.")
 		return nil
@@ -83,9 +82,8 @@ func ntfyCommand(ctx context.Context, args []string) error {
 		fmt.Println("sent", ref)
 		return nil
 	case "off":
-		out, err := exec.Command("/usr/bin/security", "delete-generic-password", "-s", "agentd", "-a", ntfyKeychainAccount).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("keychain: %v: %s", err, out)
+		if err := keychainDelete("agentd", ntfyKeychainAccount); err != nil {
+			return err
 		}
 		fmt.Println("ntfy delivery turned off; restart `agentd serve` to apply.")
 		return nil
