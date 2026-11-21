@@ -20,6 +20,7 @@ type Overview struct {
 	Recent      []Activity
 	Next        Expected
 	Undelivered int
+	Blocked     int
 	PendingAsk  int
 }
 
@@ -81,16 +82,34 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 	if err != nil {
 		return o, err
 	}
-	o.Next = next(a, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, rt.Now())
+	unresolved, err := rt.Gateway.UnresolvedActions(ctx, id)
+	if err != nil {
+		return o, err
+	}
+	var firstUnresolved string
+	if len(unresolved) > 0 {
+				firstUnresolved = fmt.Sprintf("%s happened (action %s)", unresolved[0], unresolved[0].ID)
+	}
+	if err := rt.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND status = 'blocked'
+		AND updated_at > ?`, id, rt.Now().Add(-7*24*time.Hour).UnixMilli()).Scan(&o.Blocked); err != nil {
+		return o, err
+	}
+	o.Next = next(a, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, rt.Now())
 	return o, nil
 }
 
-func next(a assignments.Assignment, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, now time.Time) Expected {
+func next(a assignments.Assignment, unresolved string, blocked int, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, now time.Time) Expected {
 	switch a.Status {
 	case assignments.Paused:
 		return Expected{What: "paused: " + firstNonEmpty(a.StatusReason, "by "+a.PausedBy)}
 	case assignments.Completed, assignments.Cancelled, assignments.Revoked:
 		return Expected{What: "nothing; " + string(a.Kind) + " is " + a.Status}
+	}
+	if unresolved != "" {
+				return Expected{What: "needs you: confirm whether " + unresolved}
+	}
+	if blocked > 0 {
+		return Expected{What: fmt.Sprintf("needs you: %d blocked task(s) to retry or drop", blocked)}
 	}
 	if asks > 0 {
 		return Expected{What: fmt.Sprintf("waiting for your approval: %s %s", askTool, askResource)}

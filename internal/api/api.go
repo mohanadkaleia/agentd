@@ -19,6 +19,7 @@ import (
 	"agentd/internal/notify"
 	"agentd/internal/overview"
 	"agentd/internal/policy"
+	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
 	"agentd/internal/system"
 	"agentd/internal/tasks"
@@ -45,6 +46,9 @@ func (s *Server) Handler() http.Handler {
 		"PUT /api/assignments/{id}/policy":       s.setPolicy,
 		"GET /api/tasks":                         s.listTasks,
 		"GET /api/tasks/{id}":                    s.getTask,
+		"POST /api/tasks/{id}/retry":             s.retryTask,
+		"GET /api/actions/unresolved":            s.listUnresolved,
+		"POST /api/actions/{id}/resolve":         s.resolveAction,
 		"GET /api/approvals":                     s.listApprovals,
 		"POST /api/approvals/{id}/{decision}":    s.decide,
 		"GET /api/notifications":                 s.listNotifications,
@@ -112,7 +116,8 @@ func classify(err error) (int, string) {
 		return http.StatusNotFound, "not found"
 	case errors.Is(err, assignments.ErrWrongKind), errors.Is(err, assignments.ErrTerminated),
 		errors.Is(err, assignments.ErrNotPaused), errors.Is(err, gateway.ErrApprovalNotPending),
-		errors.Is(err, gateway.ErrApprovalExpired), errors.Is(err, notify.ErrNotPending):
+		errors.Is(err, gateway.ErrApprovalExpired), errors.Is(err, notify.ErrNotPending),
+		errors.Is(err, runtime.ErrNotBlocked), errors.Is(err, runtime.ErrUnresolvedWork), errors.Is(err, gateway.ErrNotUnresolved):
 		return http.StatusConflict, err.Error()
 	}
 	return http.StatusInternalServerError, "internal error"
@@ -391,6 +396,65 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return ok(w, d)
+}
+
+func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Note string `json:"note"`
+	}
+	if r.ContentLength != 0 {
+		if err := decode(r, &body); err != nil {
+			return err
+		}
+	}
+	if err := s.App.Runtime.Retry(r.Context(), r.PathValue("id"), "api", body.Note); err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"status": "ready"})
+}
+
+type unresolvedRow struct {
+	ID           string          `json:"id"`
+	TaskID       string          `json:"task_id"`
+	AssignmentID string          `json:"assignment_id"`
+	Tool         string          `json:"tool"`
+	Resource     string          `json:"resource,omitempty"`
+	Arguments    json.RawMessage `json:"arguments"`
+	Detail       json.RawMessage `json:"detail,omitempty"`
+}
+
+func (s *Server) listUnresolved(w http.ResponseWriter, r *http.Request) error {
+	actions, err := s.App.Gateway.UnresolvedActions(r.Context(), r.URL.Query().Get("assignment"))
+	if err != nil {
+		return err
+	}
+	out := []unresolvedRow{}
+	for _, u := range actions {
+		row := unresolvedRow{ID: u.ID, TaskID: u.TaskID, AssignmentID: u.AssignmentID, Tool: u.ToolName,
+			Resource: u.Resource, Arguments: json.RawMessage(u.Arguments)}
+		if u.Detail != "" {
+			row.Detail = json.RawMessage(u.Detail)
+		}
+		out = append(out, row)
+	}
+	return ok(w, out)
+}
+
+func (s *Server) resolveAction(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Happened *bool  `json:"happened"`
+		Note     string `json:"note"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	if body.Happened == nil {
+		return badRequest("happened (true or false) is required")
+	}
+	if err := s.App.Gateway.Resolve(r.Context(), r.PathValue("id"), *body.Happened, "api", body.Note); err != nil {
+		return err
+	}
+	return ok(w, map[string]bool{"happened": *body.Happened})
 }
 
 type approvalRow struct {

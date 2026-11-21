@@ -360,3 +360,22 @@ func TestActivityStreamDeliversNewEntries(t *testing.T) {
 		t.Fatalf("stream gave id=%q data=%q", id, data)
 	}
 }
+
+func TestRetryAndResolveErrors(t *testing.T) {
+	e := setup(t, demo.Script)
+	_, taskID, _ := demo.Seed(context.Background(), e.app)
+	var out map[string]any
+	if code := e.do("POST", "/api/tasks/"+taskID+"/retry", map[string]string{"note": "go"}, &out); code != http.StatusConflict {
+		t.Fatalf("retrying a ready task -> %d %v, want 409", code, out)
+	}
+	if code := e.do("POST", "/api/actions/act_missing/resolve", map[string]any{"note": "x"}, &out); code != http.StatusBadRequest {
+		t.Fatalf("resolve without happened -> %d, want 400", code)
+	}
+	if code := e.do("POST", "/api/actions/act_missing/resolve", map[string]any{"happened": true}, &out); code != http.StatusNotFound {
+		t.Fatalf("resolve unknown action -> %d, want 404", code)
+	}
+	var unresolved []map[string]any
+	if code := e.do("GET", "/api/actions/unresolved", nil, &unresolved); code != 200 || len(unresolved) != 0 {
+		t.Fatalf("unresolved -> %d %v", code, unresolved)
+	}
+}

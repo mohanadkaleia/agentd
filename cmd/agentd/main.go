@@ -46,6 +46,9 @@ commands:
   create <assignment.json>             create a project or responsibility, with its routes and schedules
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
   status                               show assignments, tasks, actions, approvals
+    retry <task-id> [note]               continue a blocked task in its existing run
+  resolve <action-id> happened|not-happened [note]
+                                       settle an action whose outcome could not be determined
   approve <approval-id>                approve a pending action
   reject <approval-id>                 reject a pending action
   policy <assignment-id> <policy.json> replace an assignment's policy and limits
@@ -171,6 +174,16 @@ func run() error {
 		return nil
 	case "status":
 		return status(ctx, a)
+	case "retry":
+		if cmd.NArg() < 1 {
+			return fmt.Errorf("retry needs a task id")
+		}
+		return a.Runtime.Retry(ctx, cmd.Arg(0), "cli", strings.Join(cmd.Args()[1:], " "))
+	case "resolve":
+		if cmd.NArg() < 2 || (cmd.Arg(1) != "happened" && cmd.Arg(1) != "not-happened") {
+			return fmt.Errorf("usage: resolve <action-id> happened|not-happened [note]")
+		}
+		return a.Gateway.Resolve(ctx, cmd.Arg(0), cmd.Arg(1) == "happened", "cli", strings.Join(cmd.Args()[2:], " "))
 	case "approve", "reject":
 		if cmd.NArg() != 1 {
 			return fmt.Errorf("%s needs an approval id", args[0])

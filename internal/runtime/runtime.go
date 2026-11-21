@@ -171,6 +171,9 @@ func quarantineInvalidArguments(calls []model.ToolCall) {
 func rejectedCompletions(msgs []model.Message) int {
 	n := 0
 	for i := len(msgs) - 1; i >= 0 && msgs[i].Role != model.RoleTool; i-- {
+		if msgs[i].Role == model.RoleUser && strings.HasPrefix(msgs[i].Content, retryPrefix) {
+			break
+		}
 		if msgs[i].Role == model.RoleUser && strings.HasPrefix(msgs[i].Content, rejectedCompletionPrefix) {
 			n++
 		}
