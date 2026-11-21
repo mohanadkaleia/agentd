@@ -279,6 +279,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/outcomes` | Completion criteria evidence and automatic project completion. |
 | `internal/watchdog` | Obligations: health from evidence, catch-up tasks and escalation. |
 | `internal/integrations/ntfy` | Phone delivery channel for notifications. |
+| `internal/integrations/web` | `web_read`: one public page as text, with an address guard against local and private networks. |
 | `internal/skills` | Skill registry, loaded from `.md` files. |
 | `internal/integrations/gmail` | Gmail tools (search, read, draft, send), inbox watcher, OAuth. |
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |

@@ -114,6 +114,15 @@ event or by you, never by the model:
 status. Once all are verified and no action is unresolved, the project completes itself and queues a
 notification. Plain-text criteria (`"criteria": ["..."]`) still work and need `agentd confirm`.
 
+## Reading the web
+
+`agentd serve` registers `web_read`, which fetches one public page and returns its title, readable
+text and links, marked as untrusted. It is not a browser: no JavaScript, cookies, forms or logins.
+Every connection is checked against the address it actually reaches, so localhost, private,
+link-local, cloud-metadata and Tailscale addresses are refused, including through redirects. Pages
+are capped at 2 MB and 20,000 characters of text. Policy resources are hostnames:
+`"web_read": {"mode": "allow", "resources": ["www.sec.gov", "investor.example.com"], "otherwise": "approval"}`.
+
 ## Phone notifications
 
 Notifications the agent raises can be pushed to your phone through the free [ntfy](https://ntfy.sh) app:

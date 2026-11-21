@@ -17,6 +17,7 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/demo"
 	"agentd/internal/integrations/gmail"
+	"agentd/internal/integrations/web"
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
@@ -143,6 +144,7 @@ func run() error {
 	}
 	var account *gmail.Account
 	if args[0] == "serve" {
+		registered = append(registered, &web.Reader{Now: time.Now, Timeout: 30 * time.Second})
 		var extra []tools.Tool
 		account, extra = gmailTools(ctx, log)
 		registered = append(registered, extra...)
