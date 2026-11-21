@@ -42,6 +42,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		&delegation.Await{Tasks: t},
 		&notify.Tool{Outbox: outbox},
 		&assignments.StateTool{Assignments: a},
+		&scheduler.TaskEvents{DB: db, Now: now},
 	} {
 		all[tool.Definition().Name] = tool
 	}

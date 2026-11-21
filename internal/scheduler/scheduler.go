@@ -227,7 +227,7 @@ func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
 				return 0, err
 			}
 			if openID != "" {
-				if err := s.link(ctx, tx, openID, e.id); err != nil {
+				if err := s.link(ctx, tx, openID, e.id, false); err != nil {
 					return 0, err
 				}
 				if err := audit.Record(ctx, tx, s.Now(), r.assignmentID, "router", "event.coalesced", e.id,
@@ -251,7 +251,7 @@ func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if err := s.link(ctx, tx, taskID, e.id); err != nil {
+		if err := s.link(ctx, tx, taskID, e.id, true); err != nil {
 			return 0, err
 		}
 		if err := audit.Record(ctx, tx, s.Now(), r.assignmentID, "router", "event.routed", e.id,
@@ -282,9 +282,14 @@ func openTaskFor(ctx context.Context, tx *sql.Tx, assignmentID, coalesceKey stri
 	return id, err
 }
 
-func (s *Scheduler) link(ctx context.Context, tx *sql.Tx, taskID, eventID string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO task_events (task_id, event_id, linked_at) VALUES (?, ?, ?)
-		ON CONFLICT DO NOTHING`, taskID, eventID, s.Now().UnixMilli())
+func (s *Scheduler) link(ctx context.Context, tx *sql.Tx, taskID, eventID string, seen bool) error {
+	now := s.Now().UnixMilli()
+	var seenAt any
+	if seen {
+		seenAt = now
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO task_events (task_id, event_id, linked_at, seen_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT DO NOTHING`, taskID, eventID, now, seenAt)
 	return err
 }
 

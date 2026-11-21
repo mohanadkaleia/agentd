@@ -88,7 +88,7 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 	}
 	var firstUnresolved string
 	if len(unresolved) > 0 {
-				firstUnresolved = fmt.Sprintf("%s happened (action %s)", unresolved[0], unresolved[0].ID)
+		firstUnresolved = fmt.Sprintf("%s happened (action %s)", unresolved[0], unresolved[0].ID)
 	}
 	if err := rt.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND status = 'blocked'
 		AND updated_at > ?`, id, rt.Now().Add(-7*24*time.Hour).UnixMilli()).Scan(&o.Blocked); err != nil {
@@ -106,7 +106,7 @@ func next(a assignments.Assignment, unresolved string, blocked int, open []Task,
 		return Expected{What: "nothing; " + string(a.Kind) + " is " + a.Status}
 	}
 	if unresolved != "" {
-				return Expected{What: "needs you: confirm whether " + unresolved}
+		return Expected{What: "needs you: confirm whether " + unresolved}
 	}
 	if blocked > 0 {
 		return Expected{What: fmt.Sprintf("needs you: %d blocked task(s) to retry or drop", blocked)}

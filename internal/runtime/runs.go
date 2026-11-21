@@ -11,6 +11,8 @@ import (
 	"agentd/internal/audit"
 	"agentd/internal/ids"
 	"agentd/internal/model"
+	"agentd/internal/policy"
+	"agentd/internal/scheduler"
 	"agentd/internal/skills"
 	"agentd/internal/tasks"
 )
@@ -44,10 +46,17 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 		return rn, err
 	}
 	system := systemPrompt(p) + skills.Prompt(loaded)
-	for i, m := range []model.Message{
+	initial := []model.Message{
 		{Role: model.RoleSystem, Content: system},
 		{Role: model.RoleUser, Content: t.Objective},
-	} {
+	}
+	if extra, n, err := scheduler.LinkedEvents(ctx, r.DB, t.ID, true, r.Now()); err != nil {
+		return rn, err
+	} else if n > 0 {
+		initial = append(initial, model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
+			"%d more event(s) for this task arrived before you started:\n%s", n, extra)})
+	}
+	for i, m := range initial {
 		if err := r.appendMessage(ctx, rn.ID, i, m); err != nil {
 			return rn, err
 		}
@@ -112,6 +121,20 @@ func (r *Runtime) appendModelMessage(ctx context.Context, t tasks.Task, rn *run,
 	}
 	rn.Steps++
 	return nil
+}
+
+func (r *Runtime) unseenEvents(ctx context.Context, t tasks.Task) (int, error) {
+	if !t.Allows(scheduler.TaskEventsTool) {
+		return 0, nil
+	}
+	a, err := r.Assignments.Get(ctx, t.AssignmentID)
+	if err != nil {
+		return 0, err
+	}
+	if policy.Evaluate(a.Policy, scheduler.TaskEventsTool, "").Mode != policy.Allow {
+		return 0, nil
+	}
+	return scheduler.UnseenEvents(ctx, r.DB, t.ID)
 }
 
 func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, runID string, resp model.Response) error {

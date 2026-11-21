@@ -9,7 +9,8 @@
       "update_state":      {"mode": "allow"},
       "schedule_followup": {"mode": "allow"},
       "delegate":          {"mode": "allow"},
-      "await_workers":     {"mode": "allow"}
+      "await_workers":     {"mode": "allow"},
+      "task_events":       {"mode": "allow"}
     },
     "limits": {
       "max_llm_spend_usd": 20,

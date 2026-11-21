@@ -152,7 +152,7 @@ Each layer removes work before the next, more expensive one:
 |---|---|---|
 | Inbox | Unique `(source, external_id)` | The same event processed twice. |
 | Routes | Deterministic payload match | Model calls on irrelevant events. |
-| Grouping | `coalesce_field` + one open task per key | Ten updates about one thing becoming ten investigations. |
+| Grouping | `coalesce_field` + one open task per key | Ten updates about one thing becoming ten investigations. Events grouped before a run starts are in its opening messages; events grouped mid-run must be read (`task_events`) before the task may finish. |
 | Tasks | `origin_key` on every system-created task | Duplicate tasks from retries, restarts or repeated schedule fires. |
 | Runtime | Checkpointed runs; restarts resume, never replay | Re-asking the model for steps already taken. |
 | Gateway | Action ledger + reconcile before retry | Repeating a side effect whose outcome is unknown. |
@@ -173,7 +173,8 @@ Each layer removes work before the next, more expensive one:
 10. A responsibility always has a periodic budget and a notification policy, and can never complete; only a person can revoke it.
 11. Only adapters import provider SDKs, and only `cmd/` picks an adapter (`internal/archtest`).
 12. Emergency stop is a durable flag checked at every point of execution: no task is claimed, no model call starts, and no tool dispatches while it is set. Intake (events, schedules) keeps recording work for later. A model call already in flight finishes, but its tool calls do not run.
-13. The HTTP API refuses every request without the bearer token, including when no token is configured.
+13. No event linked to a task is silently dropped: it is either in the run's opening messages or the task cannot finish until it has read it (when its policy allows `task_events`).
+14. The HTTP API refuses every request without the bearer token, including when no token is configured.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -221,7 +222,6 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 - Notification delivery channels (the outbox is durable; nothing drains it yet).
 - Event-source adapters for market data and news (Gmail exists).
 - Automatic project completion from `completion.criteria` (today a person runs `agentd complete`).
-- A tool for a task to read the events linked to it after grouping.
 - Budget reservations: concurrent workers can overshoot a cap by one in-flight call each.
 
 ## Package map

@@ -105,6 +105,18 @@ func (r *Runtime) execute(ctx context.Context, lease tasks.Lease) error {
 			if err != nil {
 				return r.fail(ctx, lease, task, err)
 			}
+			unseen, err := r.unseenEvents(ctx, task)
+			if err != nil {
+				return r.fail(ctx, lease, task, err)
+			}
+			if unseen > 0 {
+				nudge := model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
+					"%d new event(s) were linked to this task while you worked. Call task_events to read them before finishing.", unseen)}
+				if err := r.appendMessage(ctx, rn.ID, len(msgs), nudge); err != nil {
+					return r.fail(ctx, lease, task, err)
+				}
+				continue
+			}
 			if len(missing) == 0 {
 				if err := r.finishRun(ctx, rn.ID, "completed", nil); err != nil {
 					return r.fail(ctx, lease, task, err)
