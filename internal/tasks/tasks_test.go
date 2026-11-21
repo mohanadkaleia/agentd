@@ -135,6 +135,19 @@ func TestRenewKeepsLeaseAlive(t *testing.T) {
 	}
 }
 
+func TestExpiredLeaseCannotBeRenewed(t *testing.T) {
+	f := setup(t)
+	f.newTask(t, tasks.NewTask{})
+	l := f.claim(t, "a")
+	f.clock.Advance(ttl + time.Second)
+	if _, err := f.tasks.Renew(context.Background(), *l, ttl); !errors.Is(err, tasks.ErrLeaseLost) {
+		t.Fatalf("renew after expiry err = %v, want ErrLeaseLost", err)
+	}
+	if other := f.claim(t, "b"); other == nil {
+		t.Fatal("expired lease was revived instead of being reclaimable")
+	}
+}
+
 func TestRepeatedLeaseExpiryBlocksTask(t *testing.T) {
 	f := setup(t)
 	id := f.newTask(t, tasks.NewTask{MaxAttempts: 2})

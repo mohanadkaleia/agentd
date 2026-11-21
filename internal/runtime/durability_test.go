@@ -46,8 +46,10 @@ func TestSlowToolKeepsItsLeaseAndRunsOnce(t *testing.T) {
 			return
 		}
 		slowed = true
-		h.clock.Advance(3 * h.app.Runtime.LeaseTTL)
-		time.Sleep(60 * time.Millisecond)
+		for range 6 {
+			h.clock.Advance(h.app.Runtime.LeaseTTL / 2)
+			time.Sleep(20 * time.Millisecond)
+		}
 		intruder, _ = h.app.Tasks.ClaimReady(ctx, "intruder", h.app.Runtime.LeaseTTL)
 	}})
 	h.drain()
@@ -86,6 +88,62 @@ func TestLostLeaseStopsDispatch(t *testing.T) {
 	if got := h.actionStatuses("send_email"); len(got) != 1 || got[0] != gateway.Prepared {
 		t.Fatalf("action = %v, want it left prepared for the new lease holder", got)
 	}
+}
+
+func TestExpiredLeaseCannotDispatchOrRenew(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	ctx := context.Background()
+	h.app.Runtime.HeartbeatEvery = time.Hour
+	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
+	withTool(h, "send_email", stealingTool{mailbox, func() {
+		h.clock.Advance(2 * h.app.Runtime.LeaseTTL)
+	}})
+	worked, err := h.app.Runtime.RunOnce(ctx, "w")
+	if !worked || !errors.Is(err, tasks.ErrLeaseLost) {
+		t.Fatalf("RunOnce = %v, %v; want ErrLeaseLost from the expired lease", worked, err)
+	}
+	if h.sent(demo.AirlineRefunds) != 0 {
+		t.Fatal("a worker whose lease expired still dispatched the tool")
+	}
+	if got := h.task(); got.LeaseOwner != "w" || got.Status != tasks.Running {
+		t.Fatalf("task = %s owned by %q; the expired lease should be left for a reclaim", got.Status, got.LeaseOwner)
+	}
+	l, err := h.app.Tasks.ClaimReady(ctx, "next", h.app.Runtime.LeaseTTL)
+	if err != nil || l == nil {
+		t.Fatalf("reclaim = %v, %v", l, err)
+	}
+}
+
+func TestHeartbeatStopsWorkOnAnyRenewalError(t *testing.T) {
+	h := newHarness(t, demo.Script)
+	ctx := context.Background()
+	h.app.Runtime.HeartbeatEvery = 5 * time.Millisecond
+	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
+	var cancelled bool
+	withTool(h, "send_email", blockingMailbox{mailbox, func(ctx context.Context) {
+		h.db.Exec(`CREATE TRIGGER refuse_renewal BEFORE UPDATE OF lease_until ON tasks
+			BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+		select {
+		case <-ctx.Done():
+			cancelled = true
+		case <-time.After(2 * time.Second):
+		}
+		h.db.Exec(`DROP TRIGGER refuse_renewal`)
+	}})
+	h.app.Runtime.RunOnce(ctx, "w")
+	if !cancelled {
+		t.Fatal("work kept running after the heartbeat failed to renew the lease")
+	}
+}
+
+type blockingMailbox struct {
+	*tools.Mailbox
+	during func(context.Context)
+}
+
+func (b blockingMailbox) Execute(ctx context.Context, call tools.Invocation) (tools.Result, error) {
+	b.during(ctx)
+	return b.Mailbox.Execute(ctx, call)
 }
 
 func TestLostLeaseStopsModelStepWrite(t *testing.T) {

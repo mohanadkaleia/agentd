@@ -345,10 +345,11 @@ func runError(r Release) any {
 	return string(body)
 }
 
-func HoldsLease(ctx context.Context, tx *sql.Tx, l Lease) error {
+func HoldsLease(ctx context.Context, tx *sql.Tx, l Lease, now time.Time) error {
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running'`,
-		l.TaskID, l.Owner, l.Version).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks
+		WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running' AND lease_until > ?`,
+		l.TaskID, l.Owner, l.Version, now.UnixMilli()).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
@@ -358,10 +359,11 @@ func HoldsLease(ctx context.Context, tx *sql.Tx, l Lease) error {
 }
 
 func (s *Store) Renew(ctx context.Context, l Lease, ttl time.Duration) (Lease, error) {
-	until := s.Now().Add(ttl)
+	now := s.Now()
+	until := now.Add(ttl)
 	res, err := s.DB.ExecContext(ctx, `UPDATE tasks SET lease_until = ?, updated_at = ?
-		WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running'`,
-		until.UnixMilli(), s.Now().UnixMilli(), l.TaskID, l.Owner, l.Version)
+		WHERE id = ? AND lease_owner = ? AND version = ? AND status = 'running' AND lease_until > ?`,
+		until.UnixMilli(), now.UnixMilli(), l.TaskID, l.Owner, l.Version, now.UnixMilli())
 	if err != nil {
 		return l, err
 	}

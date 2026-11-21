@@ -127,7 +127,7 @@ func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t t
 	if err := r.recordUsage(ctx, tx, t, rn.ID, resp); err != nil {
 		return err
 	}
-	if err := tasks.HoldsLease(ctx, tx, lease); err != nil {
+	if err := tasks.HoldsLease(ctx, tx, lease, r.Now()); err != nil {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return commitErr
 		}

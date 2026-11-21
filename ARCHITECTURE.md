@@ -177,7 +177,7 @@ Each layer removes work before the next, more expensive one:
 11. Only adapters import provider SDKs, and only `cmd/` picks an adapter (`internal/archtest`).
 12. Emergency stop is a durable flag checked at every point of execution: no task is claimed, no model call starts, and no tool dispatches while it is set. Intake (events, schedules) keeps recording work for later. A model call already in flight finishes, but its tool calls do not run.
 13. No event linked to a task is silently dropped: it is either in the run's opening messages or the task cannot finish until it has read it (when its policy allows `task_events`).
-14. A task's lease is renewed by a heartbeat for as long as it executes, and every dispatch and model-step write is fenced on that lease in the same transaction; a reclaimed task always resumes its latest run.
+14. A task's lease is renewed by a heartbeat for as long as it executes, and every dispatch and model-step write is fenced on that lease in the same transaction; a reclaimed task always resumes its latest run. A lease counts only while unexpired: an expired lease cannot be renewed, fence a write or start a dispatch, even if nobody has reclaimed it yet. Any renewal error stops the work, so a heartbeat failure is never mistaken for a renewal. Release still accepts an expired but unclaimed lease, because it only records an outcome that already happened.
 15. Agent-written state is shown to the model as labelled data, never as part of the system prompt.
 16. The HTTP API refuses every request without the bearer token, including when no token is configured, and agentd refuses to bind it to every interface.
 

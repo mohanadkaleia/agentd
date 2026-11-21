@@ -239,7 +239,7 @@ func (r *Runtime) heartbeat(parent context.Context, lease tasks.Lease) (context.
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if _, err := r.Tasks.Renew(ctx, lease, r.LeaseTTL); errors.Is(err, tasks.ErrLeaseLost) {
+				if _, err := r.Tasks.Renew(ctx, lease, r.LeaseTTL); err != nil {
 					cancel()
 					return
 				}

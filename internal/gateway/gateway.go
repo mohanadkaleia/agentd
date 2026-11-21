@@ -243,7 +243,7 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 	}
 	defer tx.Rollback()
 	if lease.Owner != "" {
-		if err := tasks.HoldsLease(ctx, tx, lease); err != nil {
+		if err := tasks.HoldsLease(ctx, tx, lease, now); err != nil {
 			return "", err
 		}
 	}
