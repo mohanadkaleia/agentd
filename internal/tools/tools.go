@@ -16,6 +16,14 @@ const (
 	EffectWrite Effect = "write"
 )
 
+type Finding int
+
+const (
+	Unknown Finding = iota
+	Happened
+	NotHappened
+)
+
 var (
 	ErrNotExecuted = errors.New("tool call was not executed")
 	ErrNotReady    = errors.New("tool cannot complete yet")
@@ -41,7 +49,7 @@ type Tool interface {
 	Effect() Effect
 	Resource(args json.RawMessage) (string, error)
 	Execute(ctx context.Context, call Invocation) (Result, error)
-	Reconcile(ctx context.Context, call Invocation) (Result, bool, error)
+	Reconcile(ctx context.Context, call Invocation) (Result, Finding, error)
 }
 
 type Registry map[string]Tool

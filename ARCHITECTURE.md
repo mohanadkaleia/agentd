@@ -164,7 +164,10 @@ Each layer removes work before the next, more expensive one:
 1. Every tool call is persisted as an action, keyed `run:step:call`, before it runs.
 2. Policy is evaluated by code on every dispatch; no rule means deny.
 3. An approval binds to the action's exact argument hash and expires.
-4. A crash mid-dispatch is reconciled with the provider before anything is retried; an unknowable outcome blocks the task.
+4. A crash mid-dispatch is reconciled with the provider before anything is retried. A tool answers
+   happened, did not happen, or unknown; only a tool with authoritative evidence may say "did not
+   happen". Unknown blocks the task, and housekeeping rechecks it every minute until the provider
+   confirms it or a person resolves it.
 5. A task completes only when its success criteria have recorded evidence.
 6. Each event, schedule slot, follow-up and delegation creates at most one task, even across crashes.
 7. A task's tool allowlist is enforced by the gateway; a worker never gets a tool its parent lacks, and a skill never grants one.
@@ -205,9 +208,9 @@ runtime never imports them; `cmd/` wires them in.
 **Gmail** (`internal/integrations/gmail`): a small REST client, OAuth with PKCE and a loopback
 redirect, credentials in the keychain. Every outgoing message carries a `Message-ID` derived from
 the action's idempotency key; after a crash or an ambiguous error the tool searches Sent/Drafts for
-that id before anything is retried. Gmail's search index can lag, so the send check is repeated a
-few times over several seconds before concluding "not sent"; a lag longer than that could still
-produce a duplicate, which is the one residual risk. `gmail_send` takes exactly one recipient so
+that id before anything is retried. A search miss is never treated as "not sent": Gmail's index
+can lag, so a miss leaves the action unresolved and the task blocked until a later recheck finds the
+message or a person resolves it with `agentd resolve`. `gmail_send` takes exactly one recipient so
 policy can allow-list contacts; anything wider must be a draft. The inbox watcher follows Gmail's
 history from the moment it is connected (no backfill) and recovers from an expired history id by
 re-scanning the last two days, deduplicated by message id.
@@ -225,8 +228,9 @@ the same stores and gateway as the runtime. Provider-native model payloads never
   `/usr/bin/security`, which makes that tool their trusted reader. Any process running as the same
   macOS user can read them without a prompt. The keychain protects against other users, not against
   malware running as you. The design-doc target, a dedicated non-admin account for agentd, closes this.
-- **Gmail search lag.** Send reconciliation retries for a few seconds; a longer index lag after an
-  ambiguous failure could still produce one duplicate email.
+- **Unconfirmed Gmail sends wait.** A send Gmail never shows in Sent (a lost message, or a lag
+  that never ends) stays blocked until a person resolves it. Safer than a duplicate, but it needs
+  attention: `agentd status` lists it.
 - **Budget reservations.** Concurrent workers can overshoot a spend cap by one in-flight call each.
 - **In-flight model calls.** An emergency stop does not cancel a model request already in progress;
   its tool calls will not run.

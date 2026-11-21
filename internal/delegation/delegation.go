@@ -134,12 +134,15 @@ func (d *Delegate) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	return tools.Result{Output: mustJSON(map[string]string{"status": "started", "task_id": id}), ExternalID: id}, nil
 }
 
-func (d *Delegate) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
+func (d *Delegate) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, tools.Finding, error) {
 	id, found, err := d.Tasks.FindByOrigin(ctx, tasks.WorkerOriginPrefix+call.IdempotencyKey)
-	if err != nil || !found {
-		return tools.Result{}, false, err
+	if err != nil {
+		return tools.Result{}, tools.Unknown, err
 	}
-	return tools.Result{Output: mustJSON(map[string]string{"status": "started", "task_id": id}), ExternalID: id}, true, nil
+	if !found {
+		return tools.Result{}, tools.NotHappened, nil
+	}
+	return tools.Result{Output: mustJSON(map[string]string{"status": "started", "task_id": id}), ExternalID: id}, tools.Happened, nil
 }
 
 type Await struct {
@@ -208,8 +211,8 @@ func (a *Await) Execute(ctx context.Context, call tools.Invocation) (tools.Resul
 	return tools.Result{Output: mustJSON(map[string]any{"workers": results})}, nil
 }
 
-func (*Await) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, nil
+func (*Await) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.NotHappened, nil
 }
 
 func refuse(reason string) error {

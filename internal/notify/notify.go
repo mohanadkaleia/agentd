@@ -204,11 +204,14 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 	return tools.Result{Output: out, ExternalID: res.ID}, nil
 }
 
-func (t *Tool) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
+func (t *Tool) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, tools.Finding, error) {
 	res, found, err := t.Outbox.FindByAction(ctx, call.ActionID)
-	if err != nil || !found {
-		return tools.Result{}, false, err
+	if err != nil {
+		return tools.Result{}, tools.Unknown, err
+	}
+	if !found {
+		return tools.Result{}, tools.NotHappened, nil
 	}
 	out, _ := json.Marshal(res)
-	return tools.Result{Output: out, ExternalID: res.ID}, true, nil
+	return tools.Result{Output: out, ExternalID: res.ID}, tools.Happened, nil
 }

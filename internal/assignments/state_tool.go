@@ -58,6 +58,6 @@ func (t *StateTool) Execute(ctx context.Context, call tools.Invocation) (tools.R
 	return tools.Result{Output: json.RawMessage(`{"status":"saved"}`)}, nil
 }
 
-func (*StateTool) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, nil
+func (*StateTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.NotHappened, nil
 }

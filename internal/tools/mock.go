@@ -49,8 +49,8 @@ func (WebSearch) Execute(_ context.Context, call Invocation) (Result, error) {
 	return Result{Output: out}, nil
 }
 
-func (WebSearch) Reconcile(context.Context, Invocation) (Result, bool, error) {
-	return Result{}, false, nil
+func (WebSearch) Reconcile(context.Context, Invocation) (Result, Finding, error) {
+	return Result{}, NotHappened, nil
 }
 
 type Mailbox struct {
@@ -118,24 +118,24 @@ func (m *Mailbox) Execute(ctx context.Context, call Invocation) (Result, error) 
 	if m.Delay > 0 {
 		time.Sleep(m.Delay)
 	}
-	res, found, err := m.Reconcile(ctx, call)
-	if err != nil || !found {
+	res, finding, err := m.Reconcile(ctx, call)
+	if err != nil || finding != Happened {
 		return Result{}, fmt.Errorf("send not confirmed: %v", err)
 	}
 	return res, nil
 }
 
-func (m *Mailbox) Reconcile(ctx context.Context, call Invocation) (Result, bool, error) {
+func (m *Mailbox) Reconcile(ctx context.Context, call Invocation) (Result, Finding, error) {
 	var messageID string
 	err := m.DB.QueryRowContext(ctx, `SELECT message_id FROM mock_mailbox WHERE idempotency_key = ?`, call.IdempotencyKey).Scan(&messageID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Result{}, false, nil
+		return Result{}, NotHappened, nil
 	}
 	if err != nil {
-		return Result{}, false, err
+		return Result{}, Unknown, err
 	}
 	out, _ := json.Marshal(map[string]string{"status": "sent", "message_id": messageID})
-	return Result{Output: out, ExternalID: messageID}, true, nil
+	return Result{Output: out, ExternalID: messageID}, Happened, nil
 }
 
 func SentCount(ctx context.Context, db *sql.DB, recipient string) (int, error) {

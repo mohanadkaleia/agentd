@@ -103,8 +103,8 @@ func (t *searchTool) Execute(ctx context.Context, call tools.Invocation) (tools.
 	return tools.Result{Output: untrusted(out)}, nil
 }
 
-func (*searchTool) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, nil
+func (*searchTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.NotHappened, nil
 }
 
 type readTool struct{ a *Account }
@@ -172,8 +172,8 @@ func (t *readTool) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	return tools.Result{Output: untrusted(content)}, nil
 }
 
-func (*readTool) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, nil
+func (*readTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.NotHappened, nil
 }
 
 type composeTool struct {
@@ -286,7 +286,7 @@ func (t *composeTool) Execute(ctx context.Context, call tools.Invocation) (tools
 	return t.result(id), nil
 }
 
-func (t *composeTool) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
+func (t *composeTool) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, tools.Finding, error) {
 	messageID := MessageIDFor(call.IdempotencyKey)
 	find := t.a.Client.FindDraft
 	if t.send {
@@ -299,20 +299,20 @@ func (t *composeTool) Reconcile(ctx context.Context, call tools.Invocation) (too
 	for attempt := range tries {
 		id, found, err := find(ctx, messageID)
 		if err != nil {
-			return tools.Result{}, false, err
+			return tools.Result{}, tools.Unknown, err
 		}
 		if found {
-			return t.result(id), true, nil
+			return t.result(id), tools.Happened, nil
 		}
 		if attempt+1 < tries {
 			select {
 			case <-ctx.Done():
-				return tools.Result{}, false, ctx.Err()
+				return tools.Result{}, tools.Unknown, ctx.Err()
 			case <-time.After(t.a.ReconcileWait):
 			}
 		}
 	}
-	return tools.Result{}, false, nil
+	return tools.Result{}, tools.Unknown, nil
 }
 
 func (t *composeTool) result(id string) tools.Result {

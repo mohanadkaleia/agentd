@@ -207,6 +207,82 @@ func TestAmbiguousSendErrorIsReconciledNotRetried(t *testing.T) {
 	}
 }
 
+func (w *world) housekeep() {
+	if err := w.app.Runtime.Housekeeping(context.Background()); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestUnconfirmedSendBlocksUntilGmailShowsIt(t *testing.T) {
+	w := newWorld(t, toolCall("s", "gmail_send", send(friend)))
+	w.fake.failSend, w.fake.sentLags = true, true
+	taskID := w.task()
+	w.drain()
+	if got := w.actions("gmail_send"); len(got) != 1 || got[0] != gateway.NeedsReconciliation {
+		t.Fatalf("actions = %v, want the unconfirmed send held as needs_reconciliation", got)
+	}
+	if task, _ := w.app.Tasks.Get(context.Background(), taskID); task.Status != tasks.Blocked {
+		t.Fatalf("task = %s, want blocked", task.Status)
+	}
+
+	w.clock.Advance(2 * time.Minute)
+	w.housekeep()
+	w.drain()
+	if got := w.actions("gmail_send"); got[0] != gateway.NeedsReconciliation {
+		t.Fatalf("still lagging: actions = %v", got)
+	}
+
+	w.fake.sentLags = false
+	w.clock.Advance(2 * time.Minute)
+	w.housekeep()
+	w.drain()
+	if got := w.actions("gmail_send"); len(got) != 1 || got[0] != gateway.Succeeded {
+		t.Fatalf("actions = %v, want the send confirmed once Gmail shows it", got)
+	}
+	if task, _ := w.app.Tasks.Get(context.Background(), taskID); task.Status != tasks.Completed {
+		t.Fatalf("task = %s, want completed after confirmation", task.Status)
+	}
+	if w.fake.sendCalls != 1 || len(w.fake.sent()) != 1 {
+		t.Fatalf("send calls = %d, sent = %d; want exactly one", w.fake.sendCalls, len(w.fake.sent()))
+	}
+}
+
+func TestCrashWithLaggingSearchNeverResends(t *testing.T) {
+	w := newWorld(t, toolCall("s", "gmail_send", send(friend)))
+	taskID := w.task()
+	w.app.Gateway.AfterExecute = func(a gateway.Action) {
+		if a.ToolName == "gmail_send" {
+			goruntime.Goexit()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.app.Runtime.RunOnce(context.Background(), "doomed")
+	}()
+	<-done
+
+	w.fake.sentLags = true
+	w.app.DB.Close()
+	w.boot()
+	for range 3 {
+		w.clock.Advance(2 * time.Minute)
+		w.housekeep()
+		w.drain()
+	}
+
+	if w.fake.sendCalls != 1 {
+		t.Fatalf("send calls = %d, want exactly one", w.fake.sendCalls)
+	}
+	if task, _ := w.app.Tasks.Get(context.Background(), taskID); task.Status != tasks.Blocked {
+		t.Fatalf("task = %s, want blocked", task.Status)
+	}
+	unresolved, err := w.app.Gateway.UnresolvedActions(context.Background(), "")
+	if err != nil || len(unresolved) != 1 || unresolved[0].ToolName != "gmail_send" {
+		t.Fatalf("unresolved = %v, %v", unresolved, err)
+	}
+}
+
 func TestSendPolicyAndRecipientRules(t *testing.T) {
 	w := newWorld(t,
 		toolCall("a", "gmail_send", send(friend, "other@example.com")),

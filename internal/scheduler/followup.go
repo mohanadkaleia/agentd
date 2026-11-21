@@ -80,12 +80,15 @@ func (f *Followup) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 	return followupResult(id, runAt), nil
 }
 
-func (f *Followup) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
+func (f *Followup) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, tools.Finding, error) {
 	id, found, err := f.Tasks.FindByOrigin(ctx, "followup:"+call.IdempotencyKey)
-	if err != nil || !found {
-		return tools.Result{}, false, err
+	if err != nil {
+		return tools.Result{}, tools.Unknown, err
 	}
-	return tools.Result{Output: mustJSON(map[string]string{"status": "scheduled", "task_id": id}), ExternalID: id}, true, nil
+	if !found {
+		return tools.Result{}, tools.NotHappened, nil
+	}
+	return tools.Result{Output: mustJSON(map[string]string{"status": "scheduled", "task_id": id}), ExternalID: id}, tools.Happened, nil
 }
 
 func followupResult(id string, runAt time.Time) tools.Result {

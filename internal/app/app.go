@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"agentd/internal/assignments"
@@ -46,7 +47,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	} {
 		all[tool.Definition().Name] = tool
 	}
-	g := &gateway.Gateway{DB: db, Tools: all, Assignments: a, Tasks: t, Now: now, ApprovalTTL: 24 * time.Hour}
+	g := &gateway.Gateway{DB: db, Tools: all, Assignments: a, Tasks: t, Now: now, ApprovalTTL: 24 * time.Hour, RecheckEvery: time.Minute}
 	sch := &scheduler.Scheduler{DB: db, Tasks: t, Now: now}
 	sk := skills.Registry{}
 	rt := &runtime.Runtime{
@@ -68,6 +69,16 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	rt.Housekeeping = func(ctx context.Context) error {
 		if _, err := g.ExpireApprovals(ctx); err != nil {
 			return err
+		}
+		confirmed, err := g.Recheck(ctx)
+		if err != nil {
+			return err
+		}
+		for _, taskID := range confirmed {
+			err := rt.Retry(ctx, taskID, "gateway", "the provider confirmed the action took effect")
+			if err != nil && !errors.Is(err, runtime.ErrNotBlocked) && !errors.Is(err, runtime.ErrUnresolvedWork) {
+				return err
+			}
 		}
 		if err := rt.ResumeWithinBudget(ctx); err != nil {
 			return err

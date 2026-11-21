@@ -96,8 +96,8 @@ func LinkedEvents(ctx context.Context, tx *sql.Tx, taskID string, onlyUnseen boo
 	return out, len(events), err
 }
 
-func (*TaskEvents) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, nil
+func (*TaskEvents) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.NotHappened, nil
 }
 
 func UnseenEvents(ctx context.Context, db *sql.DB, taskID string) (int, error) {

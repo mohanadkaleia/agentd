@@ -73,13 +73,13 @@ func TestToolReconcilesInsteadOfResending(t *testing.T) {
 	tool := &notify.Tool{Outbox: o}
 	args, _ := json.Marshal(map[string]string{"severity": "action", "title": "t", "body": "b", "dedup_key": "k"})
 	call := tools.Invocation{AssignmentID: id, ActionID: "act_1", Arguments: args, IdempotencyKey: "run:1:c"}
-	if _, found, _ := tool.Reconcile(context.Background(), call); found {
+	if _, finding, _ := tool.Reconcile(context.Background(), call); finding != tools.NotHappened {
 		t.Fatal("found a notification that was never sent")
 	}
 	if _, err := tool.Execute(context.Background(), call); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := tool.Reconcile(context.Background(), call); !found {
+	if _, finding, _ := tool.Reconcile(context.Background(), call); finding != tools.Happened {
 		t.Fatal("reconcile missed the sent notification")
 	}
 	var n int
@@ -112,7 +112,7 @@ func TestReconcileMatchesOnlyThisAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.Advance(5 * 24 * time.Hour)
-	if _, found, _ := tool.Reconcile(context.Background(), tools.Invocation{AssignmentID: id, ActionID: "act_new", Arguments: args}); found {
+	if _, finding, _ := tool.Reconcile(context.Background(), tools.Invocation{AssignmentID: id, ActionID: "act_new", Arguments: args}); finding != tools.NotHappened {
 		t.Fatal("a crashed new notify was matched to an old notification with the same dedup key")
 	}
 }

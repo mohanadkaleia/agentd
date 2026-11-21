@@ -77,6 +77,7 @@ type Gateway struct {
 	Tasks        *tasks.Store
 	Now          func() time.Time
 	ApprovalTTL  time.Duration
+	RecheckEvery time.Duration
 	AfterExecute func(Action)
 }
 
@@ -219,14 +220,16 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 	if errors.Is(err, tools.ErrNotExecuted) || tool.Effect() == tools.EffectRead {
 		return g.finish(ctx, a, Dispatching, Failed, errorJSON(err.Error()), "")
 	}
-	res, found, rerr := tool.Reconcile(ctx, g.invocation(*a))
+	res, finding, rerr := tool.Reconcile(ctx, g.invocation(*a))
 	switch {
 	case rerr != nil:
 		return g.finish(ctx, a, Dispatching, NeedsReconciliation, errorJSON(fmt.Sprintf("outcome unknown: %v; reconcile: %v", err, rerr)), "")
-	case found:
+	case finding == tools.Happened:
 		return g.finish(ctx, a, Dispatching, Succeeded, res.Output, res.ExternalID)
-	default:
+	case finding == tools.NotHappened:
 		return g.finish(ctx, a, Dispatching, Failed, errorJSON(err.Error()), "")
+	default:
+		return g.finish(ctx, a, Dispatching, NeedsReconciliation, errorJSON(fmt.Sprintf("outcome unknown: %v; the provider has no record of it yet", err)), "")
 	}
 }
 
@@ -282,13 +285,16 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 }
 
 func (g *Gateway) recover(ctx context.Context, a *Action, tool tools.Tool) error {
-	res, found, err := tool.Reconcile(ctx, g.invocation(*a))
+	res, finding, err := tool.Reconcile(ctx, g.invocation(*a))
 	switch {
 	case err != nil:
 		_, ferr := g.finish(ctx, a, Dispatching, NeedsReconciliation, errorJSON("reconcile failed: "+err.Error()), "")
 		return ferr
-	case found:
+	case finding == tools.Happened:
 		_, ferr := g.finish(ctx, a, Dispatching, Succeeded, res.Output, res.ExternalID)
+		return ferr
+	case finding == tools.Unknown:
+		_, ferr := g.finish(ctx, a, Dispatching, NeedsReconciliation, errorJSON("outcome unknown after an interruption; the provider has no record of it yet"), "")
 		return ferr
 	}
 	return audit.Record(ctx, g.DB, g.Now(), a.AssignmentID, "gateway", "action.reconciled_not_found", a.ID, nil)
@@ -347,12 +353,18 @@ func (g *Gateway) setStatus(ctx context.Context, a *Action, from, to string) err
 	return nil
 }
 
+const actionColumns = `id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
+	resource, status, idempotency_key, result_json`
+
 func (g *Gateway) loadByKey(ctx context.Context, key string) (Action, error) {
+	return scanAction(g.DB.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM actions WHERE idempotency_key = ?`, key))
+}
+
+func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	var a Action
 	var args string
 	var result sql.NullString
-	err := g.DB.QueryRowContext(ctx, `SELECT id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
-		resource, status, idempotency_key, result_json FROM actions WHERE idempotency_key = ?`, key).
+	err := row.
 		Scan(&a.ID, &a.RunID, &a.TaskID, &a.AssignmentID, &a.ToolName, &args, &a.ArgumentsHash,
 			&a.Resource, &a.Status, &a.IdempotencyKey, &result)
 	a.Arguments = json.RawMessage(args)

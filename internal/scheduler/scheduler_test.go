@@ -212,16 +212,16 @@ func TestFollowupReconcilesInsteadOfDuplicating(t *testing.T) {
 	call := tools.Invocation{AssignmentID: f.project, TaskID: origin, IdempotencyKey: "run_x:3:call_4",
 		Arguments: json.RawMessage(`{"after_hours":1,"reason":"check"}`)}
 
-	if _, found, _ := fu.Reconcile(ctx, call); found {
+	if _, finding, _ := fu.Reconcile(ctx, call); finding != tools.NotHappened {
 		t.Fatal("reconcile found a follow-up that was never created")
 	}
 	first, err := fu.Execute(ctx, call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, found, err := fu.Reconcile(ctx, call)
-	if err != nil || !found || res.ExternalID != first.ExternalID {
-		t.Fatalf("reconcile = %v %v %v, want the existing task", res.ExternalID, found, err)
+	res, finding, err := fu.Reconcile(ctx, call)
+	if err != nil || finding != tools.Happened || res.ExternalID != first.ExternalID {
+		t.Fatalf("reconcile = %v %v %v, want the existing task", res.ExternalID, finding, err)
 	}
 	second, _ := fu.Execute(ctx, call)
 	if second.ExternalID != first.ExternalID || f.tasksTitled("Follow-up: check") != 1 {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"agentd/internal/audit"
+	"agentd/internal/tools"
 )
 
 var ErrNotUnresolved = errors.New("action does not need reconciliation")
@@ -78,4 +79,55 @@ func (g *Gateway) UnresolvedActions(ctx context.Context, assignmentID string) ([
 
 func (u Unresolved) String() string {
 	return fmt.Sprintf("%s %s", u.ToolName, u.Resource)
+}
+
+func (g *Gateway) Recheck(ctx context.Context) ([]string, error) {
+	rows, err := g.DB.QueryContext(ctx, `SELECT `+actionColumns+` FROM actions
+		WHERE status = 'needs_reconciliation' AND updated_at <= ? ORDER BY updated_at, id LIMIT 10`,
+		g.Now().Add(-g.RecheckEvery).UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	var due []Action
+	for rows.Next() {
+		a, err := scanAction(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		due = append(due, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var confirmed []string
+	for _, a := range due {
+		finding, res := tools.Unknown, tools.Result{}
+		if tool, ok := g.Tools.Lookup(a.ToolName); ok {
+			res, finding, err = tool.Reconcile(ctx, g.invocation(a))
+			if ctx.Err() != nil {
+				return confirmed, ctx.Err()
+			}
+			if err != nil {
+				finding = tools.Unknown
+			}
+		}
+		if finding == tools.Happened {
+			_, err := g.finish(ctx, &a, NeedsReconciliation, Succeeded, res.Output, res.ExternalID)
+			if err == nil {
+				confirmed = append(confirmed, a.TaskID)
+				continue
+			}
+			if !errors.Is(err, ErrConflict) {
+				return confirmed, err
+			}
+			continue
+		}
+		if _, err := g.DB.ExecContext(ctx, `UPDATE actions SET updated_at = ? WHERE id = ? AND status = 'needs_reconciliation'`,
+			g.Now().UnixMilli(), a.ID); err != nil {
+			return confirmed, err
+		}
+	}
+	return confirmed, nil
 }

@@ -28,6 +28,7 @@ type fakeGmail struct {
 	historyID int
 	expired   bool
 	failSend  bool
+	sentLags  bool
 	sendCalls int
 	nextID    int
 }
@@ -148,7 +149,7 @@ func (f *fakeGmail) matches(m *fakeMessage, q string) bool {
 	for _, term := range strings.Fields(q) {
 		switch {
 		case term == "in:sent":
-			if !has(m.labels, "SENT") {
+			if f.sentLags || !has(m.labels, "SENT") {
 				return false
 			}
 		case term == "in:inbox":

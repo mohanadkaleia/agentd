@@ -364,8 +364,8 @@ func (brokenMailbox) Execute(context.Context, tools.Invocation) (tools.Result, e
 	return tools.Result{}, errors.New("connection reset")
 }
 
-func (brokenMailbox) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
-	return tools.Result{}, false, errors.New("provider API down")
+func (brokenMailbox) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	return tools.Result{}, tools.Unknown, errors.New("provider API down")
 }
 
 func TestUnknownOutcomeBlocksInsteadOfRetrying(t *testing.T) {
