@@ -85,6 +85,12 @@ mv "$support/bin/agentd.new" "$support/bin/agentd"
 cp "$rendered" "$plist"
 
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+i=0
+while launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -le 40 ] || { echo "old $label did not stop within 40s"; exit 1; }
+    sleep 1
+done
 launchctl bootstrap "gui/$(id -u)" "$plist"
 
 echo "agentd installed and running ($model, $workers workers)"
