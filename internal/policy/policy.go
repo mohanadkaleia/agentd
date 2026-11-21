@@ -91,6 +91,18 @@ func Evaluate(p Policy, tool, resource string) Decision {
 	if len(rule.Resources) > 0 && !slices.Contains(rule.Resources, resource) {
 		mode, reason = rule.Otherwise, fmt.Sprintf("resource %q is not pre-approved for %q", resource, tool)
 	}
+	return decide(mode, reason)
+}
+
+func EvaluateScope(p Policy, tool string) (Decision, []string) {
+	rule, ok := p.Tools[tool]
+	if !ok {
+		return Decision{Deny, fmt.Sprintf("no policy rule for tool %q", tool)}, nil
+	}
+	return decide(rule.Mode, fmt.Sprintf("tool %q rule", tool)), rule.Resources
+}
+
+func decide(mode Mode, reason string) Decision {
 	switch mode {
 	case Allow, RequireApproval, Deny:
 		return Decision{mode, reason}

@@ -62,7 +62,7 @@ secret and refresh token are stored in the login keychain, never on disk or in t
 
 | Tool | Effect | Notes |
 |---|---|---|
-| `gmail_search`, `gmail_read` | read | Bodies are plain text, truncated, and labelled as untrusted. |
+| `gmail_search`, `gmail_read` | read | Bodies are plain text, truncated, and labelled as untrusted. `resources` limits them to mail from, to or cc'd to those correspondents: `{"mode":"allow","resources":["@airline.com"]}`. Without `resources`, the whole mailbox is readable. |
 | `gmail_draft` | write | Up to 10 recipients; nothing is sent. |
 | `gmail_send` | write | Exactly one recipient, so policy can allow-list contacts: `{"mode":"allow","resources":["refunds@airline.com"],"otherwise":"approval"}`. |
 

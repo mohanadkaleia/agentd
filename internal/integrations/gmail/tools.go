@@ -54,6 +54,40 @@ func truncate(s string) string {
 	return string(r[:maxBodyChars]) + "\n[truncated]"
 }
 
+var errOutOfScope = refuse("that mail is outside this assignment's mail scope")
+
+func inScope(m Message, scope []string) bool {
+	if scope == nil {
+		return true
+	}
+	for _, header := range []string{m.From, m.To, m.Cc} {
+		addrs, err := mail.ParseAddressList(header)
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			addr := strings.ToLower(a.Address)
+			for _, entry := range scope {
+				entry = strings.ToLower(strings.TrimSpace(entry))
+				if addr == entry || (strings.HasPrefix(entry, "@") && strings.HasSuffix(addr, entry)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func within(msgs []Message, scope []string) []Message {
+	out := msgs[:0:0]
+	for _, m := range msgs {
+		if inScope(m, scope) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 type searchTool struct{ a *Account }
 
 type searchArgs struct {
@@ -70,6 +104,8 @@ func (*searchTool) Definition() model.ToolDefinition {
 }
 
 func (*searchTool) Effect() tools.Effect { return tools.EffectRead }
+
+func (*searchTool) FiltersToScope() {}
 
 func (*searchTool) Resource(args json.RawMessage) (string, error) {
 	var in searchArgs
@@ -100,7 +136,7 @@ func (t *searchTool) Execute(ctx context.Context, call tools.Invocation) (tools.
 		}
 		out = append(out, m)
 	}
-	return tools.Result{Output: untrusted(out)}, nil
+	return tools.Result{Output: untrusted(within(out, call.Scope))}, nil
 }
 
 func (*searchTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
@@ -123,6 +159,8 @@ func (*readTool) Definition() model.ToolDefinition {
 }
 
 func (*readTool) Effect() tools.Effect { return tools.EffectRead }
+
+func (*readTool) FiltersToScope() {}
 
 func (*readTool) Resource(args json.RawMessage) (string, error) {
 	var in readArgs
@@ -150,6 +188,9 @@ func (t *readTool) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 			return tools.Result{}, err
 		}
 		msgs = []Message{m}
+	}
+	if msgs = within(msgs, call.Scope); len(msgs) == 0 {
+		return tools.Result{}, errOutOfScope
 	}
 	omitted := 0
 	if len(msgs) > maxThreadMessages {

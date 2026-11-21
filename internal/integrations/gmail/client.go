@@ -129,6 +129,7 @@ type Message struct {
 	MessageID string    `json:"message_id,omitempty"`
 	From      string    `json:"from"`
 	To        string    `json:"to,omitempty"`
+	Cc        string    `json:"cc,omitempty"`
 	Subject   string    `json:"subject"`
 	Date      time.Time `json:"date"`
 	Snippet   string    `json:"snippet"`
@@ -179,6 +180,8 @@ func parse(raw rawMessage, withBody bool) Message {
 			m.From = h.Value
 		case "to":
 			m.To = h.Value
+		case "cc":
+			m.Cc = h.Value
 		case "subject":
 			m.Subject = h.Value
 		case "message-id":

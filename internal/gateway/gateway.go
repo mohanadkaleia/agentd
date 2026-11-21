@@ -68,6 +68,7 @@ type Action struct {
 	Status         string
 	IdempotencyKey string
 	Result         json.RawMessage
+	scope          []string
 }
 
 type Gateway struct {
@@ -175,10 +176,17 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 		return Outcome{}, err
 	}
 	d := policy.Evaluate(p.Policy, a.ToolName, a.Resource)
+	if _, ok := tool.(tools.Scoped); ok {
+		d, a.scope = policy.EvaluateScope(p.Policy, a.ToolName)
+	}
 	if !task.Allows(a.ToolName) {
 		d = policy.Decision{Mode: policy.Deny, Reason: fmt.Sprintf("tool %q is not in this task's allowlist", a.ToolName)}
 	}
-	if err := audit.Record(ctx, g.DB, g.Now(), a.AssignmentID, "policy", "policy.evaluated", a.ID, d); err != nil {
+	evaluated := struct {
+		policy.Decision
+		Scope []string `json:"scope,omitempty"`
+	}{d, a.scope}
+	if err := audit.Record(ctx, g.DB, g.Now(), a.AssignmentID, "policy", "policy.evaluated", a.ID, evaluated); err != nil {
 		return Outcome{}, err
 	}
 	switch d.Mode {
@@ -383,6 +391,7 @@ func (g *Gateway) invocation(a Action) tools.Invocation {
 		IdempotencyKey: a.IdempotencyKey,
 		Name:           a.ToolName,
 		Arguments:      a.Arguments,
+		Scope:          a.scope,
 	}
 }
 

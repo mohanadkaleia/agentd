@@ -37,6 +37,7 @@ type Invocation struct {
 	IdempotencyKey string
 	Name           string
 	Arguments      json.RawMessage
+	Scope          []string
 }
 
 type Result struct {
@@ -50,6 +51,11 @@ type Tool interface {
 	Resource(args json.RawMessage) (string, error)
 	Execute(ctx context.Context, call Invocation) (Result, error)
 	Reconcile(ctx context.Context, call Invocation) (Result, Finding, error)
+}
+
+type Scoped interface {
+	Tool
+	FiltersToScope()
 }
 
 type Registry map[string]Tool

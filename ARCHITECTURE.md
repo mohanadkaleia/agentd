@@ -210,7 +210,10 @@ redirect, credentials in the keychain. Every outgoing message carries a `Message
 the action's idempotency key; after a crash or an ambiguous error the tool searches Sent/Drafts for
 that id before anything is retried. A search miss is never treated as "not sent": Gmail's index
 can lag, so a miss leaves the action unresolved and the task blocked until a later recheck finds the
-message or a person resolves it with `agentd resolve`. `gmail_send` takes exactly one recipient so
+message or a person resolves it with `agentd resolve`. Reads are scoped by the policy rather than by the query: the `resources` of a
+`gmail_search` or `gmail_read` rule list correspondents (`a@b.com` or `@b.com`), and the tool drops
+every message whose From, To and Cc all fall outside them before anything reaches the model, so a
+guessed message id or a broad search returns nothing out of scope. `gmail_send` takes exactly one recipient so
 policy can allow-list contacts; anything wider must be a draft. The inbox watcher follows Gmail's
 history from the moment it is connected (no backfill) and recovers from an expired history id by
 re-scanning the last two days, deduplicated by message id.
