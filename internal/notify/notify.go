@@ -32,6 +32,7 @@ var projectDefaults = assignments.NotificationPolicy{
 type Notification struct {
 	AssignmentID string
 	TaskID       string
+	ActionID     string
 	DedupKey     string
 	Severity     assignments.Severity
 	Title        string
@@ -69,7 +70,8 @@ func (o *Outbox) Notify(ctx context.Context, n Notification) (Result, error) {
 
 	var existing Result
 	err = tx.QueryRowContext(ctx, `SELECT id, status, COALESCE(suppressed_reason, '') FROM notifications
-		WHERE assignment_id = ? AND dedup_key = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1`,
+				WHERE assignment_id = ? AND dedup_key = ? AND created_at > ? AND status != 'suppressed'
+		ORDER BY created_at DESC LIMIT 1`,
 		n.AssignmentID, n.DedupKey, now.Add(-rules.DedupWindow.Duration).UnixMilli()).
 		Scan(&existing.ID, &existing.Status, &existing.Reason)
 	if err == nil {
@@ -94,9 +96,9 @@ func (o *Outbox) Notify(ctx context.Context, n Notification) (Result, error) {
 			res.Status, res.Reason = Suppressed, fmt.Sprintf("daily limit of %d notifications reached", rules.MaxPerDay)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications (id, assignment_id, task_id, dedup_key, severity, title, body,
-		status, suppressed_reason, created_at) VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
-		res.ID, n.AssignmentID, n.TaskID, n.DedupKey, n.Severity, n.Title, n.Body, res.Status, res.Reason, now.UnixMilli()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO notifications (id, assignment_id, task_id, action_id, dedup_key, severity, title, body,
+		status, suppressed_reason, created_at) VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
+		res.ID, n.AssignmentID, n.TaskID, n.ActionID, n.DedupKey, n.Severity, n.Title, n.Body, res.Status, res.Reason, now.UnixMilli()); err != nil {
 		return Result{}, err
 	}
 	if err := audit.Record(ctx, tx, now, n.AssignmentID, "agent", "notification."+res.Status, res.ID,
@@ -130,11 +132,10 @@ func (o *Outbox) MarkDelivered(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func (o *Outbox) Find(ctx context.Context, assignmentID, dedupKey string) (Result, bool, error) {
+func (o *Outbox) FindByAction(ctx context.Context, actionID string) (Result, bool, error) {
 	var r Result
 	err := o.DB.QueryRowContext(ctx, `SELECT id, status, COALESCE(suppressed_reason, '') FROM notifications
-		WHERE assignment_id = ? AND dedup_key = ? ORDER BY created_at DESC LIMIT 1`, assignmentID, dedupKey).
-		Scan(&r.ID, &r.Status, &r.Reason)
+		WHERE action_id = ?`, actionID).Scan(&r.ID, &r.Status, &r.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, false, nil
 	}
@@ -193,7 +194,7 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 		return tools.Result{}, fmt.Errorf("%w: %v", tools.ErrNotExecuted, err)
 	}
 	res, err := t.Outbox.Notify(ctx, Notification{
-		AssignmentID: call.AssignmentID, TaskID: call.TaskID, DedupKey: in.DedupKey,
+		AssignmentID: call.AssignmentID, TaskID: call.TaskID, ActionID: call.ActionID, DedupKey: in.DedupKey,
 		Severity: in.Severity, Title: in.Title, Body: in.Body,
 	})
 	if err != nil {
@@ -204,11 +205,7 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 }
 
 func (t *Tool) Reconcile(ctx context.Context, call tools.Invocation) (tools.Result, bool, error) {
-	in, err := parse(call.Arguments)
-	if err != nil {
-		return tools.Result{}, false, nil
-	}
-	res, found, err := t.Outbox.Find(ctx, call.AssignmentID, in.DedupKey)
+	res, found, err := t.Outbox.FindByAction(ctx, call.ActionID)
 	if err != nil || !found {
 		return tools.Result{}, false, err
 	}

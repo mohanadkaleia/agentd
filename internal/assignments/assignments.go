@@ -206,8 +206,17 @@ func (s *Store) Get(ctx context.Context, id string) (Assignment, error) {
 }
 
 func (s *Store) Pause(ctx context.Context, id, by, reason, actor string) error {
-	return s.transition(ctx, id, actor, "paused", `status = 'active'`,
+	guard := `status = 'active'`
+	if by == PausedByUser {
+		guard = `status IN ('active', 'paused')`
+	}
+	return s.transition(ctx, id, actor, "paused", guard,
 		`status = 'paused', paused_by = ?, status_reason = NULLIF(?, '')`, by, reason)
+}
+
+func (s *Store) ResumeBudgetPause(ctx context.Context, id, actor string) error {
+	return s.transition(ctx, id, actor, "resumed", `status = 'paused' AND paused_by = 'budget'`,
+		`status = 'active', paused_by = NULL, status_reason = NULL`)
 }
 
 func (s *Store) Resume(ctx context.Context, id, actor string) error {
@@ -321,7 +330,7 @@ func (s *Store) SetState(ctx context.Context, id string, state json.RawMessage, 
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	if err := audit.Record(ctx, tx, now, id, actor, "assignment.state_updated", id, nil); err != nil {
+	if err := audit.Record(ctx, tx, now, id, actor, "assignment.state_updated", id, map[string]json.RawMessage{"state": state}); err != nil {
 		return err
 	}
 	return tx.Commit()

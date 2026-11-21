@@ -112,3 +112,21 @@ func TestStateIsDurableAndMustBeAnObject(t *testing.T) {
 		t.Fatalf("state = %s", r.State)
 	}
 }
+
+func TestPersonsPauseReplacesBudgetPause(t *testing.T) {
+	s := store(t)
+	ctx := context.Background()
+	id, _ := s.CreateResponsibility(ctx, assignments.NewResponsibility{Name: "r", Objective: "o", Policy: watchPolicy, Notifications: calm})
+	if err := s.Pause(ctx, id, assignments.PausedByBudget, "over budget", "budget"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pause(ctx, id, assignments.PausedByUser, "hold", "test"); err != nil {
+		t.Fatalf("pausing a budget-paused assignment: %v", err)
+	}
+	if err := s.ResumeBudgetPause(ctx, id, "budget"); !errors.Is(err, assignments.ErrTerminated) {
+		t.Fatalf("budget auto-resume over a person's pause = %v, want refused", err)
+	}
+	if r, _ := s.Get(ctx, id); r.Status != assignments.Paused || r.PausedBy != assignments.PausedByUser {
+		t.Fatalf("assignment = %s by %s", r.Status, r.PausedBy)
+	}
+}

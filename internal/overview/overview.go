@@ -10,6 +10,7 @@ import (
 
 	"agentd/internal/assignments"
 	"agentd/internal/runtime"
+	"agentd/internal/system"
 )
 
 type Overview struct {
@@ -94,11 +95,18 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 		AND updated_at > ?`, id, rt.Now().Add(-7*24*time.Hour).UnixMilli()).Scan(&o.Blocked); err != nil {
 		return o, err
 	}
-	o.Next = next(a, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, rt.Now())
+	halted, err := system.Get(ctx, rt.DB)
+	if err != nil {
+		return o, err
+	}
+	o.Next = next(a, halted, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, rt.Now())
 	return o, nil
 }
 
-func next(a assignments.Assignment, unresolved string, blocked int, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, now time.Time) Expected {
+func next(a assignments.Assignment, halted system.Status, unresolved string, blocked int, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, now time.Time) Expected {
+	if halted.Halted && a.Status != assignments.Completed && a.Status != assignments.Cancelled && a.Status != assignments.Revoked {
+		return Expected{What: "halted (emergency stop): " + halted.Reason}
+	}
 	switch a.Status {
 	case assignments.Paused:
 		return Expected{What: "paused: " + firstNonEmpty(a.StatusReason, "by "+a.PausedBy)}

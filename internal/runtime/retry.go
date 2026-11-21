@@ -56,6 +56,13 @@ func (r *Runtime) Retry(ctx context.Context, taskID, by, note string) error {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET coalesce_key = NULL
+		WHERE id = ? AND coalesce_key IS NOT NULL AND EXISTS (
+			SELECT 1 FROM tasks other WHERE other.id != tasks.id AND other.assignment_id = tasks.assignment_id
+			  AND other.coalesce_key = tasks.coalesce_key AND other.status NOT IN ('completed', 'blocked', 'cancelled'))`,
+		taskID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'ready', attempt_count = 0, next_run_at = NULL, deadline_at = NULL,
 		result_json = NULL, version = version + 1, updated_at = ? WHERE id = ? AND status = 'blocked'`, now.UnixMilli(), taskID); err != nil {
 		return err

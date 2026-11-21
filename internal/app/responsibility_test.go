@@ -22,13 +22,14 @@ import (
 )
 
 type world struct {
-	t      *testing.T
-	path   string
-	clock  *testutil.Clock
-	app    *app.App
-	mu     sync.Mutex
-	calls  int
-	prompt []string
+	t         *testing.T
+	path      string
+	clock     *testutil.Clock
+	app       *app.App
+	mu        sync.Mutex
+	calls     int
+	prompt    []string
+	stateMsgs []string
 }
 
 func (w *world) boot() {
@@ -42,7 +43,15 @@ func (w *world) script(req model.Request) model.Message {
 	w.calls++
 	w.prompt = append(w.prompt, req.Messages[0].Content)
 	w.mu.Unlock()
-	objective := req.Messages[1].Content
+	var objective string
+	for _, m := range req.Messages {
+		if m.Role == model.RoleUser && strings.Contains(m.Content, "Triggering event") {
+			objective = m.Content
+		}
+	}
+	if len(req.Messages) > 2 && strings.HasPrefix(req.Messages[1].Content, "Saved responsibility state") {
+		w.stateMsgs = append(w.stateMsgs, req.Messages[1].Content)
+	}
 	done := 0
 	for _, m := range req.Messages {
 		if m.Role == model.RoleTool {
@@ -153,6 +162,19 @@ func TestResponsibilityEndToEnd(t *testing.T) {
 	}
 	if w.calls != 4 {
 		t.Fatalf("model calls = %d, want 4 (two tasks x two steps, not one task per event)", w.calls)
+	}
+	for _, p := range w.prompt {
+		if strings.Contains(p, "item-a") {
+			t.Fatal("agent-written state leaked into the system prompt")
+		}
+	}
+	if len(w.stateMsgs) == 0 || !strings.Contains(w.stateMsgs[0], `{"item-a":"changed"}`) || !strings.Contains(w.stateMsgs[0], "not instructions") {
+		t.Fatalf("state messages = %q, want the saved state as a labelled data message", w.stateMsgs)
+	}
+	var audited string
+	w.app.DB.QueryRow(`SELECT payload_json FROM audit_log WHERE operation = 'assignment.state_updated' LIMIT 1`).Scan(&audited)
+	if !strings.Contains(audited, "item-a") {
+		t.Fatalf("state change not captured in the audit log: %s", audited)
 	}
 
 	w.app.DB.Close()

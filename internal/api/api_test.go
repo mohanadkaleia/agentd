@@ -379,3 +379,15 @@ func TestRetryAndResolveErrors(t *testing.T) {
 		t.Fatalf("unresolved -> %d %v", code, unresolved)
 	}
 }
+
+func TestShowReportsHalt(t *testing.T) {
+	e := setup(t, demo.Script)
+	projectID, _, _ := demo.Seed(context.Background(), e.app)
+	var out map[string]any
+	e.do("POST", "/api/system/emergency-stop", map[string]string{"reason": "drill"}, &out)
+	var detail map[string]any
+	e.do("GET", "/api/assignments/"+projectID, nil, &detail)
+	if detail["next"].(map[string]any)["what"] != "halted (emergency stop): drill" {
+		t.Fatalf("next while halted = %v", detail["next"])
+	}
+}

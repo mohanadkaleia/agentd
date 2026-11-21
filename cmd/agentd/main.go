@@ -279,9 +279,7 @@ func status(ctx context.Context, a *app.App) error {
 		title string
 		query string
 	}{
-		{"ASSIGNMENTS", `SELECT p.id, p.kind, p.name, p.status, COALESCE(p.status_reason, ''),
-			printf('spent $%.4f / $%s', COALESCE((SELECT SUM(cost_micros) FROM model_usage u WHERE u.assignment_id = p.id), 0) / 1e6,
-				COALESCE(json_extract(p.policy_json, '$.limits.max_llm_spend_usd'), 'unlimited'))
+		{"ASSIGNMENTS (spend vs budget: agentd show <id>)", `SELECT p.id, p.kind, p.name, p.status, COALESCE(p.status_reason, '')
 			FROM assignments p ORDER BY p.created_at`},
 		{"TASKS", `SELECT id, title, status, attempt_count,
 			COALESCE(datetime(next_run_at / 1000, 'unixepoch', 'localtime'), '-'), COALESCE(result_json, '') FROM tasks ORDER BY created_at`},

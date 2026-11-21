@@ -155,3 +155,21 @@ func TestNoNudgeWhenPolicyDoesNotAllowReadingEvents(t *testing.T) {
 		t.Fatalf("task = %s after %d calls; want completed in 1 (no nudge it could not act on)", task.Status, calls)
 	}
 }
+
+func TestRetryingABlockedGroupedTaskYieldsTheGroupKey(t *testing.T) {
+	w := newEventsWorld(t, false)
+	ctx := context.Background()
+	w.script = func(model.Request) model.Message { return model.Message{Content: "done"} }
+	w.event("e1", "first")
+	first := w.onlyTask().ID
+	w.app.DB.Exec(`UPDATE tasks SET status = 'blocked' WHERE id = ?`, first)
+	w.event("e2", "second")
+	if err := w.app.Runtime.Retry(ctx, first, "test", ""); err != nil {
+		t.Fatalf("retry with a newer open task on the same key: %v", err)
+	}
+	var keyed int
+	w.app.DB.QueryRow(`SELECT COUNT(*) FROM tasks WHERE coalesce_key IS NOT NULL AND status = 'ready'`).Scan(&keyed)
+	if keyed != 1 {
+		t.Fatalf("open tasks holding the group key = %d, want 1", keyed)
+	}
+}
