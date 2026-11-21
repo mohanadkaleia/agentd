@@ -9,8 +9,8 @@ go build -o bin/agentd ./cmd/agentd
 ./bin/agentd demo                        # seed the airline-refund project
 ./bin/agentd -skills docs/examples/skills create docs/examples/portfolio-intelligence.json
 ./bin/agentd show <assignment-id>        # state, spend, recent activity, next expected action
-./bin/agentd serve -tool-delay 5s        # kill -9 it while send_email is sleeping
-./bin/agentd serve                       # restart: the email is reconciled, not resent
+./bin/agentd serve -demo-tools -tool-delay 5s   # kill -9 it while send_email is sleeping
+./bin/agentd serve -demo-tools            # restart: the email is reconciled, not resent
 ./bin/agentd status
 ./bin/agentd approve <approval-id>
 ```

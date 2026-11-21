@@ -100,7 +100,8 @@ func run() error {
 	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
 	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
 	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
-	toolDelay := cmd.Duration("tool-delay", 0, "pause inside send_email after sending, to test crash recovery")
+	demoTools := cmd.Bool("demo-tools", false, "register the simulated web_search and send_email tools used by the demo")
+	toolDelay := cmd.Duration("tool-delay", 0, "pause inside the simulated send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
 	coalesce := cmd.String("coalesce", "", "route: payload field whose value groups events into one open task")
 	source := cmd.String("source", "", "event source, e.g. gmail")
@@ -115,16 +116,19 @@ func run() error {
 		return err
 	}
 
-	mailbox, err := tools.NewMailbox(ctx, db, *toolDelay)
-	if err != nil {
-		return err
-	}
 	provider, err := newProvider(*modelSpec, *effort)
 	if err != nil {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	registered := []tools.Tool{tools.WebSearch{}, mailbox}
+	var registered []tools.Tool
+	if *demoTools {
+		mailbox, err := tools.NewMailbox(ctx, db, *toolDelay)
+		if err != nil {
+			return err
+		}
+		registered = append(registered, tools.WebSearch{}, mailbox)
+	}
 	var account *gmail.Account
 	if args[0] == "serve" {
 		var extra []tools.Tool
@@ -163,7 +167,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("project %s\ntask    %s\n", assignmentID, taskID)
+		fmt.Printf("project %s\ntask    %s\nrun it with: agentd serve -demo-tools\n", assignmentID, taskID)
 		return nil
 	case "status":
 		return status(ctx, a)
@@ -272,9 +276,14 @@ func status(ctx context.Context, a *app.App) error {
 		{"SCHEDULES", `SELECT id, title, interval_ms / 1000 || 's', datetime(next_fire_at / 1000, 'unixepoch', 'localtime') FROM schedules ORDER BY created_at`},
 		{"ACTIONS", `SELECT id, tool_name, resource, status FROM actions ORDER BY created_at`},
 		{"APPROVALS", `SELECT ap.id, a.tool_name, a.resource, ap.status FROM approvals ap JOIN actions a ON a.id = ap.action_id ORDER BY ap.requested_at`},
-		{"MOCK MAILBOX", `SELECT recipient, subject, message_id FROM mock_mailbox ORDER BY sent_at`},
+		{"SIMULATED MAILBOX (demo tools)", `SELECT recipient, subject, message_id FROM mock_mailbox ORDER BY sent_at`},
 	}
+	var hasMailbox int
+	a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'mock_mailbox'`).Scan(&hasMailbox)
 	for _, s := range sections {
+		if strings.Contains(s.query, "mock_mailbox") && hasMailbox == 0 {
+			continue
+		}
 		fmt.Fprintf(w, "\n%s\n", s.title)
 		rows, err := a.DB.QueryContext(ctx, s.query)
 		if err != nil {
