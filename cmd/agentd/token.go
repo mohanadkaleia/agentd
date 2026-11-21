@@ -12,6 +12,9 @@ import (
 
 func loadOrCreateToken(path string) (string, error) {
 	if v := os.Getenv("AGENTD_API_TOKEN"); v != "" {
+		if len(v) < 32 {
+			return "", fmt.Errorf("AGENTD_API_TOKEN must be at least 32 characters")
+		}
 		return v, nil
 	}
 	body, err := os.ReadFile(path)

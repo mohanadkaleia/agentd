@@ -72,6 +72,7 @@ func main() {
 }
 
 func run() error {
+	syscall.Umask(0o077)
 	global := flag.NewFlagSet("agentd", flag.ContinueOnError)
 	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")

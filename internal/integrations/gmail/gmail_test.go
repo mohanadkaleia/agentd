@@ -286,3 +286,34 @@ func TestWatcherTurnsNewInboxMailIntoEvents(t *testing.T) {
 	}
 
 }
+
+func TestThreadReadsAreBounded(t *testing.T) {
+	w := newWorld(t)
+	first := w.fake.receive("Spammer <s@example.com>", "Re: invoice", strings.Repeat("x", 9000))
+	w.fake.mu.Lock()
+	thread := w.fake.messages[first].thread
+	for i := range 14 {
+		w.fake.nextID++
+		id := "reply" + string(rune('a'+i))
+		w.fake.messages[id] = &fakeMessage{id: id, thread: thread, from: "s@example.com", subject: "Re: invoice",
+			messageID: "<" + id + "@x>", body: strings.Repeat("y", 7000), labels: []string{"INBOX"}}
+		w.fake.order = append(w.fake.order, id)
+	}
+	w.fake.mu.Unlock()
+	w.calls = []model.ToolCall{toolCall("r", "gmail_read", map[string]string{"thread_id": thread})}
+	w.task()
+	w.drain()
+	result := w.lastResult("gmail_read")
+	var parsed struct {
+		Content struct {
+			Messages []gmail.Message `json:"messages"`
+			Omitted  int             `json:"omitted_older_messages"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Content.Messages) != 10 || parsed.Content.Omitted != 5 || len(result) > 60000 {
+		t.Fatalf("messages=%d omitted=%d bytes=%d", len(parsed.Content.Messages), parsed.Content.Omitted, len(result))
+	}
+}

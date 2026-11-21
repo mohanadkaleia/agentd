@@ -37,6 +37,17 @@ type ScheduleSpec struct {
 	Objective string          `json:"objective"`
 }
 
+func (s Spec) skillNames() [][]string {
+	var out [][]string
+	for _, r := range s.Routes {
+		out = append(out, r.Skills)
+	}
+	for _, sc := range s.Schedules {
+		out = append(out, sc.Skills)
+	}
+	return out
+}
+
 func (s Spec) validate() error {
 	if s.Name == "" || s.Objective == "" {
 		return fmt.Errorf("%w: name and objective are required", assignments.ErrInvalid)
@@ -57,6 +68,11 @@ func (s Spec) validate() error {
 func (a *App) Create(ctx context.Context, s Spec) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
+	}
+	for _, names := range s.skillNames() {
+		if _, err := a.Skills.Resolve(names); err != nil {
+			return "", fmt.Errorf("%w: %v", assignments.ErrInvalid, err)
+		}
 	}
 	var id string
 	var err error

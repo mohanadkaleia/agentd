@@ -25,6 +25,13 @@ case "$model" in
     anthropic|anthropic/*|ollama/?*) ;;
     *) usage ;;
 esac
+if ! printf '%s' "$model" | grep -Eq '^[A-Za-z0-9._:/-]+$'; then
+    echo "model may only contain letters, digits and . _ : / -"
+    exit 1
+fi
+case "$workers" in
+    ''|*[!0-9]*) echo "workers must be a whole number"; exit 1 ;;
+esac
 
 case "$listen" in
     "") ;;
@@ -34,7 +41,7 @@ case "$listen" in
         [ -n "$ts" ] || { echo "Tailscale is not running or has no IPv4 address"; exit 1; }
         listen="$ts:$port"
         ;;
-    0.0.0.0:*|:*|\[::\]:*)
+        0.0.0.0:*|0:*|:*|\[::*\]:*|\[0*\]:*)
         echo "refusing to listen on every interface; use 127.0.0.1:PORT or tailscale:PORT"
         exit 1
         ;;
@@ -71,6 +78,8 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 mkdir -p "$support/bin" "$support/skills" "$logs" "$HOME/Library/LaunchAgents"
+chmod 700 "$support" "$logs"
+[ ! -e "$support/agentd.db" ] || chmod 600 "$support"/agentd.db*
 (cd "$repo" && go build -o "$support/bin/agentd.new" ./cmd/agentd)
 mv "$support/bin/agentd.new" "$support/bin/agentd"
 cp "$rendered" "$plist"

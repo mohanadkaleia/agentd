@@ -174,7 +174,9 @@ Each layer removes work before the next, more expensive one:
 11. Only adapters import provider SDKs, and only `cmd/` picks an adapter (`internal/archtest`).
 12. Emergency stop is a durable flag checked at every point of execution: no task is claimed, no model call starts, and no tool dispatches while it is set. Intake (events, schedules) keeps recording work for later. A model call already in flight finishes, but its tool calls do not run.
 13. No event linked to a task is silently dropped: it is either in the run's opening messages or the task cannot finish until it has read it (when its policy allows `task_events`).
-14. The HTTP API refuses every request without the bearer token, including when no token is configured.
+14. A task's lease is renewed by a heartbeat for as long as it executes, and every dispatch and model-step write is fenced on that lease in the same transaction; a reclaimed task always resumes its latest run.
+15. Agent-written state is shown to the model as labelled data, never as part of the system prompt.
+16. The HTTP API refuses every request without the bearer token, including when no token is configured, and agentd refuses to bind it to every interface.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -217,12 +219,23 @@ notification outbox, event intake, the audit log as a live SSE stream, usage, an
 It is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
 the same stores and gateway as the runtime. Provider-native model payloads never leave the process.
 
+## Known limits
+
+- **Keychain scope.** Secrets (Gmail refresh token, optional Anthropic key) are stored with
+  `/usr/bin/security`, which makes that tool their trusted reader. Any process running as the same
+  macOS user can read them without a prompt. The keychain protects against other users, not against
+  malware running as you. The design-doc target, a dedicated non-admin account for agentd, closes this.
+- **Gmail search lag.** Send reconciliation retries for a few seconds; a longer index lag after an
+  ambiguous failure could still produce one duplicate email.
+- **Budget reservations.** Concurrent workers can overshoot a spend cap by one in-flight call each.
+- **In-flight model calls.** An emergency stop does not cancel a model request already in progress;
+  its tool calls will not run.
+
 ## Deliberately not built yet
 
 - Notification delivery channels (the outbox is durable; nothing drains it yet).
 - Event-source adapters for market data and news (Gmail exists).
 - Automatic project completion from `completion.criteria` (today a person runs `agentd complete`).
-- Budget reservations: concurrent workers can overshoot a cap by one in-flight call each.
 
 ## Package map
 

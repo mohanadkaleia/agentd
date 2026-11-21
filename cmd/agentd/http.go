@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,13 @@ import (
 func startAPI(ctx context.Context, a *app.App, addr, tokenFile string, log *slog.Logger) (func(), error) {
 	if addr == "" {
 		return func() {}, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("-listen %q: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		return nil, fmt.Errorf("-listen %q would expose the API on every interface; use 127.0.0.1 or this machine's Tailscale address", addr)
 	}
 	token, err := loadOrCreateToken(tokenFile)
 	if err != nil {

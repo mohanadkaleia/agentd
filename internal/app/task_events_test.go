@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +172,14 @@ func TestRetryingABlockedGroupedTaskYieldsTheGroupKey(t *testing.T) {
 	w.app.DB.QueryRow(`SELECT COUNT(*) FROM tasks WHERE coalesce_key IS NOT NULL AND status = 'ready'`).Scan(&keyed)
 	if keyed != 1 {
 		t.Fatalf("open tasks holding the group key = %d, want 1", keyed)
+	}
+}
+
+func TestCreateRejectsUnknownSkills(t *testing.T) {
+	w := newEventsWorld(t, false)
+	_, err := w.app.Create(context.Background(), app.Spec{Kind: assignments.KindProject, Name: "p", Objective: "o",
+		Schedules: []app.ScheduleSpec{{Every: policy.Duration{Duration: time.Hour}, Title: "t", Objective: "o", Skills: []string{"typo"}}}})
+	if !errors.Is(err, assignments.ErrInvalid) || !strings.Contains(err.Error(), `unknown skill "typo"`) {
+		t.Fatalf("err = %v", err)
 	}
 }

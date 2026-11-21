@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	maxSearchResults = 20
-	maxBodyChars     = 8000
+	maxSearchResults  = 20
+	maxBodyChars      = 8000
+	maxThreadMessages = 10
+	maxResultChars    = 40000
 )
 
 type Account struct {
@@ -149,10 +151,25 @@ func (t *readTool) Execute(ctx context.Context, call tools.Invocation) (tools.Re
 		}
 		msgs = []Message{m}
 	}
-	for i := range msgs {
-		msgs[i].Body = truncate(msgs[i].Body)
+	omitted := 0
+	if len(msgs) > maxThreadMessages {
+		omitted = len(msgs) - maxThreadMessages
+		msgs = msgs[omitted:]
 	}
-	return tools.Result{Output: untrusted(msgs)}, nil
+	budget := maxResultChars
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msgs[i].Body = truncate(msgs[i].Body)
+		if n := utf8.RuneCountInString(msgs[i].Body); n > budget {
+			msgs[i].Body = "[omitted: result size limit]"
+		} else {
+			budget -= n
+		}
+	}
+	content := map[string]any{"messages": msgs}
+	if omitted > 0 {
+		content["omitted_older_messages"] = omitted
+	}
+	return tools.Result{Output: untrusted(content)}, nil
 }
 
 func (*readTool) Reconcile(context.Context, tools.Invocation) (tools.Result, bool, error) {
