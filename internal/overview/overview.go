@@ -12,6 +12,7 @@ import (
 	"agentd/internal/outcomes"
 	"agentd/internal/runtime"
 	"agentd/internal/system"
+	"agentd/internal/watchdog"
 )
 
 type Overview struct {
@@ -20,6 +21,7 @@ type Overview struct {
 	ReservedMicros int64
 	LimitMicros    int64
 	Criteria       []outcomes.Progress
+	Obligations    []watchdog.Health
 	OpenTasks      []Task
 	Recent         []Activity
 	Next           Expected
@@ -71,6 +73,9 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 	if o.Criteria, err = outcomes.Criteria(ctx, rt.DB, a); err != nil {
 		return o, err
 	}
+	if o.Obligations, err = watchdog.Status(ctx, rt.DB, id, rt.Now()); err != nil {
+		return o, err
+	}
 	if o.OpenTasks, err = openTasks(ctx, rt.DB, id); err != nil {
 		return o, err
 	}
@@ -107,11 +112,11 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 	if err != nil {
 		return o, err
 	}
-	o.Next = next(a, halted, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, rt.Now())
+	o.Next = next(a, halted, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, o.Obligations, rt.Now())
 	return o, nil
 }
 
-func next(a assignments.Assignment, halted system.Status, unresolved string, blocked int, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, now time.Time) Expected {
+func next(a assignments.Assignment, halted system.Status, unresolved string, blocked int, open []Task, asks int, askTool, askResource string, fire time.Time, schedule string, obligations []watchdog.Health, now time.Time) Expected {
 	if halted.Halted && a.Status != assignments.Completed && a.Status != assignments.Cancelled && a.Status != assignments.Revoked {
 		return Expected{What: "halted (emergency stop): " + halted.Reason}
 	}
@@ -131,6 +136,12 @@ func next(a assignments.Assignment, halted system.Status, unresolved string, blo
 		return Expected{What: fmt.Sprintf("waiting for your approval: %s %s", askTool, askResource)}
 	}
 	var timed []Expected
+	for _, ob := range obligations {
+		if ob.Overdue {
+			return Expected{At: now, What: "catching up on an overdue obligation: " + ob.Description}
+		}
+		timed = append(timed, Expected{At: ob.DueAt, What: "due: " + ob.Description})
+	}
 	for _, t := range open {
 		switch {
 		case t.Status == "running":

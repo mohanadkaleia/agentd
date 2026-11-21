@@ -69,6 +69,24 @@ secret and refresh token are stored in the login keychain, never on disk or in t
 New inbox mail becomes `gmail / email.received` events (payload: `message_id`, `thread_id`, `from`,
 `subject`, `snippet`); routes decide which ones become tasks.
 
+## Obligations
+
+A responsibility can declare what must keep happening, and Baseet checks it from evidence instead
+of trusting its schedules:
+
+```json
+"obligations": [
+  {"description": "Daily brief delivered", "every": "24h", "grace": "2h", "evidence": {"delivered": "brief:"}},
+  {"description": "Gmail events keep arriving", "every": "6h", "evidence": {"event": {"source": "gmail", "kind": "email.received"}}}
+]
+```
+
+Evidence is one of `delivered` (a delivered notification whose dedup key starts with the prefix),
+`tool` (a successful action of that tool) or `event` (a received event). When one is overdue,
+housekeeping starts one catch-up task per missed interval (`on_miss: "task"`, the default) or
+notifies you (`"notify"`, the default for event feeds), and escalates after three misses.
+`agentd show` lists each obligation's health.
+
 ## Project completion
 
 A project's `completion.criteria` decide when it is done. Each criterion is verified by a matching

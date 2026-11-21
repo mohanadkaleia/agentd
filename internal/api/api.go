@@ -210,6 +210,7 @@ type assignmentDetail struct {
 	Approvals     int                             `json:"pending_approvals"`
 	Undelivered   int                             `json:"undelivered_notifications"`
 	Criteria      []criterionRow                  `json:"criteria,omitempty"`
+	Obligations   []obligationRow                 `json:"obligations,omitempty"`
 }
 
 type expected struct {
@@ -256,6 +257,14 @@ func (s *Server) getAssignment(w http.ResponseWriter, r *http.Request) error {
 			row.VerifiedAt = &c.ObservedAt
 		}
 		d.Criteria = append(d.Criteria, row)
+	}
+	for _, ob := range o.Obligations {
+		row := obligationRow{ID: ob.ID, Description: ob.Description, Every: ob.Every.String(), Evidence: ob.Evidence.String(),
+			Overdue: ob.Overdue, MissedIntervals: ob.Missed, DueAt: ob.DueAt}
+		if !ob.LastEvidence.IsZero() {
+			row.LastEvidenceAt = &ob.LastEvidence
+		}
+		d.Obligations = append(d.Obligations, row)
 	}
 	for _, t := range o.OpenTasks {
 		d.OpenTasks = append(d.OpenTasks, openTask{ID: t.ID, Title: t.Title, Status: t.Status, NextRunAt: timePtr(t.NextRunAt)})
@@ -552,6 +561,17 @@ type criterionRow struct {
 	By          string     `json:"by,omitempty"`
 	Note        string     `json:"note,omitempty"`
 	VerifiedAt  *time.Time `json:"verified_at,omitempty"`
+}
+
+type obligationRow struct {
+	ID              string     `json:"id"`
+	Description     string     `json:"description"`
+	Every           string     `json:"every"`
+	Evidence        string     `json:"evidence"`
+	Overdue         bool       `json:"overdue"`
+	MissedIntervals int        `json:"missed_intervals,omitempty"`
+	DueAt           time.Time  `json:"due_at"`
+	LastEvidenceAt  *time.Time `json:"last_evidence_at,omitempty"`
 }
 
 type confirmBody struct {

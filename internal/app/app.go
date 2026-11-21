@@ -17,6 +17,7 @@ import (
 	"agentd/internal/skills"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
+	"agentd/internal/watchdog"
 )
 
 type App struct {
@@ -28,6 +29,7 @@ type App struct {
 	Outbox      *notify.Outbox
 	Deliverer   *notify.Deliverer
 	Outcomes    *outcomes.Evaluator
+	Watchdog    *watchdog.Watchdog
 	Skills      skills.Registry
 	Runtime     *runtime.Runtime
 }
@@ -37,6 +39,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	t := &tasks.Store{DB: db, Now: now}
 	outbox := &notify.Outbox{DB: db, Assignments: a, Now: now}
 	evaluator := &outcomes.Evaluator{DB: db, Assignments: a, Outbox: outbox, Now: now}
+	dog := &watchdog.Watchdog{DB: db, Tasks: t, Outbox: outbox, Now: now, EscalateAfter: 3}
 	deliverer := &notify.Deliverer{DB: db, Now: now, MaxAttempts: 8, Claim: 2 * time.Minute}
 	all := tools.Registry{}
 	for name, tool := range registry {
@@ -94,6 +97,9 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		if err := evaluator.Tick(ctx); err != nil {
 			return err
 		}
+		if err := dog.Tick(ctx); err != nil {
+			return err
+		}
 		return deliverer.DeliverDue(ctx)
 	}
 	return &App{
@@ -105,6 +111,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Outbox:      outbox,
 		Deliverer:   deliverer,
 		Outcomes:    evaluator,
+		Watchdog:    dog,
 		Skills:      sk,
 		Runtime:     rt,
 	}

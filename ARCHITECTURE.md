@@ -181,6 +181,7 @@ Each layer removes work before the next, more expensive one:
 15. Agent-written state is shown to the model as labelled data, never as part of the system prompt.
 16. The HTTP API refuses every request without the bearer token, including when no token is configured, and agentd refuses to bind it to every interface.
 17. A project completes on its own only when every completion criterion has recorded evidence and none of its actions has an unknown outcome. Evidence is either an ingested event that matches the criterion (source, kind and payload fields, received after the project was created) or an owner's `agentd confirm`. The model has no tool that records evidence, so a task finishing or an email being sent never completes a project. Evidence is append-only and recorded once per criterion.
+18. An obligation is judged only by recorded evidence (a delivered notification, a successful action, or a received event), never by a schedule having fired. An overdue obligation gets at most one remediation task per missed interval, none while an earlier one is still open or blocked, and an escalation to the owner after three missed intervals; an obligation about an outside feed notifies instead of spawning work. Nothing happens for a paused, revoked or halted assignment.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -202,18 +203,6 @@ To make it live, only edge pieces are needed, none of them in the runtime:
 
 ## Integrations
 
-**Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
-each pending notification by pushing its next attempt two minutes out, sends it through the
-configured channel, and records the result. Transient failures retry with doubling backoff (30 s up
-to 1 h); a permanent failure, or the eighth attempt, parks it as failed with the error, which
-`agentd notifications` and the API show. Delivery is at least once: a crash between the push and
-the record re-sends it after the claim lapses. Nothing is delivered while halted, and pending
-notifications of a revoked or cancelled assignment are suppressed. Suppression, dedup and the daily
-cap are decided when the notification is created and never revisited. By default the push says only
-which assignment needs attention; `-full` includes the title and text. The ntfy topic is a secret
-kept in the keychain.
-
-
 Integrations live in `internal/integrations/<name>` and plug in at the edges only: they contribute
 tools (which go through the gateway like any other) and event sources (which feed the inbox). The
 runtime never imports them; `cmd/` wires them in.
@@ -230,6 +219,17 @@ guessed message id or a broad search returns nothing out of scope. `gmail_send` 
 policy can allow-list contacts; anything wider must be a draft. The inbox watcher follows Gmail's
 history from the moment it is connected (no backfill) and recovers from an expired history id by
 re-scanning the last two days, deduplicated by message id.
+
+**Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
+each pending notification by pushing its next attempt two minutes out, sends it through the
+configured channel, and records the result. Transient failures retry with doubling backoff (30 s up
+to 1 h); a permanent failure, or the eighth attempt, parks it as failed with the error, which
+`agentd notifications` and the API show. Delivery is at least once: a crash between the push and
+the record re-sends it after the claim lapses. Nothing is delivered while halted, and pending
+notifications of a revoked or cancelled assignment are suppressed. Suppression, dedup and the daily
+cap are decided when the notification is created and never revisited. By default the push says only
+which assignment needs attention; `-full` includes the title and text. The ntfy topic is a secret
+kept in the keychain.
 
 ## Control surface
 
@@ -274,6 +274,9 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/scheduler` | Event inbox, routes with grouping, schedules, `schedule_followup`. |
 | `internal/delegation` | `delegate` and `await_workers`: helper agents as child tasks. |
 | `internal/notify` | Notification outbox and the `notify` tool. |
+| `internal/outcomes` | Completion criteria evidence and automatic project completion. |
+| `internal/watchdog` | Obligations: health from evidence, catch-up tasks and escalation. |
+| `internal/integrations/ntfy` | Phone delivery channel for notifications. |
 | `internal/skills` | Skill registry, loaded from `.md` files. |
 | `internal/integrations/gmail` | Gmail tools (search, read, draft, send), inbox watcher, OAuth. |
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |

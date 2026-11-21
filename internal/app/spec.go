@@ -7,6 +7,7 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/policy"
 	"agentd/internal/scheduler"
+	"agentd/internal/watchdog"
 )
 
 type Spec struct {
@@ -18,6 +19,16 @@ type Spec struct {
 	Notifications *assignments.NotificationPolicy `json:"notifications"`
 	Routes        []RouteSpec                     `json:"routes"`
 	Schedules     []ScheduleSpec                  `json:"schedules"`
+	Obligations   []ObligationSpec                `json:"obligations"`
+}
+
+type ObligationSpec struct {
+	Description string            `json:"description"`
+	Every       policy.Duration   `json:"every"`
+	Grace       policy.Duration   `json:"grace"`
+	Evidence    watchdog.Evidence `json:"evidence"`
+	OnMiss      string            `json:"on_miss"`
+	Skills      []string          `json:"skills"`
 }
 
 type RouteSpec struct {
@@ -44,6 +55,9 @@ func (s Spec) skillNames() [][]string {
 	}
 	for _, sc := range s.Schedules {
 		out = append(out, sc.Skills)
+	}
+	for _, o := range s.Obligations {
+		out = append(out, o.Skills)
 	}
 	return out
 }
@@ -105,6 +119,14 @@ func (a *App) Create(ctx context.Context, s Spec) (string, error) {
 	for _, sc := range s.Schedules {
 		if _, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{
 			AssignmentID: id, Every: sc.Every.Duration, Skills: sc.Skills, Title: sc.Title, Objective: sc.Objective,
+		}); err != nil {
+			return id, err
+		}
+	}
+	for _, o := range s.Obligations {
+		if _, err := a.Watchdog.Add(ctx, watchdog.Obligation{
+			AssignmentID: id, Description: o.Description, Every: o.Every.Duration, Grace: o.Grace.Duration,
+			Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills,
 		}); err != nil {
 			return id, err
 		}

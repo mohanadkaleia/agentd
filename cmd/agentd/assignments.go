@@ -63,6 +63,16 @@ func show(ctx context.Context, a *app.App, id string) error {
 			fmt.Fprintf(w, "%s\t%s\t%s\n", c.Criterion.ID, c.Criterion.Description, how)
 		}
 	}
+	if len(o.Obligations) > 0 {
+		fmt.Fprintf(w, "\nOBLIGATIONS\n")
+		for _, ob := range o.Obligations {
+			state := "ok, next due " + ob.DueAt.Local().Format("01-02 15:04")
+			if ob.Overdue {
+				state = fmt.Sprintf("OVERDUE by %d interval(s)", ob.Missed)
+			}
+			fmt.Fprintf(w, "%s\tevery %s\t%s\n", ob.Description, ob.Every, state)
+		}
+	}
 	fmt.Fprintf(w, "\nOPEN TASKS\n")
 	for _, t := range o.OpenTasks {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, t.Status, t.Title)

@@ -49,5 +49,19 @@
       "title": "Daily portfolio brief",
       "objective": "Write a short brief of what changed today across the portfolio. Notify at info severity only if something is worth reading."
     }
+  ],
+  "obligations": [
+    {
+      "description": "Portfolio picture refreshed at least daily",
+      "every": "24h",
+      "grace": "6h",
+      "evidence": {"tool": "update_state"},
+      "skills": ["portfolio-report"]
+    },
+    {
+      "description": "Market events keep arriving",
+      "every": "72h",
+      "evidence": {"event": {"source": "market", "kind": "price.moved"}}
+    }
   ]
 }
