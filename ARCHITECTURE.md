@@ -180,6 +180,7 @@ Each layer removes work before the next, more expensive one:
 14. A task's lease is renewed by a heartbeat for as long as it executes, and every dispatch and model-step write is fenced on that lease in the same transaction; a reclaimed task always resumes its latest run. A lease counts only while unexpired: an expired lease cannot be renewed, fence a write or start a dispatch, even if nobody has reclaimed it yet. Any renewal error stops the work, so a heartbeat failure is never mistaken for a renewal. Release still accepts an expired but unclaimed lease, because it only records an outcome that already happened.
 15. Agent-written state is shown to the model as labelled data, never as part of the system prompt.
 16. The HTTP API refuses every request without the bearer token, including when no token is configured, and agentd refuses to bind it to every interface.
+17. A project completes on its own only when every completion criterion has recorded evidence and none of its actions has an unknown outcome. Evidence is either an ingested event that matches the criterion (source, kind and payload fields, received after the project was created) or an owner's `agentd confirm`. The model has no tool that records evidence, so a task finishing or an email being sent never completes a project. Evidence is append-only and recorded once per criterion.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -259,7 +260,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 ## Deliberately not built yet
 
 - Event-source adapters for market data and news (Gmail exists).
-- Automatic project completion from `completion.criteria` (today a person runs `agentd complete`).
+- Freshness rules for completion evidence: once a criterion is verified it stays verified.
 
 ## Package map
 

@@ -27,7 +27,7 @@ func TestProjectAndResponsibilityLifecycles(t *testing.T) {
 	s := store(t)
 	ctx := context.Background()
 	project, err := s.CreateProject(ctx, assignments.NewProject{Name: "p", Objective: "finish a thing",
-		Completion: assignments.Completion{Criteria: []string{"thing finished"}}})
+		Completion: assignments.Completion{Criteria: []assignments.Criterion{{Description: "thing finished"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

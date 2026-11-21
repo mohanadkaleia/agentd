@@ -38,7 +38,7 @@ func Seed(ctx context.Context, a *app.App) (assignmentID, taskID string, err err
 		Name:       "airline-refund",
 		Objective:  "Recover the refund for cancelled flight XY123.",
 		Policy:     Policy,
-		Completion: assignments.Completion{Criteria: []string{"Refund received or formally refused in writing"}},
+		Completion: assignments.Completion{Criteria: []assignments.Criterion{{Description: "Refund received or formally refused in writing"}}},
 	})
 	if err != nil {
 		return "", "", err

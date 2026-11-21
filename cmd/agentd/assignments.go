@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"agentd/internal/app"
+	"agentd/internal/assignments"
 	"agentd/internal/overview"
 )
 
@@ -49,6 +50,19 @@ func show(ctx context.Context, a *app.App, id string) error {
 	fmt.Fprintf(w, "state\t%s\n", overview.StateSummary(as.State))
 	fmt.Fprintf(w, "next\t%s\n", o.Next)
 	fmt.Fprintf(w, "waiting\t%d approvals, %d undelivered notifications\n", o.PendingAsk, o.Undelivered)
+	if len(o.Criteria) > 0 {
+		fmt.Fprintf(w, "\nCOMPLETION CRITERIA\n")
+		for _, c := range o.Criteria {
+			how := "pending: " + criterionSource(c.Criterion)
+			if c.Verified {
+				how = "verified by " + c.Kind
+				if c.EventID != "" {
+					how += " " + c.EventID
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n", c.Criterion.ID, c.Criterion.Description, how)
+		}
+	}
 	fmt.Fprintf(w, "\nOPEN TASKS\n")
 	for _, t := range o.OpenTasks {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, t.Status, t.Title)
@@ -81,4 +95,11 @@ func notifications(ctx context.Context, a *app.App) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, severity, name, title, body, delivery)
 	}
 	return rows.Err()
+}
+
+func criterionSource(c assignments.Criterion) string {
+	if c.Event == nil {
+		return "needs `agentd confirm`"
+	}
+	return "waiting for a " + c.Event.Source + "/" + c.Event.Kind + " event"
 }

@@ -69,6 +69,23 @@ secret and refresh token are stored in the login keychain, never on disk or in t
 New inbox mail becomes `gmail / email.received` events (payload: `message_id`, `thread_id`, `from`,
 `subject`, `snippet`); routes decide which ones become tasks.
 
+## Project completion
+
+A project's `completion.criteria` decide when it is done. Each criterion is verified by a matching
+event or by you, never by the model:
+
+```json
+"completion": {"criteria": [
+  {"id": "refund", "description": "Refund posted to my card",
+   "event": {"source": "bank", "kind": "transaction.posted", "match": {"merchant": "Airline"}}},
+  {"id": "receipt", "description": "Airline confirmed in writing"}
+]}
+```
+
+`agentd confirm <project-id> receipt` records your confirmation; `agentd show` lists each criterion's
+status. Once all are verified and no action is unresolved, the project completes itself and queues a
+notification. Plain-text criteria (`"criteria": ["..."]`) still work and need `agentd confirm`.
+
 ## Phone notifications
 
 Notifications the agent raises can be pushed to your phone through the free [ntfy](https://ntfy.sh) app:
@@ -95,6 +112,7 @@ bind to the Mac mini's Tailscale address (e.g. `-listen 100.x.y.z:7777`), never 
 |---|---|
 | `GET/POST /api/assignments`, `GET /api/assignments/{id}` | list, create (same JSON as `agentd create`), overview |
 | `POST /api/assignments/{id}/{pause,resume,complete,cancel,revoke}`, `PUT /api/assignments/{id}/policy` | lifecycle, policy |
+| `POST /api/assignments/{id}/criteria/{criterion}/confirm` | owner confirms a completion criterion |
 | `GET /api/tasks?assignment=&status=`, `GET /api/tasks/{id}` | tasks, transcript |
 | `GET /api/approvals`, `POST /api/approvals/{id}/{approve,reject}` | approvals inbox |
 | `GET /api/notifications`, `POST /api/notifications/{id}/delivered` | notification outbox |

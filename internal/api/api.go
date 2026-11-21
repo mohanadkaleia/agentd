@@ -17,6 +17,7 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/gateway"
 	"agentd/internal/notify"
+	"agentd/internal/outcomes"
 	"agentd/internal/overview"
 	"agentd/internal/policy"
 	"agentd/internal/runtime"
@@ -39,27 +40,28 @@ type handler func(w http.ResponseWriter, r *http.Request) error
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	routes := map[string]handler{
-		"GET /api/assignments":                   s.listAssignments,
-		"POST /api/assignments":                  s.createAssignment,
-		"GET /api/assignments/{id}":              s.getAssignment,
-		"POST /api/assignments/{id}/{action}":    s.assignmentAction,
-		"PUT /api/assignments/{id}/policy":       s.setPolicy,
-		"GET /api/tasks":                         s.listTasks,
-		"GET /api/tasks/{id}":                    s.getTask,
-		"POST /api/tasks/{id}/retry":             s.retryTask,
-		"GET /api/actions/unresolved":            s.listUnresolved,
-		"POST /api/actions/{id}/resolve":         s.resolveAction,
-		"GET /api/approvals":                     s.listApprovals,
-		"POST /api/approvals/{id}/{decision}":    s.decide,
-		"GET /api/notifications":                 s.listNotifications,
-		"POST /api/notifications/{id}/delivered": s.markDelivered,
-		"POST /api/events":                       s.ingestEvent,
-		"GET /api/events/stream":                 s.stream,
-		"GET /api/activity":                      s.activity,
-		"GET /api/usage":                         s.usage,
-		"GET /api/system":                        s.systemStatus,
-		"POST /api/system/emergency-stop":        s.emergencyStop,
-		"POST /api/system/resume":                s.systemResume,
+		"GET /api/assignments":                                    s.listAssignments,
+		"POST /api/assignments":                                   s.createAssignment,
+		"GET /api/assignments/{id}":                               s.getAssignment,
+		"POST /api/assignments/{id}/{action}":                     s.assignmentAction,
+		"POST /api/assignments/{id}/criteria/{criterion}/confirm": s.confirmCriterion,
+		"PUT /api/assignments/{id}/policy":                        s.setPolicy,
+		"GET /api/tasks":                                          s.listTasks,
+		"GET /api/tasks/{id}":                                     s.getTask,
+		"POST /api/tasks/{id}/retry":                              s.retryTask,
+		"GET /api/actions/unresolved":                             s.listUnresolved,
+		"POST /api/actions/{id}/resolve":                          s.resolveAction,
+		"GET /api/approvals":                                      s.listApprovals,
+		"POST /api/approvals/{id}/{decision}":                     s.decide,
+		"GET /api/notifications":                                  s.listNotifications,
+		"POST /api/notifications/{id}/delivered":                  s.markDelivered,
+		"POST /api/events":                                        s.ingestEvent,
+		"GET /api/events/stream":                                  s.stream,
+		"GET /api/activity":                                       s.activity,
+		"GET /api/usage":                                          s.usage,
+		"GET /api/system":                                         s.systemStatus,
+		"POST /api/system/emergency-stop":                         s.emergencyStop,
+		"POST /api/system/resume":                                 s.systemResume,
 	}
 	for pattern, h := range routes {
 		mux.HandleFunc(pattern, s.wrap(h))
@@ -112,7 +114,8 @@ func classify(err error) (int, string) {
 		return se.code, se.msg
 	case errors.Is(err, assignments.ErrInvalid):
 		return http.StatusBadRequest, err.Error()
-	case errors.Is(err, assignments.ErrNotFound), errors.Is(err, tasks.ErrNotFound), errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, assignments.ErrNotFound), errors.Is(err, tasks.ErrNotFound), errors.Is(err, sql.ErrNoRows),
+		errors.Is(err, outcomes.ErrUnknownCriterion):
 		return http.StatusNotFound, "not found"
 	case errors.Is(err, assignments.ErrWrongKind), errors.Is(err, assignments.ErrTerminated),
 		errors.Is(err, assignments.ErrNotPaused), errors.Is(err, gateway.ErrApprovalNotPending),
@@ -206,6 +209,7 @@ type assignmentDetail struct {
 	Recent        []activityRow                   `json:"recent"`
 	Approvals     int                             `json:"pending_approvals"`
 	Undelivered   int                             `json:"undelivered_notifications"`
+	Criteria      []criterionRow                  `json:"criteria,omitempty"`
 }
 
 type expected struct {
@@ -244,6 +248,14 @@ func (s *Server) getAssignment(w http.ResponseWriter, r *http.Request) error {
 	}
 	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
 		d.BudgetPeriod = p.String()
+	}
+	for _, c := range o.Criteria {
+		row := criterionRow{ID: c.Criterion.ID, Description: c.Criterion.Description, Verified: c.Verified,
+			Evidence: c.Kind, EventID: c.EventID, By: c.Actor, Note: c.Note}
+		if c.Verified {
+			row.VerifiedAt = &c.ObservedAt
+		}
+		d.Criteria = append(d.Criteria, row)
 	}
 	for _, t := range o.OpenTasks {
 		d.OpenTasks = append(d.OpenTasks, openTask{ID: t.ID, Title: t.Title, Status: t.Status, NextRunAt: timePtr(t.NextRunAt)})
@@ -529,6 +541,34 @@ func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	return ok(w, out)
+}
+
+type criterionRow struct {
+	ID          string     `json:"id"`
+	Description string     `json:"description"`
+	Verified    bool       `json:"verified"`
+	Evidence    string     `json:"evidence,omitempty"`
+	EventID     string     `json:"event_id,omitempty"`
+	By          string     `json:"by,omitempty"`
+	Note        string     `json:"note,omitempty"`
+	VerifiedAt  *time.Time `json:"verified_at,omitempty"`
+}
+
+type confirmBody struct {
+	Note string `json:"note"`
+}
+
+func (s *Server) confirmCriterion(w http.ResponseWriter, r *http.Request) error {
+	var b confirmBody
+	if r.ContentLength != 0 {
+		if err := decode(r, &b); err != nil {
+			return err
+		}
+	}
+	if err := s.App.Outcomes.Confirm(r.Context(), r.PathValue("id"), r.PathValue("criterion"), "api", b.Note); err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"status": "verified"})
 }
 
 func (s *Server) markDelivered(w http.ResponseWriter, r *http.Request) error {

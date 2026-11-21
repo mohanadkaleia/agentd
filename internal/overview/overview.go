@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agentd/internal/assignments"
+	"agentd/internal/outcomes"
 	"agentd/internal/runtime"
 	"agentd/internal/system"
 )
@@ -18,6 +19,7 @@ type Overview struct {
 	SpentMicros    int64
 	ReservedMicros int64
 	LimitMicros    int64
+	Criteria       []outcomes.Progress
 	OpenTasks      []Task
 	Recent         []Activity
 	Next           Expected
@@ -66,6 +68,9 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 		return o, err
 	}
 	o.SpentMicros, o.ReservedMicros, o.LimitMicros = b.SpentMicros, b.ReservedMicros, b.LimitMicros
+	if o.Criteria, err = outcomes.Criteria(ctx, rt.DB, a); err != nil {
+		return o, err
+	}
 	if o.OpenTasks, err = openTasks(ctx, rt.DB, id); err != nil {
 		return o, err
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agentd/internal/audit"
@@ -62,7 +63,50 @@ func (s Severity) Rank() int {
 }
 
 type Completion struct {
-	Criteria []string `json:"criteria,omitempty"`
+	Criteria []Criterion `json:"criteria,omitempty"`
+}
+
+type Criterion struct {
+	ID          string         `json:"id"`
+	Description string         `json:"description"`
+	Event       *EventEvidence `json:"event,omitempty"`
+}
+
+type EventEvidence struct {
+	Source string            `json:"source"`
+	Kind   string            `json:"kind"`
+	Match  map[string]string `json:"match,omitempty"`
+}
+
+func (c *Criterion) UnmarshalJSON(b []byte) error {
+	var text string
+	if json.Unmarshal(b, &text) == nil {
+		*c = Criterion{Description: text}
+		return nil
+	}
+	type plain Criterion
+	return json.Unmarshal(b, (*plain)(c))
+}
+
+func (c *Completion) normalize() error {
+	seen := map[string]bool{}
+	for i := range c.Criteria {
+		cr := &c.Criteria[i]
+		if cr.ID == "" {
+			cr.ID = fmt.Sprint(i + 1)
+		}
+		if seen[cr.ID] {
+			return fmt.Errorf("%w: duplicate completion criterion id %q", ErrInvalid, cr.ID)
+		}
+		seen[cr.ID] = true
+		if strings.TrimSpace(cr.Description) == "" {
+			return fmt.Errorf("%w: completion criterion %q needs a description", ErrInvalid, cr.ID)
+		}
+		if cr.Event != nil && (cr.Event.Source == "" || cr.Event.Kind == "") {
+			return fmt.Errorf("%w: completion criterion %q: event evidence needs a source and kind", ErrInvalid, cr.ID)
+		}
+	}
+	return nil
 }
 
 type NotificationPolicy struct {
@@ -119,6 +163,9 @@ type Store struct {
 }
 
 func (s *Store) CreateProject(ctx context.Context, p NewProject) (string, error) {
+	if err := p.Completion.normalize(); err != nil {
+		return "", err
+	}
 	completion, err := json.Marshal(p.Completion)
 	if err != nil {
 		return "", err
@@ -193,6 +240,9 @@ func (s *Store) Get(ctx context.Context, id string) (Assignment, error) {
 	if completion.Valid {
 		a.Completion = &Completion{}
 		if err := json.Unmarshal([]byte(completion.String), a.Completion); err != nil {
+			return a, err
+		}
+		if err := a.Completion.normalize(); err != nil {
 			return a, err
 		}
 	}

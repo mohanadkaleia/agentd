@@ -11,6 +11,7 @@ import (
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/notify"
+	"agentd/internal/outcomes"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
 	"agentd/internal/skills"
@@ -26,6 +27,7 @@ type App struct {
 	Scheduler   *scheduler.Scheduler
 	Outbox      *notify.Outbox
 	Deliverer   *notify.Deliverer
+	Outcomes    *outcomes.Evaluator
 	Skills      skills.Registry
 	Runtime     *runtime.Runtime
 }
@@ -34,6 +36,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	a := &assignments.Store{DB: db, Now: now}
 	t := &tasks.Store{DB: db, Now: now}
 	outbox := &notify.Outbox{DB: db, Assignments: a, Now: now}
+	evaluator := &outcomes.Evaluator{DB: db, Assignments: a, Outbox: outbox, Now: now}
 	deliverer := &notify.Deliverer{DB: db, Now: now, MaxAttempts: 8, Claim: 2 * time.Minute}
 	all := tools.Registry{}
 	for name, tool := range registry {
@@ -88,6 +91,9 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		if err := sch.Tick(ctx); err != nil {
 			return err
 		}
+		if err := evaluator.Tick(ctx); err != nil {
+			return err
+		}
 		return deliverer.DeliverDue(ctx)
 	}
 	return &App{
@@ -98,6 +104,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Scheduler:   sch,
 		Outbox:      outbox,
 		Deliverer:   deliverer,
+		Outcomes:    evaluator,
 		Skills:      sk,
 		Runtime:     rt,
 	}

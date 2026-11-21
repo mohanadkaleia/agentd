@@ -54,7 +54,9 @@ commands:
   reject <approval-id>                 reject a pending action
   policy <assignment-id> <policy.json> replace an assignment's policy and limits
   pause | resume <assignment-id>       stop or restart new work
-  complete | cancel <project-id>       end a project
+  confirm <project-id> <criterion-id> [note]
+                                       record that you verified a completion criterion yourself
+  complete | cancel <project-id>       end a project by hand
   revoke <responsibility-id>           end a responsibility
   notifications                        list notifications waiting for delivery
   event -source S -kind K [-id X] [-payload JSON]
@@ -183,6 +185,11 @@ func run() error {
 		return nil
 	case "status":
 		return status(ctx, a)
+	case "confirm":
+		if cmd.NArg() < 2 {
+			return fmt.Errorf("confirm needs a project id and a criterion id")
+		}
+		return a.Outcomes.Confirm(ctx, cmd.Arg(0), cmd.Arg(1), "cli", strings.Join(cmd.Args()[2:], " "))
 	case "retry":
 		if cmd.NArg() < 1 {
 			return fmt.Errorf("retry needs a task id")
