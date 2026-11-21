@@ -65,7 +65,7 @@ classDiagram
 | **Run** | One checkpointed conversation that executes a task. Resumed, not restarted, after a crash. | Messages, step count. | Side effects. |
 | **Action** | One proposed tool call, persisted before it runs, keyed `run:step:call`. | Status, result, provider id. | Its own authorization. |
 | **Skill** | Reusable know-how a task can load: instructions (and the tools it expects). | Nothing at runtime. | Scheduling, autonomy, permissions. A skill never grants a tool. |
-| **Notification** | A message for the user in a durable outbox, deduplicated per assignment. | Severity, dedup key, delivery status. | Delivery channel (adapters come later). |
+| **Notification** | A message for the user in a durable outbox, deduplicated per assignment. | Severity, dedup key, delivery status and attempts. | Delivery channel (an adapter such as ntfy). |
 | **Approval** | A human decision bound to one action's exact arguments, with an expiry. | Decision. | Anything beyond that one action. |
 
 ### Lifecycles
@@ -197,9 +197,21 @@ To make it live, only edge pieces are needed, none of them in the runtime:
 
 - an **event source** that emits `market/price.moved` and `news/article.published` events;
 - a **portfolio read tool** (holdings, cost basis) behind the gateway;
-- a **notification delivery adapter** (phone push or email) that drains the outbox.
+- (phone delivery already exists: `agentd ntfy setup`).
 
 ## Integrations
+
+**Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
+each pending notification by pushing its next attempt two minutes out, sends it through the
+configured channel, and records the result. Transient failures retry with doubling backoff (30 s up
+to 1 h); a permanent failure, or the eighth attempt, parks it as failed with the error, which
+`agentd notifications` and the API show. Delivery is at least once: a crash between the push and
+the record re-sends it after the claim lapses. Nothing is delivered while halted, and pending
+notifications of a revoked or cancelled assignment are suppressed. Suppression, dedup and the daily
+cap are decided when the notification is created and never revisited. By default the push says only
+which assignment needs attention; `-full` includes the title and text. The ntfy topic is a secret
+kept in the keychain.
+
 
 Integrations live in `internal/integrations/<name>` and plug in at the edges only: they contribute
 tools (which go through the gateway like any other) and event sources (which feed the inbox). The
@@ -246,7 +258,6 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 
 ## Deliberately not built yet
 
-- Notification delivery channels (the outbox is durable; nothing drains it yet).
 - Event-source adapters for market data and news (Gmail exists).
 - Automatic project completion from `completion.criteria` (today a person runs `agentd complete`).
 

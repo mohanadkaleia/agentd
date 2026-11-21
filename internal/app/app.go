@@ -25,6 +25,7 @@ type App struct {
 	Gateway     *gateway.Gateway
 	Scheduler   *scheduler.Scheduler
 	Outbox      *notify.Outbox
+	Deliverer   *notify.Deliverer
 	Skills      skills.Registry
 	Runtime     *runtime.Runtime
 }
@@ -33,6 +34,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	a := &assignments.Store{DB: db, Now: now}
 	t := &tasks.Store{DB: db, Now: now}
 	outbox := &notify.Outbox{DB: db, Assignments: a, Now: now}
+	deliverer := &notify.Deliverer{DB: db, Now: now, MaxAttempts: 8, Claim: 2 * time.Minute}
 	all := tools.Registry{}
 	for name, tool := range registry {
 		all[name] = tool
@@ -83,7 +85,10 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		if err := rt.ResumeWithinBudget(ctx); err != nil {
 			return err
 		}
-		return sch.Tick(ctx)
+		if err := sch.Tick(ctx); err != nil {
+			return err
+		}
+		return deliverer.DeliverDue(ctx)
 	}
 	return &App{
 		DB:          db,
@@ -92,6 +97,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Gateway:     g,
 		Scheduler:   sch,
 		Outbox:      outbox,
+		Deliverer:   deliverer,
 		Skills:      sk,
 		Runtime:     rt,
 	}

@@ -61,7 +61,11 @@ func show(ctx context.Context, a *app.App, id string) error {
 }
 
 func notifications(ctx context.Context, a *app.App) error {
-	rows, err := a.DB.QueryContext(ctx, `SELECT n.id, n.severity, a.name, n.title, n.body FROM notifications n
+	rows, err := a.DB.QueryContext(ctx, `SELECT n.id, n.severity, a.name, n.title, n.body,
+		CASE WHEN n.failed_at IS NOT NULL THEN 'delivery failed: ' || COALESCE(n.last_error, '')
+		     WHEN n.attempts > 0 THEN 'retrying: ' || COALESCE(n.last_error, '')
+		     ELSE 'waiting' END
+		FROM notifications n
 		JOIN assignments a ON a.id = n.assignment_id WHERE n.status = 'pending' ORDER BY n.created_at`)
 	if err != nil {
 		return err
@@ -70,11 +74,11 @@ func notifications(ctx context.Context, a *app.App) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
 	for rows.Next() {
-		var id, severity, name, title, body string
-		if err := rows.Scan(&id, &severity, &name, &title, &body); err != nil {
+		var id, severity, name, title, body, delivery string
+		if err := rows.Scan(&id, &severity, &name, &title, &body, &delivery); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, severity, name, title, body)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, severity, name, title, body, delivery)
 	}
 	return rows.Err()
 }

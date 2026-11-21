@@ -69,6 +69,18 @@ secret and refresh token are stored in the login keychain, never on disk or in t
 New inbox mail becomes `gmail / email.received` events (payload: `message_id`, `thread_id`, `from`,
 `subject`, `snippet`); routes decide which ones become tasks.
 
+## Phone notifications
+
+Notifications the agent raises can be pushed to your phone through the free [ntfy](https://ntfy.sh) app:
+
+```bash
+./bin/agentd ntfy setup        # prints a private topic; subscribe to it in the ntfy app
+./bin/agentd ntfy test         # a test push
+```
+
+`agentd serve` then delivers pending notifications, retrying on failure. Pushes say only which
+assignment needs attention; `ntfy setup -full` includes the title and text. `agentd ntfy off` stops it.
+
 ## HTTP API
 
 ```bash

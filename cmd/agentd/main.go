@@ -40,6 +40,7 @@ commands:
     serve [-workers N] [-listen ADDR]    run the supervisor (and the HTTP API when -listen is set)
     gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
+  ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
   demo                                 seed the airline-refund demo project
@@ -92,6 +93,9 @@ func run() error {
 	defer stop()
 	if args[0] == "gmail" {
 		return gmailCommand(ctx, args[1:])
+	}
+	if args[0] == "ntfy" {
+		return ntfyCommand(ctx, args[1:])
 	}
 	db, err := store.Open(ctx, *dbPath)
 	if err != nil {
@@ -151,6 +155,10 @@ func run() error {
 		stopAPI, err := startAPI(ctx, a, *listen, *tokenFile, log)
 		if err != nil {
 			return err
+		}
+		if ch, ok := loadNtfy(); ok {
+			a.Deliverer.Channel = ch
+			log.Info("notifications deliver via ntfy")
 		}
 		watchGmail(ctx, a, account, *gmailPoll, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)

@@ -502,10 +502,14 @@ type notificationRow struct {
 	Title        string    `json:"title"`
 	Body         string    `json:"body"`
 	CreatedAt    time.Time `json:"created_at"`
+	Attempts     int       `json:"delivery_attempts"`
+	LastError    string    `json:"last_error,omitempty"`
+	Failed       bool      `json:"delivery_failed"`
 }
 
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) error {
-	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id, assignment_id, severity, title, body, created_at
+	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id, assignment_id, severity, title, body, created_at,
+		attempts, COALESCE(last_error, ''), failed_at IS NOT NULL
 		FROM notifications WHERE status = 'pending' ORDER BY created_at, id`)
 	if err != nil {
 		return err
@@ -515,7 +519,7 @@ func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) error
 	for rows.Next() {
 		var n notificationRow
 		var at int64
-		if err := rows.Scan(&n.ID, &n.AssignmentID, &n.Severity, &n.Title, &n.Body, &at); err != nil {
+		if err := rows.Scan(&n.ID, &n.AssignmentID, &n.Severity, &n.Title, &n.Body, &at, &n.Attempts, &n.LastError, &n.Failed); err != nil {
 			return err
 		}
 		n.CreatedAt = time.UnixMilli(at)
