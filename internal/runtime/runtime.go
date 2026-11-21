@@ -28,6 +28,8 @@ type Runtime struct {
 	Skills      skills.Registry
 	Model       model.Provider
 	ModelID     string
+	ModelLocal  bool
+	Fallbacks   []Candidate
 	Now         func() time.Time
 	LeaseTTL    time.Duration
 	MaxSteps    int
@@ -59,6 +61,9 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 		return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: map[string]string{"error": err.Error()}})
 	}
 	rn, err := r.openRun(ctx, task)
+	if errors.Is(err, errNoModel) {
+		return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: map[string]string{"error": err.Error()}})
+	}
 	if err != nil {
 		return r.fail(ctx, lease, task, err)
 	}
@@ -148,8 +153,16 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 			}
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 		}
+		a, err := r.Assignments.Get(ctx, task.AssignmentID)
+		if err != nil {
+			return r.fail(ctx, lease, task, err)
+		}
+		provider, err := r.pinned(ctx, &rn, task.AssignmentID, a.Policy, msgs)
+		if err != nil {
+			return r.block(ctx, lease, rn.ID, map[string]string{"error": err.Error()})
+		}
 		req := model.Request{Messages: msgs, Tools: r.Tools.Definitions(task.Allows)}
-		res, err := r.reserve(ctx, task, rn.ID, req)
+		res, err := r.reserve(ctx, task, rn.ID, provider, req)
 		if err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
@@ -162,15 +175,24 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 		if res.wait {
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready, NextRunAt: r.Now().Add(r.BaseBackoff)})
 		}
-		resp, err := r.Model.Complete(ctx, req)
+		resp, err := provider.Complete(ctx, req)
 		if err != nil {
 			if merr := r.markReservation(context.WithoutCancel(ctx), r.DB, res.id, "unknown"); merr != nil {
 				err = errors.Join(err, merr)
 			}
+			if ctx.Err() == nil {
+				switched, ferr := r.fallback(ctx, &rn, task.AssignmentID, a.Policy, msgs, err)
+				if ferr != nil {
+					return r.fail(ctx, lease, task, ferr)
+				}
+				if switched {
+					continue
+				}
+			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
 		}
 		if resp.StopReason == model.StopRefusal || resp.StopReason == model.StopMaxTokens {
-			if err := r.recordUsage(ctx, r.DB, task, rn.ID, res.id, resp); err != nil {
+			if err := r.recordUsage(ctx, r.DB, task, rn, res.id, resp); err != nil {
 				return r.fail(ctx, lease, task, err)
 			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model stopped with %s", resp.StopReason))

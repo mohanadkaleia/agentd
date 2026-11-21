@@ -22,6 +22,7 @@ import (
 	"agentd/internal/model/ollama"
 	"agentd/internal/model/scripted"
 	"agentd/internal/policy"
+	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
 	"agentd/internal/skills"
 	"agentd/internal/store"
@@ -29,7 +30,7 @@ import (
 	"agentd/internal/tools"
 )
 
-const usage = `usage: agentd [-db path] [-model spec] [-effort level] <command> [args]
+const usage = `usage: agentd [-db path] [-model spec] [-fallback-models specs] [-effort level] <command> [args]
 
 models:
   scripted                  deterministic demo model (default)
@@ -81,6 +82,7 @@ func run() error {
 	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")
 	modelSpec := global.String("model", envOr("AGENTD_MODEL", "scripted"), "model provider and id")
 	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
+	fallbackSpecs := global.String("fallback-models", envOr("AGENTD_FALLBACK_MODELS", ""), "comma-separated models to try when the main one fails before a run's first reply")
 	skillsDir := global.String("skills", envOr("AGENTD_SKILLS", "skills"), "directory of skill .md files")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return err
@@ -146,6 +148,17 @@ func run() error {
 		registered = append(registered, extra...)
 	}
 	a := app.New(db, provider, *modelSpec, tools.NewRegistry(registered...), time.Now)
+	a.Runtime.ModelLocal = isLocal(*modelSpec)
+	for _, spec := range strings.Split(*fallbackSpecs, ",") {
+		if spec = strings.TrimSpace(spec); spec == "" {
+			continue
+		}
+		p, err := newProvider(spec, *effort)
+		if err != nil {
+			return fmt.Errorf("fallback model %q: %w", spec, err)
+		}
+		a.Runtime.Fallbacks = append(a.Runtime.Fallbacks, runtime.Candidate{ID: spec, Provider: p, Local: isLocal(spec)})
+	}
 	if err := skills.LoadDir(a.Skills, *skillsDir); err != nil {
 		return fmt.Errorf("loading skills: %w", err)
 	}
@@ -338,6 +351,11 @@ func status(ctx context.Context, a *app.App) error {
 		rows.Close()
 	}
 	return nil
+}
+
+func isLocal(spec string) bool {
+	name, _, _ := strings.Cut(spec, "/")
+	return name == "ollama" || name == "scripted"
 }
 
 func newProvider(spec, effort string) (model.Provider, error) {

@@ -28,7 +28,13 @@ Pick a model with `-model` (or `AGENTD_MODEL`):
 ./bin/agentd -model ollama/qwen2.5:7b serve      # local, free
 ./bin/agentd -model anthropic serve              # claude-opus-5-5; uses ANTHROPIC_API_KEY or `ant auth login`
 ./bin/agentd -model anthropic/claude-sonnet-5-5 -effort medium serve
+./bin/agentd -model anthropic -fallback-models ollama/qwen2.5:7b serve   # use Ollama when Claude is down
 ```
+
+Each run is pinned to one model for its whole conversation. A fallback model is tried only when the
+main one fails before the run's first reply. An assignment's policy can restrict which models it may
+use: `"models": {"local_only": true}` keeps its data on the Mac, and `"models": {"allowed": [...]}`
+lists model specs by name.
 
 `go test -race ./...` runs the leasing, transition, crash-recovery, adapter and neutrality suites.
 

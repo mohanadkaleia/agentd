@@ -20,13 +20,14 @@ import (
 type run struct {
 	ID    string
 	Steps int
+	Model string
 }
 
 func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	var rn run
 	var status string
-	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count, status FROM runs WHERE task_id = ?
-		ORDER BY started_at DESC, rowid DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps, &status)
+	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count, status, model_id FROM runs WHERE task_id = ?
+		ORDER BY started_at DESC, rowid DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps, &status, &rn.Model)
 	if err == nil {
 		if status != "running" {
 			if _, err := r.DB.ExecContext(ctx, `UPDATE runs SET status = 'running', finished_at = NULL WHERE id = ?`, rn.ID); err != nil {
@@ -46,6 +47,9 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	if err != nil {
 		return rn, err
 	}
+	if rn.Model, err = r.firstModel(p.Policy); err != nil {
+		return rn, err
+	}
 	rn.ID = ids.New("run")
 	now := r.Now()
 	tx, err := r.DB.BeginTx(ctx, nil)
@@ -54,7 +58,7 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
-		rn.ID, t.ID, r.ModelID, now.UnixMilli()); err != nil {
+		rn.ID, t.ID, rn.Model, now.UnixMilli()); err != nil {
 		return rn, err
 	}
 	initial := []model.Message{{Role: model.RoleSystem, Content: systemPrompt(p) + skills.Prompt(loaded)}}
@@ -124,7 +128,7 @@ func (r *Runtime) appendModelMessage(ctx context.Context, lease tasks.Lease, t t
 		return err
 	}
 	defer tx.Rollback()
-	if err := r.recordUsage(ctx, tx, t, rn.ID, reservationID, resp); err != nil {
+	if err := r.recordUsage(ctx, tx, t, *rn, reservationID, resp); err != nil {
 		return err
 	}
 	if err := tasks.HoldsLease(ctx, tx, lease, r.Now()); err != nil {
@@ -161,16 +165,16 @@ func (r *Runtime) unseenEvents(ctx context.Context, t tasks.Task) (int, error) {
 	return scheduler.UnseenEvents(ctx, r.DB, t.ID)
 }
 
-func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, runID string, reservationID int64, resp model.Response) error {
+func (r *Runtime) recordUsage(ctx context.Context, ex audit.Execer, t tasks.Task, rn run, reservationID int64, resp model.Response) error {
 	if err := r.markReservation(ctx, ex, reservationID, "settled"); err != nil {
 		return err
 	}
 	modelID := resp.Model
 	if modelID == "" {
-		modelID = r.ModelID
+		modelID = rn.Model
 	}
 	_, err := ex.ExecContext(ctx, `INSERT INTO model_usage (assignment_id, task_id, run_id, model, input_tokens, output_tokens, cost_micros, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, t.AssignmentID, t.ID, runID, modelID,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, t.AssignmentID, t.ID, rn.ID, modelID,
 		resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CostMicros, r.Now().UnixMilli())
 	return err
 }
@@ -255,7 +259,7 @@ type reservation struct {
 	wait      bool
 }
 
-func (r *Runtime) reserve(ctx context.Context, t tasks.Task, runID string, req model.Request) (reservation, error) {
+func (r *Runtime) reserve(ctx context.Context, t tasks.Task, runID string, provider model.Provider, req model.Request) (reservation, error) {
 	a, err := r.Assignments.Get(ctx, t.AssignmentID)
 	if err != nil {
 		return reservation{}, err
@@ -264,7 +268,7 @@ func (r *Runtime) reserve(ctx context.Context, t tasks.Task, runID string, req m
 		return reservation{}, nil
 	}
 	var estimate int64
-	if e, ok := r.Model.(model.CostEstimator); ok {
+	if e, ok := provider.(model.CostEstimator); ok {
 		estimate = max(e.MaxCostMicros(req), 0)
 	}
 	tx, err := r.DB.BeginTx(ctx, nil)

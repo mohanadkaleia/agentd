@@ -24,6 +24,12 @@ type Rule struct {
 type Policy struct {
 	Tools  map[string]Rule `json:"tools"`
 	Limits Limits          `json:"limits,omitzero"`
+	Models ModelPolicy     `json:"models,omitzero"`
+}
+
+type ModelPolicy struct {
+	Allowed   []string `json:"allowed,omitempty"`
+	LocalOnly bool     `json:"local_only,omitempty"`
 }
 
 type Limits struct {
