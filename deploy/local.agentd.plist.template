@@ -13,7 +13,7 @@
         <string>__MODEL__</string>
         <string>serve</string>
         <string>-workers</string>
-        <string>__WORKERS__</string>
+        <string>__WORKERS__</string>__LISTEN_ARGS__
     </array>
     <key>WorkingDirectory</key>
     <string>__HOME__/Library/Application Support/agentd</string>

@@ -103,6 +103,7 @@ skills, notifications), the invariants the code enforces, and how a responsibili
 ```bash
 deploy/set-anthropic-key.sh                 # optional: store the key in the login keychain
 deploy/install.sh ollama/qwen2.5:7b         # or: deploy/install.sh anthropic
+deploy/install.sh --listen tailscale:7777 ollama/qwen2.5:7b   # also serve the API on this Mac's Tailscale IP
 deploy/install.sh --dry-run anthropic       # print the rendered plist only
 deploy/uninstall.sh                         # stop and unregister; data is kept
 ```

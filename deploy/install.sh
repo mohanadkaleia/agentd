@@ -2,16 +2,22 @@
 set -eu
 
 usage() {
-    echo "usage: deploy/install.sh [--dry-run] <model> [workers]"
-    echo "  model: anthropic[/model-id] | ollama/model-id"
+    echo "usage: deploy/install.sh [--dry-run] [--listen ADDR] <model> [workers]"
+    echo "  model:  anthropic[/model-id] | ollama/model-id"
+    echo "  listen: 127.0.0.1:PORT, tailscale:PORT (this Mac's Tailscale IP), or a specific IP:PORT"
     exit 2
 }
 
 dry_run=0
-if [ "${1:-}" = "--dry-run" ]; then
-    dry_run=1
-    shift
-fi
+listen=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry_run=1; shift ;;
+        --listen) [ $# -ge 2 ] || usage; listen=$2; shift 2 ;;
+        --*) usage ;;
+        *) break ;;
+    esac
+done
 [ $# -ge 1 ] || usage
 model=$1
 workers=${2:-3}
@@ -19,6 +25,25 @@ case "$model" in
     anthropic|anthropic/*|ollama/?*) ;;
     *) usage ;;
 esac
+
+case "$listen" in
+    "") ;;
+    tailscale:*)
+        port=${listen#tailscale:}
+        ts=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null | head -1 || true)
+        [ -n "$ts" ] || { echo "Tailscale is not running or has no IPv4 address"; exit 1; }
+        listen="$ts:$port"
+        ;;
+    0.0.0.0:*|:*|\[::\]:*)
+        echo "refusing to listen on every interface; use 127.0.0.1:PORT or tailscale:PORT"
+        exit 1
+        ;;
+esac
+if [ -n "$listen" ]; then
+    case "${listen##*:}" in
+        ''|*[!0-9]*) echo "listen address needs a numeric port: $listen"; exit 1 ;;
+    esac
+fi
 
 label=local.agentd
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -28,8 +53,16 @@ plist="$HOME/Library/LaunchAgents/$label.plist"
 rendered=$(mktemp)
 trap 'rm -f "$rendered"' EXIT
 
-sed -e "s|__HOME__|$HOME|g" -e "s|__MODEL__|$model|g" -e "s|__WORKERS__|$workers|g" \
-    "$repo/deploy/$label.plist.template" > "$rendered"
+listen_args=""
+if [ -n "$listen" ]; then
+    listen_args='\n        <string>-listen</string>\n        <string>'"$listen"'</string>'
+fi
+
+awk -v home="$HOME" -v model="$model" -v workers="$workers" -v listen_args="$listen_args" '{
+    gsub(/__HOME__/, home); gsub(/__MODEL__/, model); gsub(/__WORKERS__/, workers)
+    sub(/__LISTEN_ARGS__/, listen_args)
+    print
+}' "$repo/deploy/$label.plist.template" > "$rendered"
 plutil -lint "$rendered" >/dev/null
 
 if [ "$dry_run" -eq 1 ]; then
@@ -37,7 +70,7 @@ if [ "$dry_run" -eq 1 ]; then
     exit 0
 fi
 
-mkdir -p "$support/bin" "$logs" "$HOME/Library/LaunchAgents"
+mkdir -p "$support/bin" "$support/skills" "$logs" "$HOME/Library/LaunchAgents"
 (cd "$repo" && go build -o "$support/bin/agentd.new" ./cmd/agentd)
 mv "$support/bin/agentd.new" "$support/bin/agentd"
 cp "$rendered" "$plist"
@@ -46,6 +79,10 @@ launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
 
 echo "agentd installed and running ($model, $workers workers)"
+if [ -n "$listen" ]; then
+    echo "  api:     http://$listen  (token: \"$support/api-token\", created on first start)"
+fi
+echo "  skills:  $support/skills/*.md"
 echo "  status:  AGENTD_DB=\"$support/agentd.db\" \"$support/bin/agentd\" status"
 echo "  logs:    tail -f \"$logs/agentd.log\""
 echo "  stop:    deploy/uninstall.sh"
