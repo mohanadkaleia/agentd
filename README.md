@@ -114,6 +114,15 @@ event or by you, never by the model:
 status. Once all are verified and no action is unresolved, the project completes itself and queues a
 notification. Plain-text criteria (`"criteria": ["..."]`) still work and need `agentd confirm`.
 
+## Holdings
+
+`agentd serve -holdings ~/holdings.json` registers `portfolio_positions`, which reads a snapshot you
+keep up to date (see [`docs/examples/holdings.json`](docs/examples/holdings.json)). Quantities and
+prices are decimal strings and the arithmetic is exact. Holdings of one symbol across accounts are
+combined, foreign currencies need an `fx` rate, and anything without a price or rate is listed with
+a warning instead of a guessed value. A snapshot older than three days is marked incomplete. The
+tool only reads; there is no trading code anywhere in agentd.
+
 ## Reading the web
 
 `agentd serve` registers `web_read`, which fetches one public page and returns its title, readable

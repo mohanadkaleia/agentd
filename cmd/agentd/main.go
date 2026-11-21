@@ -17,6 +17,7 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/demo"
 	"agentd/internal/integrations/gmail"
+	"agentd/internal/integrations/portfolio"
 	"agentd/internal/integrations/web"
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
@@ -113,6 +114,7 @@ func run() error {
 	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
 	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
 	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
+	holdings := cmd.String("holdings", envOr("AGENTD_HOLDINGS", ""), "JSON holdings snapshot that portfolio_positions reads (off when empty)")
 	demoTools := cmd.Bool("demo-tools", false, "register the simulated web_search and send_email tools used by the demo")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside the simulated send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
@@ -145,6 +147,9 @@ func run() error {
 	var account *gmail.Account
 	if args[0] == "serve" {
 		registered = append(registered, &web.Reader{Now: time.Now, Timeout: 30 * time.Second})
+		if *holdings != "" {
+			registered = append(registered, &portfolio.Tool{Path: *holdings, Now: time.Now, MaxAge: 72 * time.Hour})
+		}
 		var extra []tools.Tool
 		account, extra = gmailTools(ctx, log)
 		registered = append(registered, extra...)

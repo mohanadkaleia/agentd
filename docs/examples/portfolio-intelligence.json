@@ -5,6 +5,8 @@
   "policy": {
     "tools": {
       "web_search":        {"mode": "allow"},
+      "web_read":          {"mode": "allow"},
+      "portfolio_positions": {"mode": "allow"},
       "notify":            {"mode": "allow"},
       "update_state":      {"mode": "allow"},
       "schedule_followup": {"mode": "allow"},

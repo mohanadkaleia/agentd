@@ -199,7 +199,7 @@ agentd show <rsp_id>
 To make it live, only edge pieces are needed, none of them in the runtime:
 
 - an **event source** that emits `market/price.moved` and `news/article.published` events;
-- a **portfolio read tool** (holdings, cost basis) behind the gateway;
+- live holdings from a broker (a snapshot file works today: `-holdings`);
 - (phone delivery already exists: `agentd ntfy setup`).
 
 ## Integrations
@@ -279,6 +279,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/outcomes` | Completion criteria evidence and automatic project completion. |
 | `internal/watchdog` | Obligations: health from evidence, catch-up tasks and escalation. |
 | `internal/integrations/ntfy` | Phone delivery channel for notifications. |
+| `internal/integrations/portfolio` | `portfolio_positions`: read-only holdings from an owner-kept snapshot, exact decimal values and weights. |
 | `internal/integrations/web` | `web_read`: one public page as text, with an address guard against local and private networks. |
 | `internal/skills` | Skill registry, loaded from `.md` files. |
 | `internal/integrations/gmail` | Gmail tools (search, read, draft, send), inbox watcher, OAuth. |

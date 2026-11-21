@@ -1,0 +1,11 @@
+{
+  "as_of": "2026-11-20T21:00:00Z",
+  "source": "manual: exported from my broker on 2026-11-20",
+  "base_currency": "USD",
+  "fx": {"EUR": "1.08"},
+  "positions": [
+    {"account": "ira", "symbol": "VTI", "asset_class": "etf", "currency": "USD", "quantity": "42.5", "price": "290.10", "cost_basis": "9800.00"},
+    {"account": "taxable", "symbol": "SAP", "asset_class": "equity", "currency": "EUR", "quantity": "10", "price": "231.40"},
+    {"account": "taxable", "symbol": "BTC", "asset_class": "crypto", "currency": "USD", "quantity": "0.0125"}
+  ]
+}
