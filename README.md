@@ -37,6 +37,10 @@ use: `"models": {"local_only": true}` keeps its data on the Mac, and `"models": 
 lists model specs by name.
 
 `go test -race ./...` runs the leasing, transition, crash-recovery, adapter and neutrality suites.
+`internal/e2e` replays a week of an airline-refund project against a fake Gmail and a fake clock
+(a crash mid-send, a prompt-injection email, a follow-up, an approval that is not yet the outcome,
+and the bank posting the refund) and logs its metrics with `go test -v ./internal/e2e`. To add a
+scenario, script the agent's choices in `decide` and drive time with `hours`.
 
 ## Layout
 

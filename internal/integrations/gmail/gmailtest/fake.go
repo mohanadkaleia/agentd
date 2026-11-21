@@ -1,4 +1,4 @@
-package gmail_test
+package gmailtest
 
 import (
 	"encoding/base64"
@@ -14,52 +14,60 @@ import (
 	"agentd/internal/integrations/gmail"
 )
 
-type fakeMessage struct {
-	id, thread, from, to, subject, messageID, body string
-	labels                                         []string
+type Message struct {
+	ID, Thread, From, To, Subject, MessageID, Body string
+	Labels                                         []string
 }
 
-type fakeGmail struct {
+type Fake struct {
 	mu        sync.Mutex
-	messages  map[string]*fakeMessage
+	messages  map[string]*Message
 	order     []string
 	drafts    map[string]string
 	history   []string
 	historyID int
-	expired   bool
-	failSend  bool
-	sentLags  bool
-	sendCalls int
+	Expired   bool
+	FailSend  bool
+	SentLags  bool
+	SendCalls int
 	nextID    int
 }
 
-func newFake(t *testing.T) (*fakeGmail, *gmail.Client) {
-	f := &fakeGmail{messages: map[string]*fakeMessage{}, drafts: map[string]string{}, historyID: 100}
+func New(t *testing.T) (*Fake, *gmail.Client) {
+	f := &Fake{messages: map[string]*Message{}, drafts: map[string]string{}, historyID: 100}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, &gmail.Client{HTTP: srv.Client(), BaseURL: srv.URL}
 }
 
-func (f *fakeGmail) receive(from, subject, body string) string {
+func (f *Fake) Receive(from, subject, body string) string {
+	return f.Reply("", from, subject, body)
+}
+
+func (f *Fake) Reply(to, from, subject, body string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
 	id := fmt.Sprintf("in%d", f.nextID)
-	f.messages[id] = &fakeMessage{id: id, thread: "t-" + id, from: from, to: "me@example.com", subject: subject,
-		messageID: "<" + id + "@mail.example>", body: body, labels: []string{"INBOX", "UNREAD"}}
+	thread := "t-" + id
+	if m, ok := f.messages[to]; ok {
+		thread = m.Thread
+	}
+	f.messages[id] = &Message{ID: id, Thread: thread, From: from, To: "me@example.com", Subject: subject,
+		MessageID: "<" + id + "@mail.example>", Body: body, Labels: []string{"INBOX", "UNREAD"}}
 	f.order = append(f.order, id)
 	f.history = append(f.history, id)
 	f.historyID++
 	return id
 }
 
-func (f *fakeGmail) sent() []*fakeMessage {
+func (f *Fake) Sent() []*Message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []*fakeMessage
+	var out []*Message
 	for _, id := range f.order {
 		m := f.messages[id]
-		for _, l := range m.labels {
+		for _, l := range m.Labels {
 			if l == "SENT" {
 				out = append(out, m)
 			}
@@ -68,7 +76,7 @@ func (f *fakeGmail) sent() []*fakeMessage {
 	return out
 }
 
-func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path := r.URL.Path
@@ -77,7 +85,7 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/profile":
 		writeJSON(w, map[string]string{"emailAddress": "me@example.com", "historyId": fmt.Sprint(f.historyID)})
 	case path == "/history":
-		if f.expired {
+		if f.Expired {
 			http.Error(w, `{"error":{"code":404}}`, 404)
 			return
 		}
@@ -87,7 +95,7 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i, id := range f.history {
 			if 101+i > since {
 				m := f.messages[id]
-				entries = append(entries, map[string]any{"messagesAdded": []any{map[string]any{"message": map[string]string{"id": m.id, "threadId": m.thread}}}})
+				entries = append(entries, map[string]any{"messagesAdded": []any{map[string]any{"message": map[string]string{"id": m.ID, "threadId": m.Thread}}}})
 			}
 		}
 		writeJSON(w, map[string]any{"history": entries, "historyId": fmt.Sprint(f.historyID)})
@@ -95,18 +103,18 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var refs []any
 		for _, id := range f.order {
 			if f.matches(f.messages[id], q.Get("q")) {
-				refs = append(refs, map[string]string{"id": id, "threadId": f.messages[id].thread})
+				refs = append(refs, map[string]string{"id": id, "threadId": f.messages[id].Thread})
 			}
 		}
 		writeJSON(w, map[string]any{"messages": refs})
 	case path == "/messages/send":
-		f.sendCalls++
-		if f.failSend {
+		f.SendCalls++
+		if f.FailSend {
 			f.store(r, []string{"SENT"})
 			http.Error(w, "upstream timeout", 503)
 			return
 		}
-		writeJSON(w, map[string]string{"id": f.store(r, []string{"SENT"}).id})
+		writeJSON(w, map[string]string{"id": f.store(r, []string{"SENT"}).ID})
 	case path == "/drafts" && r.Method == "POST":
 		var body struct {
 			Message json.RawMessage `json:"message"`
@@ -114,8 +122,8 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&body)
 		r.Body = readCloser(body.Message)
 		m := f.store(r, []string{"DRAFT"})
-		f.drafts["d-"+m.id] = m.id
-		writeJSON(w, map[string]string{"id": "d-" + m.id})
+		f.drafts["d-"+m.ID] = m.ID
+		writeJSON(w, map[string]string{"id": "d-" + m.ID})
 	case path == "/drafts" && r.Method == "GET":
 		var drafts []any
 		for d, id := range f.drafts {
@@ -135,7 +143,7 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		thread := strings.TrimPrefix(path, "/threads/")
 		var msgs []any
 		for _, id := range f.order {
-			if f.messages[id].thread == thread {
+			if f.messages[id].Thread == thread {
 				msgs = append(msgs, f.render(f.messages[id], true))
 			}
 		}
@@ -145,23 +153,23 @@ func (f *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeGmail) matches(m *fakeMessage, q string) bool {
+func (f *Fake) matches(m *Message, q string) bool {
 	for _, term := range strings.Fields(q) {
 		switch {
 		case term == "in:sent":
-			if f.sentLags || !has(m.labels, "SENT") {
+			if f.SentLags || !has(m.Labels, "SENT") {
 				return false
 			}
 		case term == "in:inbox":
-			if !has(m.labels, "INBOX") {
+			if !has(m.Labels, "INBOX") {
 				return false
 			}
 		case strings.HasPrefix(term, "rfc822msgid:"):
-			if strings.Trim(m.messageID, "<>") != strings.TrimPrefix(term, "rfc822msgid:") {
+			if strings.Trim(m.MessageID, "<>") != strings.TrimPrefix(term, "rfc822msgid:") {
 				return false
 			}
 		case strings.HasPrefix(term, "from:"):
-			if !strings.Contains(m.from, strings.TrimPrefix(term, "from:")) {
+			if !strings.Contains(m.From, strings.TrimPrefix(term, "from:")) {
 				return false
 			}
 		}
@@ -169,7 +177,7 @@ func (f *fakeGmail) matches(m *fakeMessage, q string) bool {
 	return true
 }
 
-func (f *fakeGmail) store(r *http.Request, labels []string) *fakeMessage {
+func (f *Fake) store(r *http.Request, labels []string) *Message {
 	var body struct {
 		Raw      string `json:"raw"`
 		ThreadID string `json:"threadId"`
@@ -183,27 +191,27 @@ func (f *fakeGmail) store(r *http.Request, labels []string) *fakeMessage {
 	if thread == "" {
 		thread = "t-" + id
 	}
-	m := &fakeMessage{id: id, thread: thread, labels: labels}
+	m := &Message{ID: id, Thread: thread, Labels: labels}
 	if parsed != nil {
-		m.to, m.subject, m.messageID = parsed.Header.Get("To"), parsed.Header.Get("Subject"), parsed.Header.Get("Message-Id")
-		m.from = parsed.Header.Get("From") + "|in-reply-to=" + parsed.Header.Get("In-Reply-To")
+		m.To, m.Subject, m.MessageID = parsed.Header.Get("To"), parsed.Header.Get("Subject"), parsed.Header.Get("Message-Id")
+		m.From = parsed.Header.Get("From") + "|in-reply-to=" + parsed.Header.Get("In-Reply-To")
 	}
 	f.messages[id] = m
 	f.order = append(f.order, id)
 	return m
 }
 
-func (f *fakeGmail) render(m *fakeMessage, full bool) map[string]any {
-	headers := []map[string]string{{"name": "From", "value": m.from}, {"name": "To", "value": m.to},
-		{"name": "Subject", "value": m.subject}, {"name": "Message-ID", "value": m.messageID}}
+func (f *Fake) render(m *Message, full bool) map[string]any {
+	headers := []map[string]string{{"name": "From", "value": m.From}, {"name": "To", "value": m.To},
+		{"name": "Subject", "value": m.Subject}, {"name": "Message-ID", "value": m.MessageID}}
 	payload := map[string]any{"mimeType": "multipart/alternative", "headers": headers}
 	if full {
 		payload["parts"] = []any{
 			map[string]any{"mimeType": "text/html", "body": map[string]string{"data": base64.URLEncoding.EncodeToString([]byte("<p>html</p>"))}},
-			map[string]any{"mimeType": "text/plain; charset=UTF-8", "body": map[string]string{"data": base64.URLEncoding.EncodeToString([]byte(m.body))}},
+			map[string]any{"mimeType": "text/plain; charset=UTF-8", "body": map[string]string{"data": base64.URLEncoding.EncodeToString([]byte(m.Body))}},
 		}
 	}
-	return map[string]any{"id": m.id, "threadId": m.thread, "labelIds": m.labels, "snippet": firstWords(m.body),
+	return map[string]any{"id": m.ID, "threadId": m.Thread, "labelIds": m.Labels, "snippet": firstWords(m.Body),
 		"internalDate": "1795200000000", "payload": payload}
 }
 
@@ -233,3 +241,18 @@ type rc struct{ *strings.Reader }
 func (rc) Close() error { return nil }
 
 func readCloser(b []byte) rc { return rc{strings.NewReader(string(b))} }
+
+func (f *Fake) ThreadOf(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.messages[id]; ok {
+		return m.Thread
+	}
+	return ""
+}
+
+func (f *Fake) Sends() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.SendCalls
+}
