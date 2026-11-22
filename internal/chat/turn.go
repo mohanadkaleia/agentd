@@ -258,6 +258,7 @@ func (s *Service) Released(ctx context.Context, tx *sql.Tx, r tasks.Released) er
 	if err := s.startNext(ctx, tx, conv); err != nil {
 		return err
 	}
+	defer s.changed()
 	if r.Status == tasks.Completed {
 		if err := s.checkDrafts(ctx, tx, conv, r.TaskID, m.Text()); err != nil {
 			return err

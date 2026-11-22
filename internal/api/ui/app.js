@@ -1,11 +1,12 @@
 import { createApp, h, reactive, onMounted, onUnmounted, watch } from "/vue.js";
+import { makeChat } from "/chat.js";
 
 const state = reactive({
   csrf: null,
   signedIn: null,
   route: location.hash.slice(1) || "/",
   system: { halted: false },
-  counts: { approvals: 0, unresolved: 0 },
+  counts: { approvals: 0, unresolved: 0, questions: 0 },
   servers: [],
   toast: "",
 });
@@ -47,12 +48,13 @@ async function act(label, method, path, body) {
 
 async function refreshShell() {
   try {
-    const [system, approvals, unresolved, servers] = await Promise.all([
+    const [system, approvals, unresolved, servers, questions] = await Promise.all([
       api("GET", "/api/system"), api("GET", "/api/approvals"), api("GET", "/api/actions/unresolved"), api("GET", "/api/mcp/servers"),
+      api("GET", "/api/questions"),
     ]);
     state.system = system;
     state.servers = servers;
-    state.counts = { approvals: approvals.length, unresolved: unresolved.length };
+    state.counts = { approvals: approvals.length, unresolved: unresolved.length, questions: questions.length };
   } catch (e) { /* the view shows its own error */ }
 }
 
@@ -81,8 +83,8 @@ function shell(content) {
   return () => {
     if (state.signedIn === false) return h(Login);
     if (state.signedIn === null) return h("main", h("p", { class: "muted" }, "Loading…"));
-    const items = [["/", "Assignments"], ["/inbox", "Inbox"], ["/tools", "Tools"], ["/activity", "Activity"]];
-    const waiting = state.counts.approvals + state.counts.unresolved;
+    const items = [["/", "Chat"], ["/work", "Work"], ["/inbox", "Inbox"], ["/tools", "Tools"], ["/activity", "Activity"]];
+    const waiting = state.counts.approvals + state.counts.unresolved + state.counts.questions;
     const troubled = state.servers.filter((s) => s.state === "needs_auth" || s.state === "failed");
     const reviews = state.servers.filter((s) => s.state === "needs_review").length;
     return h("div", [
@@ -97,7 +99,7 @@ function shell(content) {
         h("h1", "Baseet"),
         h("nav", { "aria-label": "Main" }, items.map(([to, text]) =>
           h("a", { href: "#" + to, class: state.route === to ? "active" : "", "aria-current": state.route === to ? "page" : null }, [
-            text, to === "/inbox" && waiting ? [" ", h("span", { class: "badge", "aria-label": waiting + " waiting" }, String(waiting))] : null,
+            text, (to === "/inbox" || to === "/") && waiting ? [" ", h("span", { class: "badge", "aria-label": waiting + " waiting" }, String(waiting))] : null,
             to === "/tools" && troubled.length + reviews ? [" ", h("span", { class: "badge", "aria-label": (troubled.length + reviews) + " need attention" }, String(troubled.length + reviews))] : null,
           ]))),
         state.system.halted ? null : h("button", {
@@ -160,7 +162,7 @@ const Assignments = {
     return shell(() => {
       if (view.loading) return h("p", { class: "muted" }, "Loading…");
       if (view.error) return h("p", { role: "alert" }, view.error);
-      if (!view.data.length) return h("p", "Nothing assigned yet. Create one with `agentd create`.");
+      if (!view.data.length) return h("p", ["Nothing assigned yet. ", link("/", "Ask for something in the chat"), " or create one with agentd create."]);
       return h("div", { class: "grid" }, view.data.map((a) => h("article", { class: "card" }, [
         h("h2", link("/a/" + a.id, a.name)),
         h("div", { class: "row" }, [status(a.status), h("span", { class: "muted" }, a.kind)]),
@@ -207,6 +209,7 @@ const Assignment = {
           h("div", { class: "row" }, [status(a.status), h("span", { class: "muted" }, a.kind), a.status_reason ? h("span", { class: "muted" }, a.status_reason) : null]),
           h("p", a.objective),
           h("p", ["Next: ", h("strong", a.next.what)]),
+          h("p", link("/?about=" + a.id, "Ask about this")),
           (a.policy_warnings || []).map((w) => h("p", { class: "status pending", role: "note" }, "Policy: " + w)),
           h("p", { class: "muted" }, ["Spend ", money(a.spent_usd), a.budget_usd ? ` of ${money(a.budget_usd)}${a.budget_period ? " per " + a.budget_period : ""}` : "",
             a.reserved_usd ? ` (+${money(a.reserved_usd)} held)` : ""]),
@@ -251,6 +254,11 @@ const Task = {
       const note = prompt("Continue this blocked task in its existing run. Note for the agent (optional):");
       if (note !== null && await act("Retry", "POST", `/api/tasks/${props.id}/retry`, { note })) load();
     };
+    const note = reactive({ text: "" });
+    const tell = async (e) => {
+      e.preventDefault();
+      if (note.text.trim() && await act("Note", "POST", `/api/tasks/${props.id}/notes`, { text: note.text })) { note.text = ""; load(); }
+    };
     return shell(() => {
       if (view.loading) return h("p", { class: "muted" }, "Loading…");
       if (view.error) return h("p", { role: "alert" }, view.error);
@@ -262,6 +270,12 @@ const Task = {
           h("pre", t.objective),
           t.result ? h("pre", pretty(t.result)) : null,
           t.status === "blocked" ? h("button", { onClick: retry }, "Retry") : null,
+        ]),
+        t.status === "completed" || t.status === "cancelled" ? null : h("form", { class: "card", onSubmit: tell }, [
+          h("label", { for: "note" }, "Message this task"),
+          h("p", { class: "muted small" }, "Your words reach the task at its next step. They do not change what it is allowed to do."),
+          h("textarea", { id: "note", rows: 2, value: note.text, onInput: (e) => { note.text = e.target.value; } }),
+          h("p", h("button", { type: "submit", disabled: !note.text.trim() }, "Send note")),
         ]),
         h("section", { class: "card" }, [
           h("h3", "Transcript"),
@@ -411,6 +425,8 @@ const Activity = {
   },
 };
 
+const Chat = makeChat({ state, api, say, shell, refreshShell });
+
 const App = {
   setup() {
     onMounted(async () => {
@@ -435,7 +451,9 @@ const App = {
       if (r === "/inbox") return h(Inbox, { key: r });
       if (r === "/activity") return h(Activity, { key: r });
       if (r === "/tools") return h(Tools, { key: r });
-      return h(Assignments, { key: "/" });
+      if (r === "/work") return h(Assignments, { key: r });
+      const about = r.startsWith("/?about=") ? decodeURIComponent(r.slice(8)) : "";
+      return h(Chat, { key: "/" + about, about });
     };
   },
 };

@@ -479,8 +479,7 @@ func TestTurnIsClaimedQuicklyWhileOrdinaryWorkersAreBusy(t *testing.T) {
 		db.QueryRow(`SELECT COUNT(*) FROM conversation_messages WHERE author = 'agent'`).Scan(&n)
 		return n == 1
 	})
-	other := *a.Chat
-	other.Wake = nil
+	other := &chat.Service{DB: a.DB, Tasks: a.Tasks, Assignments: a.Assignments, Runtime: a.Runtime, Now: time.Now}
 	m, err = other.Post(ctx, chat.Post{ConversationID: conv, Text: "from another process", Channel: "cli"})
 	if err != nil {
 		t.Fatal(err)

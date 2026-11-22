@@ -44,6 +44,13 @@ email or a web page and expect it to be treated as data.
 - Text from models, tools and projects is printed with every control character removed, so it
   cannot move the cursor, change colours, or fake a prompt. `NO_COLOR` turns colour off.
 
+## In the web app
+
+The command center opens on the same conversation: http://<address>:7777 after signing in. Cards
+have Approve, Reject and Edit buttons, questions have choice buttons and a reply box, the Stop
+button cancels a running turn, and a task page has a "Message this task" box. Replies are shown as
+plain text with light formatting; nothing in a reply can load an image or open a link by itself.
+
 ## Exit codes
 
 | Code | Meaning |

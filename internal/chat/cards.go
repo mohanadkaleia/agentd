@@ -142,7 +142,13 @@ func (s *Service) addCard(ctx context.Context, ok bool, conv, kind, ref string, 
 		strconv.FormatInt(cursor, 10), s.Now().UnixMilli(), cursorKey); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if ok {
+		s.changed()
+	}
+	return nil
 }
 
 // cardFor decides whether an audit entry becomes a card, and where it goes.

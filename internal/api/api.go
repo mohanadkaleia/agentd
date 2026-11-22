@@ -53,6 +53,14 @@ func (s *Server) Handler() http.Handler {
 		"GET /api/tasks/{id}":                                     s.getTask,
 		"POST /api/tasks/{id}/retry":                              s.retryTask,
 		"POST /api/tasks/{id}/notes":                              s.tellTask,
+		"GET /api/conversations":                                  s.listConversations,
+		"POST /api/conversations":                                 s.newConversation,
+		"GET /api/conversations/{id}/messages":                    s.conversationMessages,
+		"POST /api/conversations/{id}/messages":                   s.postMessage,
+		"GET /api/conversations/{id}/stream":                      s.conversationStream,
+		"GET /api/conversations/{id}/away":                        s.away,
+		"POST /api/conversations/{id}/turn/cancel":                s.cancelTurn,
+		"POST /api/conversations/{id}/read":                       s.markRead,
 		"GET /api/questions":                                      s.listQuestions,
 		"POST /api/questions/{id}/answer":                         s.answerQuestion,
 		"GET /api/actions/unresolved":                             s.listUnresolved,
@@ -651,7 +659,11 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) error {
 	default:
 		return statusError{http.StatusNotFound, "unknown decision"}
 	}
-	if err := s.App.Gateway.Decide(r.Context(), r.PathValue("id"), approve, "api"); err != nil {
+	by := "api"
+	if !s.bearer(r) {
+		by = "owner:" + webChannel
+	}
+	if err := s.App.Gateway.Decide(r.Context(), r.PathValue("id"), approve, by); err != nil {
 		return err
 	}
 	return ok(w, map[string]string{"status": r.PathValue("decision") + "d"})

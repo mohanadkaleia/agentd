@@ -54,6 +54,8 @@ type Service struct {
 	// Edit applies an owner-edited version of a pending proposal (approval id, new arguments).
 	Edit func(ctx context.Context, approvalID string, args json.RawMessage, by string) (string, error)
 
+	hub hub
+
 	Window         int
 	WindowBytes    int
 	SummarizeBatch int
@@ -231,6 +233,7 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 	if err := tx.Commit(); err != nil {
 		return Message{}, err
 	}
+	s.changed()
 	if s.Wake != nil {
 		s.Wake()
 	}
@@ -268,6 +271,7 @@ func (s *Service) direct(ctx context.Context, p Post, text string, run func(cont
 	if err := tx.Commit(); err != nil {
 		return Message{}, err
 	}
+	s.changed()
 	out, runErr := run(ctx)
 	result := Text{Text: out}
 	if runErr != nil {
@@ -283,7 +287,11 @@ func (s *Service) direct(ctx context.Context, p Post, text string, run func(cont
 		Kind: KindCommandResult, Body: b, Channel: m.Channel, CreatedAt: s.Now()}); err != nil {
 		return m, err
 	}
-	return m, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return m, err
+	}
+	s.changed()
+	return m, nil
 }
 
 func reply(text, to string) json.RawMessage {

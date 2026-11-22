@@ -294,7 +294,10 @@ kept in the keychain.
 
 The HTTP API (`internal/api`) exposes assignments, tasks with transcripts, the approvals inbox, the
 notification outbox, event intake, the audit log as a live SSE stream, usage, and the emergency stop.
-The command center (`internal/api/ui`, served at `/`) is a client of this same API through a browser session (HttpOnly cookie plus a CSRF header); it is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
+The command center (`internal/api/ui`, served at `/`) opens on the conversation (`/api/conversations/...`,
+with a per-conversation SSE stream that wakes on in-process changes and resumes by message sequence)
+and renders every model, tool and project text as text nodes through a small allow-list Markdown
+reader that never produces HTML, images or links. It is a client of this same API through a browser session (HttpOnly cookie plus a CSRF header); it is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
 the same stores and gateway as the runtime. Provider-native model payloads never leave the process.
 
 ## Conversation
