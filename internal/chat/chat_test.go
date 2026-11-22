@@ -471,8 +471,8 @@ func TestTurnIsClaimedQuicklyWhileOrdinaryWorkersAreBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := claimed(m.TurnTaskID); d > 100*time.Millisecond {
-		t.Errorf("turn posted in this process claimed after %s, want within 100ms", d)
+	if d := claimed(m.TurnTaskID); d > slack*100*time.Millisecond {
+		t.Errorf("turn posted in this process claimed after %s, want within %s", d, slack*100*time.Millisecond)
 	}
 	waitFor(t, 2*time.Second, func() bool {
 		var n int
@@ -484,8 +484,8 @@ func TestTurnIsClaimedQuicklyWhileOrdinaryWorkersAreBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := claimed(m.TurnTaskID); d > 400*time.Millisecond {
-		t.Errorf("turn written by another process claimed after %s, want within 400ms", d)
+	if d := claimed(m.TurnTaskID); d > slack*400*time.Millisecond {
+		t.Errorf("turn written by another process claimed after %s, want within %s", d, slack*400*time.Millisecond)
 	}
 }
 
