@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/audit"
 	"agentd/internal/model"
@@ -417,6 +418,22 @@ func (r *Reads) waitingOnOwner(ctx context.Context, v view, raw json.RawMessage)
 			item["arguments"] = withheldNote
 		} else {
 			item["arguments"] = excerpt(string(redact(json.RawMessage(p.Arguments), excerptBytes)), 300)
+		}
+		items = append(items, item)
+	}
+	questions, err := ask.OpenFor(ctx, r.DB, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, q := range questions {
+		a, err := lookup(q.AssignmentID)
+		if err != nil {
+			return nil, err
+		}
+		item := map[string]any{"kind": "question", "question_id": q.ID, "task_id": q.TaskID, "assignment": a.Name,
+			"expires_at": q.ExpiresAt}
+		if !withheld(a, v) {
+			item["question"], item["choices"] = q.Question, q.Choices
 		}
 		items = append(items, item)
 	}

@@ -41,8 +41,15 @@ func (s *sendTool) Execute(_ context.Context, call tools.Invocation) (tools.Resu
 	s.sent = append(s.sent, string(call.Arguments))
 	return tools.Result{Output: json.RawMessage(`{"sent":true}`)}, nil
 }
-func (s *sendTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
-	return tools.Result{}, tools.Unknown, nil
+func (s *sendTool) Reconcile(_ context.Context, call tools.Invocation) (tools.Result, tools.Finding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sent := range s.sent {
+		if sent == string(call.Arguments) {
+			return tools.Result{Output: json.RawMessage(`{"sent":true}`)}, tools.Happened, nil
+		}
+	}
+	return tools.Result{}, tools.NotHappened, nil
 }
 func (s *sendTool) count() int {
 	s.mu.Lock()

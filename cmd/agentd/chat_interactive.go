@@ -161,6 +161,9 @@ func (c *chatClient) local(ctx context.Context, text string) (bool, error) {
 		return false, nil
 	}
 	n := last.Card().N
+	if last.Kind == chat.KindQuestion {
+		return false, nil
+	}
 	switch text {
 	case "d":
 		c.print(c.details(*last))

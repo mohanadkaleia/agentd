@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/chat"
 	"agentd/internal/delegation"
@@ -46,6 +47,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	evaluator := &outcomes.Evaluator{DB: db, Assignments: a, Outbox: outbox, Now: now}
 	dog := &watchdog.Watchdog{DB: db, Tasks: t, Outbox: outbox, Now: now, EscalateAfter: 3}
 	deliverer := &notify.Deliverer{DB: db, Now: now, MaxAttempts: 8, Claim: 2 * time.Minute}
+	questions := &ask.Tool{DB: db, Outbox: outbox, Now: now}
 	all := tools.Registry{}
 	for name, tool := range registry {
 		all[name] = tool
@@ -57,6 +59,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		&notify.Tool{Outbox: outbox},
 		&assignments.StateTool{Assignments: a},
 		&scheduler.TaskEvents{DB: db, Now: now},
+		questions,
 	} {
 		all[tool.Definition().Name] = tool
 	}
@@ -83,7 +86,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	}
 	conversations := &chat.Service{DB: db, Tasks: t, Assignments: a, Runtime: rt, Now: now, Wake: rt.Wake}
 	reads := &chat.Reads{DB: db, Runtime: rt, Now: now}
-	for _, tool := range reads.Tools() {
+	for _, tool := range append(reads.Tools(), conversations.Forward()) {
 		all[tool.Definition().Name] = tool
 	}
 	t.OnRelease = conversations.Released
@@ -117,6 +120,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		{"scheduler", sch.Tick},
 		{"completion criteria", evaluator.Tick},
 		{"obligations", dog.Tick},
+		{"questions", questions.Tick},
 		{"conversation", conversations.Tick},
 		{"conversation cards", conversations.Project},
 		{"notification delivery", deliverer.DeliverDue},

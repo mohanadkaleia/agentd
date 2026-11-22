@@ -96,7 +96,7 @@ var ProposeTools = []string{"propose_assignment", "propose_policy", "propose_sch
 const PauseTool = "pause_assignment"
 
 func FrontDeskPolicy() policy.Policy {
-	rules := map[string]policy.Rule{PauseTool: {Mode: policy.Allow}}
+	rules := map[string]policy.Rule{PauseTool: {Mode: policy.Allow}, ForwardTool: {Mode: policy.Allow}}
 	for _, name := range ReadTools {
 		rules[name] = policy.Rule{Mode: policy.Allow}
 	}
@@ -167,9 +167,15 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 			return s.Command(ctx, p.ConversationID, p.Channel, text)
 		})
 	}
-	if approve, ok := shortcuts[strings.ToLower(strings.Trim(text, " .!"))]; ok && p.ReplyTo != "" {
+	if p.ReplyTo != "" {
 		card, err := messageBy(ctx, s.DB, `id = ? AND conversation_id = ?`, p.ReplyTo, p.ConversationID)
-		if err == nil && card.Kind == KindApproval {
+		approve, ok := shortcuts[strings.ToLower(strings.Trim(text, " .!"))]
+		switch {
+		case err == nil && card.Kind == KindQuestion:
+			return s.direct(ctx, p, text, func(ctx context.Context) (string, error) {
+				return s.answer(ctx, card.RefID, text, p.Channel)
+			})
+		case err == nil && ok && (card.Kind == KindApproval || card.Kind == KindProposal):
 			return s.direct(ctx, p, text, func(ctx context.Context) (string, error) {
 				return s.Decide(ctx, p.ConversationID, card.RefID, approve, p.Channel)
 			})

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/audit"
 	"agentd/internal/gateway"
@@ -18,6 +19,7 @@ import (
 )
 
 const (
+	KindQuestion      = "question"
 	KindProposal      = "proposal"
 	KindApproval      = "approval"
 	KindNotification  = "notification"
@@ -42,6 +44,8 @@ type Card struct {
 	ArgumentsHash string          `json:"arguments_sha256,omitempty"`
 	ExpiresAt     *time.Time      `json:"expires_at,omitempty"`
 	Severity      string          `json:"severity,omitempty"`
+	Choices       []string        `json:"choices,omitempty"`
+	QuestionID    string          `json:"question_id,omitempty"`
 	Actions       []string        `json:"actions,omitempty"`
 }
 
@@ -51,7 +55,9 @@ func (m Message) Card() Card {
 	return c
 }
 
-func decision(kind string) bool { return kind == KindApproval || kind == KindProposal }
+func decision(kind string) bool {
+	return kind == KindApproval || kind == KindProposal || kind == KindQuestion
+}
 
 var (
 	ErrStale      = errors.New("this card no longer matches the action waiting for approval")
@@ -161,11 +167,22 @@ func (s *Service) cardFor(ctx context.Context, e audit.Entry) (string, Card, str
 		return s.approvalCard(ctx, e.ObjectID, a)
 	case e.Operation == "action.succeeded":
 		return s.appliedCard(ctx, e.ObjectID, a)
-	case e.Operation == "notification.pending":
-		var title, text, severity, task string
-		if err := s.DB.QueryRowContext(ctx, `SELECT title, body, severity, COALESCE(task_id, '') FROM notifications WHERE id = ?`,
-			e.ObjectID).Scan(&title, &text, &severity, &task); err != nil {
+	case e.Operation == "question.asked":
+		q, err := ask.Get(ctx, s.DB, e.ObjectID)
+		if err != nil {
 			return "", Card{}, "", false, err
+		}
+		conv, err := s.conversationFor(ctx, a, q.TaskID)
+		return KindQuestion, Card{Title: q.Question, Text: q.Context, Choices: q.Choices, Source: "agent", QuestionID: q.ID,
+			AssignmentID: a.ID, Assignment: a.Name, TaskID: q.TaskID, ExpiresAt: &q.ExpiresAt, Actions: []string{"answer"}}, conv, err == nil, err
+	case e.Operation == "notification.pending":
+		var title, text, severity, task, dedup string
+		if err := s.DB.QueryRowContext(ctx, `SELECT title, body, severity, COALESCE(task_id, ''), dedup_key FROM notifications WHERE id = ?`,
+			e.ObjectID).Scan(&title, &text, &severity, &task, &dedup); err != nil {
+			return "", Card{}, "", false, err
+		}
+		if strings.HasPrefix(dedup, "question:") || strings.HasPrefix(dedup, "question-reminder:") {
+			return "", Card{}, "", false, nil
 		}
 		conv, err := s.conversationFor(ctx, a, task)
 		return KindNotification, Card{Title: title, Text: text, Source: "agent", Severity: severity, AssignmentID: a.ID,
@@ -305,6 +322,10 @@ func (s *Service) live(ctx context.Context, msgs []Message) error {
 			if err := s.DB.QueryRowContext(ctx, `SELECT status FROM notifications WHERE id = ?`, m.RefID).Scan(&msgs[i].Status); err != nil {
 				return err
 			}
+		case KindQuestion:
+			if err := s.DB.QueryRowContext(ctx, `SELECT status FROM questions WHERE id = ?`, m.RefID).Scan(&msgs[i].Status); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -318,6 +339,9 @@ func (s *Service) Decide(ctx context.Context, conv, ref string, approve bool, ch
 		return "", err
 	}
 	c := card.Card()
+	if card.Kind == KindQuestion {
+		return "", fmt.Errorf("[%d] is a question; answer it with /answer %d <text>", c.N, c.N)
+	}
 	var hash string
 	if err := s.DB.QueryRowContext(ctx, `SELECT arguments_hash FROM approvals WHERE id = ?`, card.RefID).Scan(&hash); err != nil {
 		return "", err
@@ -355,9 +379,9 @@ func (s *Service) findCard(ctx context.Context, conv, ref string) (Message, erro
 	var m Message
 	var err error
 	if n, nerr := strconv.Atoi(ref); nerr == nil {
-		m, err = messageBy(ctx, s.DB, `conversation_id = ? AND kind IN ('approval', 'proposal') AND json_extract(body_json, '$.n') = ?`, conv, n)
+		m, err = messageBy(ctx, s.DB, `conversation_id = ? AND kind IN ('approval', 'proposal', 'question') AND json_extract(body_json, '$.n') = ?`, conv, n)
 	} else {
-		m, err = messageBy(ctx, s.DB, `kind IN ('approval', 'proposal') AND ref_id = ? ORDER BY conversation_id = ? DESC LIMIT 1`, ref, conv)
+		m, err = messageBy(ctx, s.DB, `kind IN ('approval', 'proposal', 'question') AND ref_id = ? ORDER BY conversation_id = ? DESC LIMIT 1`, ref, conv)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, fmt.Errorf("%w: %s", ErrNoSuchCard, ref)

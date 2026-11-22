@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/overview"
 	"agentd/internal/runtime"
@@ -47,6 +48,8 @@ func init() {
 		"retry":   {usage: "/retry <task> [note]", help: "continue a blocked task", starts: true, run: (*Service).cmdRetry},
 		"usage":   {usage: "/usage", help: "spend per assignment", run: (*Service).cmdUsage},
 		"new":     {usage: "/new", help: "start a new conversation", run: (*Service).cmdNew},
+		"answer":  {usage: "/answer <n or id> <text>", help: "answer a question a task asked you", run: (*Service).cmdAnswer},
+		"tell":    {usage: "/tell <task or assignment> <text>", help: "send a note to running work, word for word", run: (*Service).cmdTell},
 		"edit":    {usage: "/edit <n> <json>", help: "replace a proposal with your edited version, which takes effect at once", run: (*Service).cmdEdit},
 	}
 }
@@ -209,6 +212,17 @@ func (s *Service) cmdWaiting(ctx context.Context, c call) (string, error) {
 			label = fmt.Sprintf("[%d]", card.Card().N)
 		}
 		fmt.Fprintf(&b, "%s approve? %s %s (expires %s)\n", label, p.ToolName, p.Resource, p.ExpiresAt.Local().Format("01-02 15:04"))
+	}
+	questions, err := ask.OpenFor(ctx, s.DB, "")
+	if err != nil {
+		return "", err
+	}
+	for _, q := range questions {
+		label := q.ID
+		if card, err := s.findCard(ctx, c.conv, q.ID); err == nil && card.ConversationID == c.conv {
+			label = fmt.Sprintf("[%d]", card.Card().N)
+		}
+		fmt.Fprintf(&b, "%s question: %s (/answer %s <text>)\n", label, excerpt(q.Question, 200), strings.Trim(label, "[]"))
 	}
 	unknown, err := s.Runtime.Gateway.UnresolvedActions(ctx, "")
 	if err != nil {

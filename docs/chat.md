@@ -34,6 +34,9 @@ email or a web page and expect it to be treated as data.
   proposal card: what it may do without asking, what needs your approval, its budget, and when it is
   done. Nothing exists until you approve that exact draft. `e` opens the draft in `$EDITOR`; saving
   replaces the draft with your version, which takes effect at once.
+- `/tell <task or assignment> <text>` sends your words to running work; `agentd tell` does the same
+  from the shell. When a task asks you something, a QUESTION card appears: answer with
+  `/answer <n> <text>`, or `agentd answer <question-id> "text"`.
 - `/quit` and `/clear` are handled by the terminal; every other `/command` (see `/help`) is run by
   agentd itself, never by a model, so it works when the model is down or the chat budget is used up.
 - Input history is kept in `~/.local/state/agentd/chat_history` (or `$XDG_STATE_HOME/agentd`),

@@ -190,6 +190,7 @@ Each layer removes work before the next, more expensive one:
 24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn waiting for the owner's decision on a card does not hold up the next one. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
 25. Only the owner decides an approval, through code: a button, the CLI, the API, a slash command, or a direct reply to an approval card that is exactly `approve`, `yes`, `reject` or `no`. No tool approves, and only the owner's own messages are parsed for commands, never text from a model, a tool or an email. A decision from a card is refused unless the approval is still pending and its argument hash still matches the card.
 26. Chat grants nothing by itself. The front desk can draft a new assignment, a policy, a schedule, a route, a task or a resume, but each draft is an action whose decision is fixed in code to the owner's approval: a policy that allows a propose tool is refused when it is set, and ignored at dispatch. A draft takes effect only through the same code `agentd create` and `agentd policy` use, in one transaction that records which action applied it, so a crash is reconciled without guessing. Lifting the emergency stop, revoking, cancelling, completing, confirming a criterion, resolving an outcome and accepting an MCP tool have no tool at all. Only pausing, which narrows what runs, takes effect without approval.
+27. Text reaches a task as an instruction only as the owner's own words, copied by code: a note (`agentd tell`, `/tell`, the API, or the front desk's `forward_owner_message`, which chooses only the target) or an answer to the task's own question. A note is appended to the run at a step boundary, after pending tool results, in a transaction fenced on the lease, exactly once; a task cannot complete while a note is unread. A note changes no tool, permission or budget.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -355,6 +356,16 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
   own version, which takes effect at once, as `agentd create` would. A turn that waits for a
   decision does not hold up the conversation, and when every draft in a turn failed, or a reply
   talks about approving something that does not exist, the thread says so.
+- **Talking to running work.** `/tell <task or assignment> <text>` gives a task the owner's words:
+  a running or ready task reads them at its next step, a task waiting for an event is woken, one
+  waiting for an approval reads them after the decision, a blocked one continues through `retry`,
+  and a finished one refuses. **`ask_owner`** lets any assignment whose policy allows it ask a
+  question and wait: the call stays open, the task waits with no model calls, and the answer
+  (`/answer`, a reply to the question card, `agentd answer`, or the API) becomes the tool result in
+  the same run. At most 3 open questions per assignment and 5 a day by default; unanswered
+  questions expire after 72 hours (the task continues with its `default`, or with no answer), with
+  one reminder halfway. An overdue obligation whose task waits on a question names the question
+  instead of starting catch-up work.
 - Housekeeping runs every step even when an earlier one fails, and reports all failures together.
 
 ## Known limits

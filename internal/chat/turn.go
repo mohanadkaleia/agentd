@@ -124,6 +124,9 @@ func render(m Message) model.Message {
 	case KindApproval, KindProposal:
 		c := m.Card()
 		line = fmt.Sprintf("[%s %s for %s: %s]", m.Kind, m.RefID, c.Title, m.Status)
+	case KindQuestion:
+		c := m.Card()
+		line = fmt.Sprintf("[question %s from %s, asked by its task: %q (%s)]", m.RefID, c.Assignment, excerpt(c.Title, 300), m.Status)
 	case KindNotification, KindReport:
 		c := m.Card()
 		line = fmt.Sprintf("[%s from %s: %s; %s]", m.Kind, firstNonEmpty(c.Assignment, "agentd"), c.Title, excerpt(c.Text, 300))
@@ -148,17 +151,18 @@ func (s *Service) situation(ctx context.Context, local bool) (string, error) {
 	if reason.Valid {
 		fmt.Fprintf(&b, "EMERGENCY STOP is set (%s): no work runs until the owner lifts it.\n", reason.String)
 	}
-	var approvals, unresolved, blocked int
+	var approvals, unresolved, blocked, questions int
 	if err := s.DB.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM approvals WHERE status = 'pending'),
 		(SELECT COUNT(*) FROM actions WHERE status = 'needs_reconciliation'),
 		(SELECT COUNT(*) FROM tasks t JOIN assignments a ON a.id = t.assignment_id
-			WHERE t.status = 'blocked' AND a.builtin IS NULL AND a.status IN ('active', 'paused'))`).
-		Scan(&approvals, &unresolved, &blocked); err != nil {
+			WHERE t.status = 'blocked' AND a.builtin IS NULL AND a.status IN ('active', 'paused')),
+		(SELECT COUNT(*) FROM questions WHERE status = 'open')`).
+		Scan(&approvals, &unresolved, &blocked, &questions); err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&b, "Waiting on the owner: %d approval(s), %d action(s) with an unknown outcome, %d blocked task(s).\n",
-		approvals, unresolved, blocked)
+	fmt.Fprintf(&b, "Waiting on the owner: %d approval(s), %d open question(s), %d action(s) with an unknown outcome, %d blocked task(s).\n",
+		approvals, questions, unresolved, blocked)
 	decided, err := s.recentProposals(ctx)
 	if err != nil {
 		return "", err

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agentd/internal/app"
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/integrations/gmail"
 	"agentd/internal/integrations/mcp"
@@ -68,6 +69,8 @@ commands:
   retry <task-id> [note]               continue a blocked task in its existing run
   resolve <action-id> happened|not-happened [note]
                                        settle an action whose outcome could not be determined
+  tell <task|assignment> "text"        send the owner's note to running work, word for word
+  answer <question-id> "text"          answer a question a task asked
   approve <approval-id>                approve a pending action
   reject <approval-id>                 reject a pending action
   policy <assignment-id> <policy.json> replace an assignment's policy and limits
@@ -262,6 +265,26 @@ func run() error {
 		return nil
 	case "unhalt":
 		return system.Resume(ctx, db, time.Now(), "cli")
+	case "tell":
+		if cmd.NArg() < 2 {
+			return fmt.Errorf("usage: agentd tell <task-id|assignment> \"text\"")
+		}
+		task, when, err := a.Runtime.Tell(ctx, runtime.Note{Target: cmd.Arg(0), Text: strings.Join(cmd.Args()[1:], " "), By: "cli"})
+		if err != nil {
+			return err
+		}
+		fmt.Println("sent to", task+".", when)
+		return nil
+	case "answer":
+		if cmd.NArg() < 2 {
+			return fmt.Errorf("usage: agentd answer <question-id> \"text\"")
+		}
+		q, err := ask.Answer(ctx, db, time.Now(), cmd.Arg(0), strings.Join(cmd.Args()[1:], " "), "cli")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("answered %q; its task continues\n", q.Question)
+		return nil
 	case "status":
 		return status(ctx, a)
 	case "confirm":

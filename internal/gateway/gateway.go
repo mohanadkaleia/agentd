@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agentd/internal/assignments"
@@ -228,7 +229,11 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 			return out, err
 		}
 	}
-	return g.dispatch(ctx, a, tool, p.Policy.Limits.ToolRates[a.ToolName], lease)
+	limit := p.Policy.Limits.ToolRates[a.ToolName]
+	if r, ok := tool.(tools.RateLimited); ok && limit.Per.Duration == 0 {
+		limit.Max, limit.Per.Duration = r.DefaultRate()
+	}
+	return g.dispatch(ctx, a, tool, limit, lease)
 }
 
 func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limit policy.RateLimit, lease tasks.Lease) (Outcome, error) {
@@ -253,7 +258,11 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 		if err := g.setStatus(ctx, a, Dispatching, Prepared); err != nil {
 			return Outcome{}, err
 		}
-		return Outcome{Kind: WaitEvent}, nil
+		waiting := ""
+		if err.Error() != tools.ErrNotReady.Error() {
+			waiting = strings.TrimSuffix(err.Error(), ": "+tools.ErrNotReady.Error())
+		}
+		return Outcome{Kind: WaitEvent, Content: waiting}, nil
 	}
 	if errors.Is(err, tools.ErrNotExecuted) || tool.Effect() == tools.EffectRead {
 		return g.finish(ctx, a, Dispatching, Failed, errorJSON(err.Error()), "")
@@ -314,7 +323,7 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 		var used int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM actions
 			WHERE assignment_id = ? AND tool_name = ? AND id != ? AND dispatched_at > ?
-			  AND status IN ('dispatching', 'succeeded', 'needs_reconciliation')`,
+			  AND (status IN ('dispatching', 'succeeded', 'needs_reconciliation') OR (status = 'prepared' AND dispatched_at IS NOT NULL))`,
 			a.AssignmentID, a.ToolName, a.ID, now.Add(-limit.Per.Duration).UnixMilli()).Scan(&used); err != nil {
 			return "", err
 		}

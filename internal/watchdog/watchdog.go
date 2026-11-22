@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -186,6 +187,19 @@ func (w *Watchdog) remediate(ctx context.Context, h Health) error {
 		since = h.LastEvidence.UTC().Format(time.RFC3339)
 	}
 	streak := fmt.Sprintf("%s%s:%d", originPrefix, h.ID, h.DueAt.UnixMilli())
+	var question, questionID string
+	err := w.DB.QueryRowContext(ctx, `SELECT id, question FROM questions WHERE assignment_id = ? AND status = 'open'
+		ORDER BY created_at LIMIT 1`, h.AssignmentID).Scan(&questionID, &question)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if questionID != "" {
+		_, err := w.Outbox.Notify(ctx, notify.Notification{AssignmentID: h.AssignmentID, DedupKey: streak + ":question:" + questionID,
+			Severity: assignments.SeverityAction, Title: "Overdue while waiting for your answer: " + h.Description,
+			Body: fmt.Sprintf("%s is overdue because its task is waiting for your answer to %q. Answer with: agentd answer %s \"...\"",
+				h.Description, question, questionID)})
+		return err
+	}
 	if h.Missed >= w.EscalateAfter {
 		if _, err := w.Outbox.Notify(ctx, notify.Notification{AssignmentID: h.AssignmentID, DedupKey: streak + ":escalated",
 			Severity: assignments.SeverityAction, Title: "Repeatedly missed: " + h.Description,
@@ -208,7 +222,7 @@ func (w *Watchdog) remediate(ctx context.Context, h Health) error {
 	if open > 0 {
 		return nil
 	}
-	_, err := w.Tasks.Create(ctx, tasks.NewTask{
+	_, err = w.Tasks.Create(ctx, tasks.NewTask{
 		AssignmentID: h.AssignmentID, OriginKey: key, Skills: h.Skills,
 		Title: "Overdue: " + h.Description,
 		Objective: fmt.Sprintf("This obligation is overdue: %s. It is satisfied by %s, expected every %s; there has been none since %s. "+

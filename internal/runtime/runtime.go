@@ -157,7 +157,11 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 				case gateway.WaitApproval:
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.WaitingApproval})
 				case gateway.WaitEvent:
-					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.WaitingEvent})
+					rel := tasks.Release{Status: tasks.WaitingEvent}
+					if out.Content != "" {
+						rel.Result = map[string]string{"waiting": out.Content}
+					}
+					return r.Tasks.Release(ctx, lease, rel)
 				case gateway.Paused:
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 				case gateway.Blocked:
@@ -180,6 +184,11 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 					return r.fail(ctx, lease, task, err)
 				}
 			}
+			continue
+		}
+		if n, err := r.deliverNotes(ctx, lease, rn.ID, len(msgs)); err != nil {
+			return r.fail(ctx, lease, task, err)
+		} else if n > 0 {
 			continue
 		}
 

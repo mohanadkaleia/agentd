@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agentd/internal/app"
+	"agentd/internal/ask"
 	"agentd/internal/assignments"
 	"agentd/internal/audit"
 	"agentd/internal/gateway"
@@ -51,6 +52,9 @@ func (s *Server) Handler() http.Handler {
 		"GET /api/tasks":                                          s.listTasks,
 		"GET /api/tasks/{id}":                                     s.getTask,
 		"POST /api/tasks/{id}/retry":                              s.retryTask,
+		"POST /api/tasks/{id}/notes":                              s.tellTask,
+		"GET /api/questions":                                      s.listQuestions,
+		"POST /api/questions/{id}/answer":                         s.answerQuestion,
 		"GET /api/actions/unresolved":                             s.listUnresolved,
 		"POST /api/actions/{id}/resolve":                          s.resolveAction,
 		"GET /api/approvals":                                      s.listApprovals,
@@ -523,6 +527,51 @@ func (s *Server) retryTask(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return ok(w, map[string]string{"status": "ready"})
+}
+
+func (s *Server) tellTask(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	task, when, err := s.App.Runtime.Tell(r.Context(), runtime.Note{Target: r.PathValue("id"), Text: body.Text, By: "api"})
+	if errors.Is(err, runtime.ErrTaskFinished) || errors.Is(err, runtime.ErrNoOpenTask) || errors.Is(err, runtime.ErrManyOpen) {
+		return badRequest("%s", err.Error())
+	}
+	if err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"task_id": task, "delivery": when})
+}
+
+func (s *Server) listQuestions(w http.ResponseWriter, r *http.Request) error {
+	open, err := ask.OpenFor(r.Context(), s.App.DB, r.URL.Query().Get("assignment"))
+	if err != nil {
+		return err
+	}
+	if open == nil {
+		open = []ask.Question{}
+	}
+	return ok(w, open)
+}
+
+func (s *Server) answerQuestion(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Answer string `json:"answer"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	q, err := ask.Answer(r.Context(), s.App.DB, s.App.Runtime.Now(), r.PathValue("id"), body.Answer, "api")
+	if errors.Is(err, ask.ErrNotOpen) || errors.Is(err, ask.ErrNotFound) {
+		return badRequest("%s", err.Error())
+	}
+	if err != nil {
+		return err
+	}
+	return ok(w, q)
 }
 
 type unresolvedRow struct {

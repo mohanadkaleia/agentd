@@ -105,6 +105,12 @@ type Describer interface {
 	Describe(args json.RawMessage) (title, text string)
 }
 
+// RateLimited tools have a rate limit that applies when the policy sets none.
+type RateLimited interface {
+	Tool
+	DefaultRate() (max int, per time.Duration)
+}
+
 // Permits reports whether a tool may run for an assignment with this built-in key ("" for none).
 func Permits(t Tool, builtin string) bool {
 	r, ok := t.(Restricted)
