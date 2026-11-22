@@ -101,7 +101,7 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 		}
 		message = strings.TrimSpace(body)
 	} else if message != "" && !stdinTTY && stdin != nil {
-		body, err := readCapped(stdin)
+		body, err := readAttachment(stdin, 500*time.Millisecond)
 		if err != nil {
 			return &exitError{code: 1, msg: err.Error()}
 		}
@@ -116,6 +116,39 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 		return c.interactive(ctx, stdin)
 	}
 	return c.oneShot(ctx, message, *noWait)
+}
+
+// readAttachment reads standard input that comes with a message argument. Input that has
+// not started within wait is ignored, so a caller whose standard input is an idle pipe
+// (a job runner, a script without redirection) is not left waiting for an end that never comes.
+func readAttachment(r io.Reader, wait time.Duration) (string, error) {
+	first := make(chan error, 1)
+	var head [1]byte
+	var n int
+	go func() {
+		var err error
+		n, err = r.Read(head[:])
+		first <- err
+	}()
+	select {
+	case err := <-first:
+		if n == 0 {
+			if errors.Is(err, io.EOF) {
+				return "", nil
+			}
+			return "", err
+		}
+		rest, err := readCapped(r)
+		if err != nil {
+			return "", err
+		}
+		if len(rest)+1 > maxAttachment {
+			return "", fmt.Errorf("standard input is larger than %d KB; send a shorter excerpt", maxAttachment>>10)
+		}
+		return string(head[:1]) + rest, nil
+	case <-time.After(wait):
+		return "", nil
+	}
 }
 
 func readCapped(r io.Reader) (string, error) {
@@ -228,6 +261,8 @@ func (c *chatClient) follow(ctx context.Context, m chat.Message, timeout time.Du
 					result = refused
 				}
 			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Author == chat.Agent:
+				done, result = true, answered
+			case !direct && (msg.Kind == chat.KindProposal || msg.Kind == chat.KindApproval) && msg.Card().TaskID == m.TurnTaskID:
 				done, result = true, answered
 			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindError:
 				done, result = true, failed

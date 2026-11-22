@@ -564,6 +564,11 @@ func (a *App) proposalWarnings(s Spec, firstTask bool) []string {
 			warnings = append(warnings, fmt.Sprintf("%s can act without asking you", name))
 		}
 	}
+	if len(s.Policy.Tools) == 0 {
+		warnings = append(warnings, "it has no tools, so it can only think and reply; it cannot read, send or tell you anything")
+	} else if _, ok := s.Policy.Tools["notify"]; !ok {
+		warnings = append(warnings, "it has no notify rule, so it cannot tell you anything")
+	}
 	if s.Policy.Limits.MaxLLMSpendUSD > ProposalCeilingUSD {
 		warnings = append(warnings, fmt.Sprintf("budget is above your $%d ceiling for proposals", ProposalCeilingUSD))
 	}

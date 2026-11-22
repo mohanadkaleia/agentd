@@ -394,3 +394,37 @@ func TestEditingAProposalReturnsTheSavedJSON(t *testing.T) {
 		t.Fatal("invalid JSON was accepted")
 	}
 }
+
+func TestAnIdleStandardInputIsNotWaitedFor(t *testing.T) {
+	w := newChatWorld(t, true)
+	idle, _ := io.Pipe()
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- runChat(w.ctx, w.db, []string{"hello"}, idle, &out, false, false, 80) }()
+	select {
+	case err := <-done:
+		if err != nil || !strings.Contains(out.String(), "hello from the front desk") {
+			t.Fatalf("err %v, output %q", err, out.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("chat waited for an idle standard input")
+	}
+}
+
+func TestAProposalCardEndsTheWait(t *testing.T) {
+	w := newChatWorld(t, true)
+	w.serve.Chat.Project(w.ctx)
+	draft := `{"spec":{"kind":"project","name":"refund","objective":"Get the refund.",
+		"policy":{"tools":{"notify":{"mode":"allow"}},"limits":{"max_llm_spend_usd":2}},
+		"completion":{"criteria":[{"description":"Refund received"}]}}}`
+	w.setReply(func(req model.Request) model.Message {
+		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {
+			return model.Message{Content: "Created."}
+		}
+		return model.Message{ToolCalls: []model.ToolCall{{ID: "p", Name: "propose_assignment", Arguments: json.RawMessage(draft)}}}
+	})
+	out, err := w.chat("", "-timeout", "20s", "start a refund project")
+	if code(err) != 0 || !strings.Contains(out, "[1] PROPOSAL") || !strings.Contains(out, "/approve 1") {
+		t.Fatalf("exit %d, output %q", code(err), out)
+	}
+}
