@@ -303,6 +303,21 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 
 ## Conversation
 
+How a turn runs:
+
+1. The owner's message is stored, and in the same transaction a turn task is created for it (or it
+   joins a turn that has not started yet). A slash command or a reply to a card is handled by code
+   instead and never makes a turn.
+2. The interactive worker claims the turn at once (or within 200 ms when the message came from
+   another process).
+3. Its opening messages are built by code: the front desk prompt, the situation block, the summary,
+   the ids of the owner's messages, and the recent window.
+4. The model answers, possibly calling read tools, drafting a proposal (which waits for the owner's
+   approval without holding up the conversation), passing an owner message on, or pausing work.
+   Each call goes through the gateway like any other tool call.
+5. The final reply is written to the conversation in the transaction that completes the task; a
+   failure or a cancel leaves a plain message instead. The next queued turn, if any, starts.
+
 `internal/chat` is the owner's conversation with agentd. Each owner message becomes a **turn**: an
 ordinary task of the built-in **front desk** responsibility, so a turn is leased, checkpointed,
 budgeted, fenced and audited like any other work, and the runtime knows nothing about chat beyond
@@ -379,6 +394,15 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
 - Housekeeping runs every step even when an earlier one fails, and reports all failures together.
 
 ## Known limits
+
+- **Free text is never an approval.** Only buttons, `a`/`r`, slash commands and a direct reply of
+  exactly approve/yes/reject/no to a card decide; "yes, send it" in a sentence is an ordinary message.
+- **`agentd chat` needs a running `serve`.** It writes the message to the database; nothing answers
+  until agentd runs. The terminal shows whole replies; only the web app streams.
+- **A third-party chat channel sees what is sent to it.** Telegram receives what the channel's level
+  allows (`summary` by default); local-only work is never sent beyond `minimal`.
+- **Small local models draft poorly.** A turn whose drafts all failed, or that claims a proposal
+  that does not exist, gets a notice saying so, but the draft itself still depends on the model.
 
 - **Keychain scope.** Secrets (Gmail refresh token, optional Anthropic key) are stored with
   `/usr/bin/security`, which makes that tool their trusted reader. Any process running as the same

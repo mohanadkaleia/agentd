@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -30,6 +31,7 @@ type Overview struct {
 	Undelivered    int
 	Blocked        int
 	PendingAsk     int
+	Questions      int
 }
 
 type Task struct {
@@ -95,6 +97,11 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 		Scan(&o.PendingAsk, &askTool, &askResource); err != nil {
 		return o, err
 	}
+	var question sql.NullString
+	if err := rt.DB.QueryRowContext(ctx, `SELECT COUNT(*), MIN(question) FROM questions WHERE assignment_id = ? AND status = 'open'`, id).
+		Scan(&o.Questions, &question); err != nil {
+		return o, err
+	}
 	nextFire, nextSchedule, err := nextSchedule(ctx, rt.DB, id)
 	if err != nil {
 		return o, err
@@ -116,6 +123,9 @@ func Get(ctx context.Context, rt *runtime.Runtime, id string) (Overview, error) 
 		return o, err
 	}
 	o.Next = next(a, halted, firstUnresolved, o.Blocked, o.OpenTasks, o.PendingAsk, askTool.String, askResource.String, nextFire, nextSchedule, o.Obligations, rt.Now())
+	if o.Questions > 0 && strings.HasPrefix(o.Next.What, "waiting on workers or events") || o.Questions > 0 && o.Next.What == "idle until the next matching event" {
+		o.Next = Expected{What: "waiting for your answer: " + question.String}
+	}
 	return o, nil
 }
 
@@ -166,6 +176,9 @@ func next(a assignments.Assignment, halted system.Status, unresolved string, blo
 	}
 	if len(timed) == 0 {
 		for _, t := range open {
+			if t.Status == "waiting_event" && t.Waiting != "" {
+				return Expected{What: "waiting for " + t.Waiting + ": " + t.Title}
+			}
 			if t.Status == "waiting_event" {
 				return Expected{What: "waiting on workers or events: " + t.Title}
 			}

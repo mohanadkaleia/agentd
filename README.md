@@ -18,16 +18,7 @@ your machine) or an Anthropic API key.
    go build -o bin/agentd ./cmd/agentd
    ```
 
-2. Give it a job. A job is a short Markdown file: a header that says which tools it may use and
-   what needs your approval, then what to do in plain words. Start from
-   [`docs/examples/first-job.md`](docs/examples/first-job.md), which reads the Go blog once a day
-   and summarizes the newest post (or just ask for a job in the chat):
-
-   ```bash
-   ./bin/agentd create docs/examples/first-job.md
-   ```
-
-3. Start it with a model:
+2. Start it with a model:
 
    ```bash
    ollama pull qwen2.5:7b
@@ -38,9 +29,36 @@ your machine) or an Anthropic API key.
    ./bin/agentd -model anthropic serve -listen 127.0.0.1:7777
    ```
 
-4. Talk to it from a second terminal: `./bin/agentd chat` (ask "what are you working on?"), or
-   watch with `./bin/agentd status`, or open the web app at http://127.0.0.1:7777 and paste the
-   token from the `api-token` file.
+## Talk to it
+
+In a second terminal, in the same folder:
+
+```bash
+./bin/agentd chat
+```
+
+Say what you want, for example *"Every morning, read https://go.dev/blog and tell me if there is a
+new post."* agentd drafts the job and shows it as a **proposal**: what it may do without asking,
+what needs your approval, its budget, and when it runs. Nothing happens until you approve it:
+type `a` (or `/approve 1`). Then ask *"how is it going?"* whenever you like.
+
+The same conversation is in the web app: open http://127.0.0.1:7777 and paste the token from the
+`api-token` file. Type `/help` for commands that always work, even without a model.
+
+Drafting a job needs a capable model. In our tests `qwen3.5:27b` drafted, corrected and confirmed a
+job (slowly, on a Mac mini), while `qwen2.5:7b` usually wrote the draft as text instead; agentd
+then says plainly that nothing was created. You can also write the job yourself:
+
+## Or give it a job file
+
+A job is a short Markdown file: a header that says which tools it may use and what needs your
+approval, then what to do in plain words.
+[`docs/examples/first-job.md`](docs/examples/first-job.md) reads the Go blog once a day and
+summarizes the newest post:
+
+```bash
+./bin/agentd create docs/examples/first-job.md
+```
 
 Everything lives in `agentd.db` in the current folder; delete it to start over.
 
@@ -55,7 +73,7 @@ deploy/uninstall.sh                     # stop it; your data is kept
 
 | | |
 |---|---|
-| [docs/chat.md](docs/chat.md) | Talking to agentd in the terminal |
+| [docs/chat.md](docs/chat.md) | Talking to agentd: terminal, web app, phone, and what it can and cannot do from chat |
 | [docs/guide.md](docs/guide.md) | Every feature: Gmail, schedules, approvals, phone notifications, web app, HTTP API |
 | [docs/mcp.md](docs/mcp.md) | Connect Slack, Google Workspace or any MCP server |
 | [docs/isolation.md](docs/isolation.md) | Run it under its own macOS account |

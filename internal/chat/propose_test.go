@@ -350,7 +350,7 @@ func TestADraftWrittenAsTextIsCalledOut(t *testing.T) {
 		t.Fatalf("notices = %+v", notices)
 	}
 	w.model.reply = func(model.Request) (model.Message, error) {
-		return model.Message{Content: "Your refund project is going well."}, nil
+		return model.Message{Content: "Your refund project is going well. There are no approvals or other items waiting on you."}, nil
 	}
 	w.say("how is it going?")
 	w.drain()

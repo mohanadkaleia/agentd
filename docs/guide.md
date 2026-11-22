@@ -2,6 +2,22 @@
 
 Everything agentd can do, one feature per section. Start with the [README](../README.md) to install it.
 
+## The conversation
+
+Talking to agentd is the main way to use it: in the terminal (`agentd chat`), in the web app, or
+from a Telegram bot on your phone. See [chat.md](chat.md) for the commands, the cards, what agentd
+can and cannot do from chat, the front desk and its budget, the terminal client's flags, exit codes
+and JSON output, and phone setup.
+
+- **Cards** bring everything that needs you into the conversation: approvals, proposals,
+  questions from tasks, notifications, blocked tasks, actions with an unknown outcome, completed
+  projects, and the emergency stop. Each decision card has a fixed number for `/approve <n>`.
+- **Notes**: `/tell <task or job> <text>` (or `agentd tell`) gives running work your words; it
+  reads them at its next step.
+- **Questions**: a job whose policy allows `ask_owner` can ask you something and wait, using no
+  model calls while it waits. Answer on the card, with `/answer <n> <text>`, or with
+  `agentd answer <question-id> "text"`.
+
 ## Job files
 
 A job is a Markdown file: a header between two `---` lines, then the objective in plain words.

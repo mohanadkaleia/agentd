@@ -342,7 +342,7 @@ func (a *App) proposals() []tools.Tool {
 				}
 				json.Unmarshal(args, &in)
 				return "New schedule on " + a.nameOf(in.AssignmentID), fmt.Sprintf("Every %s: %s\nInstruction (written by the agent): %s",
-					in.Schedule.Every.Duration, in.Schedule.Title, in.Schedule.Objective)
+					shortDuration(in.Schedule.Every.Duration), in.Schedule.Title, in.Schedule.Objective)
 			},
 			apply: func(ctx context.Context, tx *sql.Tx, args json.RawMessage, _ string) (string, error) {
 				var in struct {
@@ -534,7 +534,7 @@ func (a *App) describeAssignment(args json.RawMessage) (string, string) {
 	fmt.Fprintf(&b, "Needs your approval: %s\n", list(ask))
 	period := "in total"
 	if p := s.Policy.Limits.BudgetPeriod.Duration; p > 0 {
-		period = "per " + p.String()
+		period = "per " + shortDuration(p)
 	}
 	fmt.Fprintf(&b, "Budget: $%.2f %s\n", s.Policy.Limits.MaxLLMSpendUSD, period)
 	if s.Kind == assignments.KindProject {
@@ -557,7 +557,7 @@ func (a *App) describeAssignment(args json.RawMessage) (string, string) {
 		runs = append(runs, "now: start on the objective")
 	}
 	for _, sc := range s.Schedules {
-		runs = append(runs, "every "+sc.Every.Duration.String()+": "+sc.Title)
+		runs = append(runs, "every "+shortDuration(sc.Every.Duration)+": "+sc.Title)
 	}
 	for _, r := range s.Routes {
 		runs = append(runs, "on "+r.Source+"/"+r.Kind+": "+r.Title)
@@ -572,11 +572,15 @@ func (a *App) describeAssignment(args json.RawMessage) (string, string) {
 	return fmt.Sprintf("New %s %q", s.Kind, s.Name), strings.TrimSpace(b.String())
 }
 
+// ownerOnlyTools only ever reach the owner, so allowing them without approval widens nothing.
+var ownerOnlyTools = map[string]bool{"notify": true, "ask_owner": true}
+
 func (a *App) proposalWarnings(s Spec, firstTask bool) []string {
 	warnings := a.PolicyWarnings(s.Policy)
 	for _, name := range sortedTools(s.Policy) {
 		rule := s.Policy.Tools[name]
-		if tool, ok := a.Runtime.Tools[name]; ok && tool.Effect() == tools.EffectWrite && (rule.Mode == policy.Allow || rule.Otherwise == policy.Allow) {
+		if tool, ok := a.Runtime.Tools[name]; ok && tool.Effect() == tools.EffectWrite && !ownerOnlyTools[name] &&
+			(rule.Mode == policy.Allow || rule.Otherwise == policy.Allow) {
 			warnings = append(warnings, fmt.Sprintf("%s can act without asking you", name))
 		}
 	}

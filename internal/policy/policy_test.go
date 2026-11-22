@@ -86,3 +86,13 @@ func TestLimitsRoundTripAndValidate(t *testing.T) {
 		t.Fatal("zero-length window was accepted")
 	}
 }
+
+func TestDurationsAcceptWholeDays(t *testing.T) {
+	var d Duration
+	if err := json.Unmarshal([]byte(`"3d"`), &d); err != nil || d.Duration != 72*time.Hour {
+		t.Fatalf("3d = %v, %v", d.Duration, err)
+	}
+	if err := json.Unmarshal([]byte(`"1.5d"`), &d); err == nil {
+		t.Fatal("a fractional day was accepted")
+	}
+}

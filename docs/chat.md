@@ -1,5 +1,34 @@
 # Talking to agentd
 
+## What agentd can and cannot do from chat
+
+| From the conversation, agentd can | It cannot |
+|---|---|
+| Answer from its records ("how is the refund going?") | Approve or reject anything: only you can, with a button, `a`/`r` or `/approve` |
+| Draft a new job, a policy change, a schedule, a route or a task, for you to approve | Make a draft take effect without your approval, or let itself skip approvals |
+| Pass your own words, unchanged, to running work | Write instructions to a task in its own words |
+| Pause a job | Resume a job, lift the emergency stop, complete or cancel a project, revoke a responsibility, confirm a completion criterion, accept an MCP tool |
+
+Slash commands are run by agentd itself, never by a model, so they work when the model is down or
+the chat budget is used up:
+
+| Command | |
+|---|---|
+| `/status`, `/show <job>`, `/waiting`, `/usage` | what is going on, what waits on you, spend |
+| `/approve <n>`, `/reject <n>` | decide a card (the number shown on it) |
+| `/answer <n> <text>` | answer a question a task asked you |
+| `/tell <task or job> <text>` | send your words to running work |
+| `/edit <n> <job file or JSON>` | replace a proposal with your own version, which takes effect at once |
+| `/pause <job>`, `/resume <job>`, `/retry <task> [note]` | as the CLI commands |
+| `/halt [reason]`, `/unhalt` | emergency stop |
+| `/new`, `/help` | new conversation, this list |
+
+The conversation is answered by a built-in assignment, the **front desk** (`agentd status` shows it
+as built in). It has its own budget, 5 USD per 30 days, so talking never spends a project's money;
+change it with `agentd policy <front-desk-id> policy.md`. By default it may only read agentd's
+records, draft proposals, pass on your messages and pause; giving it more tools (mail, web, MCP)
+means text it reads in projects could reach those tools, so do that deliberately.
+
 `agentd chat` is a conversation with agentd in your terminal. It needs `agentd serve` running
 (directly or as the installed service): the terminal stores your message, and the running agentd
 answers it.

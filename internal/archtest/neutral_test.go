@@ -140,3 +140,70 @@ func TestEngineDoesNotDependOnChat(t *testing.T) {
 		}
 	}
 }
+
+func TestChatImportsNoProviderOrIntegration(t *testing.T) {
+	root := filepath.Join("..", "..")
+	files, err := filepath.Glob(filepath.Join(root, "internal", "chat", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			pkg, _ := strconv.Unquote(imp.Path.Value)
+			if strings.HasPrefix(pkg, "agentd/internal/integrations/") || strings.HasPrefix(pkg, adapterPrefix) {
+				t.Errorf("%s imports %s; the conversation layer must not depend on a channel adapter or a model", path, pkg)
+			}
+			for _, sdk := range append(providerSDKs, mcpSDK) {
+				if strings.HasPrefix(pkg, sdk) {
+					t.Errorf("%s imports %s", path, pkg)
+				}
+			}
+		}
+	}
+}
+
+// TestNoToolDecidesApprovals fails if any tool's Execute decides an approval: approvals are
+// owner input handled by code, never something a model can call.
+func TestNoToolDecidesApprovals(t *testing.T) {
+	root := filepath.Join("..", "..")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "bin") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil || fn.Name.Name != "Execute" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Decide" {
+						t.Errorf("%s: a tool's Execute calls Decide; only the owner decides approvals", path)
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

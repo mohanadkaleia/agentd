@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -56,6 +58,12 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
 		return fmt.Errorf("duration must be a string like \"24h\": %w", err)
+	}
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		if n, err := strconv.Atoi(days); err == nil && n >= 0 {
+			d.Duration = time.Duration(n) * 24 * time.Hour
+			return nil
+		}
 	}
 	v, err := time.ParseDuration(s)
 	if err != nil {

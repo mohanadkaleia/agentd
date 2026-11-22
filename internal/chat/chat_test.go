@@ -222,7 +222,7 @@ func TestMessagesDuringATurnJoinTheNextTurn(t *testing.T) {
 	w.drain()
 	var owner []string
 	for _, m := range w.model.last().Messages {
-		if m.Role == model.RoleUser && !strings.Contains(m.Content, "Situation") {
+		if m.Role == model.RoleUser && !strings.Contains(m.Content, "Situation") && !strings.HasPrefix(m.Content, "[ids of") {
 			owner = append(owner, m.Content)
 		}
 	}
@@ -346,7 +346,7 @@ func TestLongConversationIsWindowedAndSummarised(t *testing.T) {
 	w.say("latest question")
 	w.work()
 	req := w.model.last()
-	if len(req.Messages) > 2+30 || !strings.Contains(req.Messages[len(req.Messages)-1].Content, "latest question") {
+	if len(req.Messages) > 3+30 || !strings.Contains(req.Messages[len(req.Messages)-1].Content, "latest question") {
 		t.Fatalf("request holds %d messages; want the window of 30 plus the prompt and situation, ending with the question", len(req.Messages))
 	}
 	w.drainAll()
@@ -516,7 +516,7 @@ func TestWindowIsCappedByBytesButKeepsTheQuestion(t *testing.T) {
 	w.drain()
 	req := w.model.last()
 	n := len(req.Messages)
-	if n > 2+3 || req.Messages[n-1].Content != strings.TrimSpace(question) || req.Messages[n-2].Content != strings.TrimSpace(first) {
+	if n > 3+3 || req.Messages[n-1].Content != strings.TrimSpace(question) || req.Messages[n-2].Content != strings.TrimSpace(first) {
 		t.Fatalf("request holds %d messages; want the byte cap to drop old ones but keep both messages being answered", n)
 	}
 }

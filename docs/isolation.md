@@ -52,7 +52,9 @@ sudo -u baseet env AGENTD_SECRETS_DIR=... /Users/baseet/Library/Application\ Sup
 sudo launchctl kickstart -k system/local.agentd
 ```
 
-To talk to it, run `agentd chat` as the agent account; see [chat.md](chat.md).
+To talk to it, run `agentd chat` as the agent account; see [chat.md](chat.md). The conversation is
+stored in the agent account's database, so only that account (and an admin with `sudo`) can read
+it; the web app reads it through the API with the API token.
 
 ## Verify
 
