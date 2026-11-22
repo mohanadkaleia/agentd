@@ -8,6 +8,7 @@ import (
 	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,11 +175,24 @@ func TestPanickingToolFailsOnlyItsAttempt(t *testing.T) {
 
 func TestServeSurvivesPanickingHousekeeping(t *testing.T) {
 	h := newHarness(t, demo.Script)
-	h.app.Runtime.Housekeeping = func(context.Context) error { panic("housekeeping bug") }
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	h.app.Runtime.Serve(ctx, "serve", 1, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var panics atomic.Int32
+	h.app.Runtime.Housekeeping = func(context.Context) error { panics.Add(1); panic("housekeeping bug") }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.app.Runtime.Serve(ctx, "serve", 1, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for (h.task().Status != tasks.WaitingApproval || panics.Load() < 2) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
 	h.expectStatus(tasks.WaitingApproval)
+	if panics.Load() < 2 {
+		t.Fatal("housekeeping did not keep running after a panic")
+	}
 }
 
 type unruledTool struct{ tools.WebSearch }
