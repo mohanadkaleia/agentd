@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -32,13 +35,18 @@ import (
 	"agentd/internal/tools"
 )
 
-const usage = `usage: agentd [-db path] [-model spec] [-fallback-models specs] [-effort level] <command> [args]
+const usage = `Talk to agentd: agentd chat
+
+usage: agentd [-db path] [-model spec] [-fallback-models specs] [-effort level] <command> [args]
 
 models:
   anthropic[/model-id]      Claude via the Anthropic API (default claude-opus-5-5)
   ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
 commands:
+  chat                                 talk to agentd in this terminal (needs agentd serve running)
+  chat "message" | chat - | ... | chat send one message (or standard input), print the reply, exit
+       [-new] [-c id] [-history [-n 50]] [-json] [-no-wait] [-timeout 5m]
   serve [-workers N] [-listen ADDR] [-mcp-config FILE]
                                        run the supervisor (and the HTTP API when -listen is set)
   gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
@@ -79,10 +87,25 @@ commands:
 
 func main() {
 	if err := run(); err != nil {
+		var exit *exitError
+		if errors.As(err, &exit) {
+			if exit.msg != "" {
+				fmt.Fprintln(os.Stderr, "agentd:", exit.msg)
+			}
+			os.Exit(exit.code)
+		}
 		fmt.Fprintln(os.Stderr, "agentd:", err)
 		os.Exit(1)
 	}
 }
+
+// exitError ends the process with a specific status, for commands scripts depend on.
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e *exitError) Error() string { return e.msg }
 
 func run() error {
 	syscall.Umask(0o077)
@@ -102,7 +125,11 @@ func run() error {
 		return fmt.Errorf("missing command")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if args[0] == "chat" {
+		signals = signals[1:]
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), signals...)
 	defer stop()
 	if args[0] == "gmail" {
 		return gmailCommand(ctx, args[1:])
@@ -111,10 +138,17 @@ func run() error {
 		return ntfyCommand(ctx, args[1:])
 	}
 	db, err := store.Open(ctx, *dbPath)
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("%w\nThe database belongs to another account. Under the separate-account install, run: "+
+			"sudo -u <agentd-user> agentd -db %s %s", err, *dbPath, strings.Join(args, " "))
+	}
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	if args[0] == "chat" {
+		return chatCommand(ctx, db, args[1:], os.Stdin, os.Stdout)
+	}
 
 	if args[0] == "mcp" {
 		return mcpCommand(ctx, db, filepath.Dir(*dbPath), args[1:])
@@ -211,7 +245,11 @@ func run() error {
 		if servers != nil {
 			servers.Poll(ctx, a.Scheduler)
 		}
+		go beat(ctx, db, *listen, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
+		if err := system.Stopped(context.WithoutCancel(ctx), db); err != nil {
+			log.Error("liveness", "err", err)
+		}
 		stopAPI()
 		log.Info("agentd stopped")
 		return nil
@@ -374,6 +412,20 @@ func status(ctx context.Context, a *app.App) error {
 		rows.Close()
 	}
 	return nil
+}
+
+// beat records that this process is serving, so `agentd chat` can tell a message will be answered.
+func beat(ctx context.Context, db *sql.DB, listen string, log *slog.Logger) {
+	for {
+		if err := system.Beat(ctx, db, system.Liveness{PID: os.Getpid(), Listen: listen, At: time.Now()}); err != nil && ctx.Err() == nil {
+			log.Error("liveness", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
 }
 
 func isLocal(spec string) bool {

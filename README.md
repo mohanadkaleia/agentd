@@ -37,8 +37,9 @@ your machine) or an Anthropic API key.
    ./bin/agentd -model anthropic serve -listen 127.0.0.1:7777
    ```
 
-4. Watch it work, from a second terminal (`./bin/agentd status`) or in the web app: open
-   http://127.0.0.1:7777 and paste the token from the `api-token` file.
+4. Talk to it from a second terminal: `./bin/agentd chat` (ask "what are you working on?"), or
+   watch with `./bin/agentd status`, or open the web app at http://127.0.0.1:7777 and paste the
+   token from the `api-token` file.
 
 Everything lives in `agentd.db` in the current folder; delete it to start over.
 
@@ -53,6 +54,7 @@ deploy/uninstall.sh                     # stop it; your data is kept
 
 | | |
 |---|---|
+| [docs/chat.md](docs/chat.md) | Talking to agentd in the terminal |
 | [docs/guide.md](docs/guide.md) | Every feature: Gmail, schedules, approvals, phone notifications, web app, HTTP API |
 | [docs/mcp.md](docs/mcp.md) | Connect Slack, Google Workspace or any MCP server |
 | [docs/isolation.md](docs/isolation.md) | Run it under its own macOS account |

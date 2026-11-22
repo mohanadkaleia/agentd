@@ -52,6 +52,8 @@ sudo -u baseet env AGENTD_SECRETS_DIR=... /Users/baseet/Library/Application\ Sup
 sudo launchctl kickstart -k system/local.agentd
 ```
 
+To talk to it, run `agentd chat` as the agent account; see [chat.md](chat.md).
+
 ## Verify
 
 ```bash
