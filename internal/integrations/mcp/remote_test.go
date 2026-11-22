@@ -435,6 +435,7 @@ func TestRemoteServerDownIsNotSentAndSessionLossReconnects(t *testing.T) {
 
 	r.mcp.Listener.Close()
 	r.mcp.CloseClientConnections()
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	before := r.calls.Load()
 	if _, err := call(t, echo, `{}`); !errors.Is(err, tools.ErrNotExecuted) {
 		t.Fatalf("call to a stopped server err = %v, want ErrNotExecuted", err)
