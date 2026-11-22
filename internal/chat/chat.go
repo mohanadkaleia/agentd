@@ -17,6 +17,7 @@ import (
 	"agentd/internal/audit"
 	"agentd/internal/ids"
 	"agentd/internal/policy"
+	"agentd/internal/runtime"
 	"agentd/internal/tasks"
 )
 
@@ -46,9 +47,8 @@ type Service struct {
 	DB          *sql.DB
 	Tasks       *tasks.Store
 	Assignments *assignments.Store
+	Runtime     *runtime.Runtime
 	Now         func() time.Time
-	// Next describes an assignment's next expected step for the situation block.
-	Next func(ctx context.Context, assignmentID string) (string, error)
 	// Wake tells the interactive worker in this process that a turn is ready.
 	Wake func()
 
@@ -71,11 +71,15 @@ type Message struct {
 	ClientMsgID    string          `json:"client_msg_id,omitempty"`
 	TurnTaskID     string          `json:"turn_task_id,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
+	// Status is a card's current status, read from its source when the message is read.
+	Status string `json:"status,omitempty"`
 }
 
-// Text is the body of text, error and notice messages.
+// Text is the body of text, error, notice and command result messages.
 type Text struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	ReplyTo string `json:"reply_to,omitempty"`
+	Failed  bool   `json:"failed,omitempty"`
 }
 
 func (m Message) Text() string {
@@ -129,7 +133,13 @@ type Post struct {
 	Text           string
 	Channel        string
 	ClientMsgID    string
+	// ReplyTo is the message this one answers, such as an approval card.
+	ReplyTo string
 }
+
+// shortcuts are the only plain replies code applies to an approval card. Anything else is an
+// ordinary message.
+var shortcuts = map[string]bool{"approve": true, "yes": true, "reject": false, "no": false}
 
 // Post stores an owner message and, in the same transaction, the turn that will answer
 // it. Posting the same ClientMsgID again returns the stored message and makes no new turn.
@@ -141,6 +151,19 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 	}
 	if len(text) > maxMessageBytes {
 		return Message{}, fmt.Errorf("message is %d bytes; the limit is %d", len(text), maxMessageBytes)
+	}
+	if strings.HasPrefix(text, "/") {
+		return s.direct(ctx, p, text, func(ctx context.Context) (string, error) {
+			return s.Command(ctx, p.ConversationID, p.Channel, text)
+		})
+	}
+	if approve, ok := shortcuts[strings.ToLower(strings.Trim(text, " .!"))]; ok && p.ReplyTo != "" {
+		card, err := messageBy(ctx, s.DB, `id = ? AND conversation_id = ?`, p.ReplyTo, p.ConversationID)
+		if err == nil && card.Kind == KindApproval {
+			return s.direct(ctx, p, text, func(ctx context.Context) (string, error) {
+				return s.Decide(ctx, p.ConversationID, card.RefID, approve, p.Channel)
+			})
+		}
 	}
 	desk, err := s.FrontDesk(ctx)
 	if err != nil {
@@ -167,7 +190,7 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 		return Message{}, ErrNotFound
 	}
 	m := Message{ID: ids.New("msg"), ConversationID: p.ConversationID, Author: Owner, Kind: KindText,
-		Body: body(text), Channel: p.Channel, ClientMsgID: p.ClientMsgID, CreatedAt: now}
+		Body: reply(text, p.ReplyTo), Channel: p.Channel, ClientMsgID: p.ClientMsgID, CreatedAt: now}
 	turn, parked, err := s.turnFor(ctx, tx, desk, m)
 	if err != nil {
 		return Message{}, err
@@ -196,6 +219,60 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 		s.Wake()
 	}
 	return m, nil
+}
+
+// direct stores an owner message that code answers without a turn (a slash command or a
+// reply to a card), runs it, and stores the result.
+func (s *Service) direct(ctx context.Context, p Post, text string, run func(context.Context) (string, error)) (Message, error) {
+	now := s.Now()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, err
+	}
+	defer tx.Rollback()
+	if p.ClientMsgID != "" {
+		if m, err := messageBy(ctx, tx, `conversation_id = ? AND client_msg_id = ?`, p.ConversationID, p.ClientMsgID); err == nil {
+			return m, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Message{}, err
+		}
+	}
+	m := Message{ID: ids.New("msg"), ConversationID: p.ConversationID, Author: Owner, Kind: KindText,
+		Body: reply(text, p.ReplyTo), Channel: p.Channel, ClientMsgID: p.ClientMsgID, CreatedAt: now}
+	if m.Seq, err = insert(ctx, tx, m); err != nil {
+		return Message{}, err
+	}
+	if m.Seq == 0 {
+		return Message{}, ErrNotFound
+	}
+	if err := audit.Record(ctx, tx, now, "", "owner", "chat.command_received", m.ID,
+		map[string]any{"conversation": m.ConversationID, "channel": m.Channel}); err != nil {
+		return Message{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, err
+	}
+	out, runErr := run(ctx)
+	result := Text{Text: out}
+	if runErr != nil {
+		result = Text{Text: runErr.Error(), Failed: true}
+	}
+	b, _ := json.Marshal(result)
+	tx, err = s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return m, err
+	}
+	defer tx.Rollback()
+	if _, err := insert(ctx, tx, Message{ID: ids.New("msg"), ConversationID: m.ConversationID, Author: System,
+		Kind: KindCommandResult, Body: b, Channel: m.Channel, CreatedAt: s.Now()}); err != nil {
+		return m, err
+	}
+	return m, tx.Commit()
+}
+
+func reply(text, to string) json.RawMessage {
+	b, _ := json.Marshal(Text{Text: text, ReplyTo: to})
+	return b
 }
 
 // turnFor picks the turn a new owner message belongs to: a turn that has not started yet,
@@ -267,7 +344,11 @@ func (s *Service) Messages(ctx context.Context, conversationID string, after int
 	if limit <= 0 {
 		limit = 100
 	}
-	return messages(ctx, s.DB, `conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?`, conversationID, after, limit)
+	msgs, err := messages(ctx, s.DB, `conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?`, conversationID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, s.live(ctx, msgs)
 }
 
 // MarkRead records the last message a channel has shown, so each client can show what is new.

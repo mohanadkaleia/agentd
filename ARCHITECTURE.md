@@ -188,6 +188,7 @@ Each layer removes work before the next, more expensive one:
 22. An MCP tool is a write unless the owner declared it a read; server annotations are never applied. An interrupted MCP write is retried only when the owner declared it idempotent, and is settled without a person only by finding its marker through a declared lookup.
 23. An MCP server never gets model access, the owner's attention or files through the protocol: agentd offers no sampling, elicitation or roots, sends no server instructions to a model, and starts a local server with only `PATH`, `HOME` and its configured environment.
 24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
+25. Only the owner decides an approval, through code: a button, the CLI, the API, a slash command, or a direct reply to an approval card that is exactly `approve`, `yes`, `reject` or `no`. No tool approves, and only the owner's own messages are parsed for commands, never text from a model, a tool or an email. A decision from a card is refused unless the approval is still pending and its argument hash still matches the card.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -329,6 +330,20 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
   process wakes it at once; one written by another process is picked up within 200 ms.
 - While the emergency stop is on, or the front desk is paused or out of budget, messages are still
   stored, no model is called, and the conversation gets one notice saying why and what to run.
+- **Cards.** A projector in housekeeping reads the audit log after a saved cursor and writes cards
+  into the conversation: approvals (numbered per conversation, with the exact arguments and hash),
+  notifications that were not suppressed, blocked tasks, actions with an unknown outcome, completed
+  projects, budget pauses, the emergency stop, and MCP servers that need sign-in or failed. It is
+  code only, so it works while halted and costs nothing, and replaying it adds no card. A card's
+  status is read from its source each time the card is read, so a decided or expired approval never
+  looks open. `Away` lists the cards a client has not seen, decisions first.
+- **Slash commands** (`/status`, `/show`, `/waiting`, `/approve`, `/reject`, `/pause`, `/resume`,
+  `/halt`, `/unhalt`, `/retry`, `/usage`, `/new`, `/help`) are parsed by `internal/chat` for every
+  client, never reach a model, and call the same stores the CLI and API call. They work when the
+  model is down or the front desk is out of budget; during an emergency stop only `/retry` (which
+  would start work) is refused. Numbers in `/approve 2` are the card's fixed number in that
+  conversation, so a number never shifts to a different item.
+- Housekeeping runs every step even when an earlier one fails, and reports all failures together.
 
 ## Known limits
 

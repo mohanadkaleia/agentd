@@ -65,14 +65,15 @@ type world struct {
 	clock *testutil.Clock
 	app   *app.App
 	model *provider
+	send  *sendTool
 	conv  string
 	desk  string
 }
 
 func newWorld(t *testing.T) *world {
-	w := &world{t: t, ctx: context.Background(), clock: testutil.NewClock(), model: &provider{}}
+	w := &world{t: t, ctx: context.Background(), clock: testutil.NewClock(), model: &provider{}, send: &sendTool{}}
 	db := testutil.Open(t, testutil.DBPath(t))
-	w.app = app.New(db, w.model, "cloud", tools.Registry{}, w.clock.Now)
+	w.app = app.New(db, w.model, "cloud", tools.NewRegistry(w.send), w.clock.Now)
 	var err error
 	if w.desk, err = w.app.Chat.FrontDesk(w.ctx); err != nil {
 		t.Fatal(err)

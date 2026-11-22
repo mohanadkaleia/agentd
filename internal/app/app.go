@@ -15,7 +15,6 @@ import (
 	"agentd/internal/model"
 	"agentd/internal/notify"
 	"agentd/internal/outcomes"
-	"agentd/internal/overview"
 	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
@@ -82,18 +81,14 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 
 		MaxRejectedCompletions: 2,
 	}
-	conversations := &chat.Service{DB: db, Tasks: t, Assignments: a, Now: now, Wake: rt.Wake,
-		Next: func(ctx context.Context, id string) (string, error) {
-			o, err := overview.Get(ctx, rt, id)
-			return o.Next.String(), err
-		}}
+	conversations := &chat.Service{DB: db, Tasks: t, Assignments: a, Runtime: rt, Now: now, Wake: rt.Wake}
 	reads := &chat.Reads{DB: db, Runtime: rt, Now: now}
 	for _, tool := range reads.Tools() {
 		all[tool.Definition().Name] = tool
 	}
 	t.OnRelease = conversations.Released
 	rt.Opener = conversations
-	rt.Housekeeping = func(ctx context.Context) error {
+	recheck := func(ctx context.Context) error {
 		if _, err := g.ExpireApprovals(ctx); err != nil {
 			return err
 		}
@@ -111,22 +106,31 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 				return err
 			}
 		}
-		if err := rt.ResumeWithinBudget(ctx); err != nil {
-			return err
+		return nil
+	}
+	steps := []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{"approvals and reconciliation", recheck},
+		{"budget resume", rt.ResumeWithinBudget},
+		{"scheduler", sch.Tick},
+		{"completion criteria", evaluator.Tick},
+		{"obligations", dog.Tick},
+		{"conversation", conversations.Tick},
+		{"conversation cards", conversations.Project},
+		{"notification delivery", deliverer.DeliverDue},
+	}
+	// Each step runs even when an earlier one fails, so a broken step cannot stop
+	// schedules, the watchdog, cards or delivery.
+	rt.Housekeeping = func(ctx context.Context) error {
+		var errs []error
+		for _, step := range steps {
+			if err := step.run(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", step.name, err))
+			}
 		}
-		if err := sch.Tick(ctx); err != nil {
-			return err
-		}
-		if err := evaluator.Tick(ctx); err != nil {
-			return err
-		}
-		if err := dog.Tick(ctx); err != nil {
-			return err
-		}
-		if err := conversations.Tick(ctx); err != nil {
-			return err
-		}
-		return deliverer.DeliverDue(ctx)
+		return errors.Join(errs...)
 	}
 	return &App{
 		DB:          db,
