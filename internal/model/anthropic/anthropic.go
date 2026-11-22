@@ -59,6 +59,43 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 	return toResponse(resp)
 }
 
+// Stream shows the reply's text as it arrives and returns the same Response as Complete,
+// built from the accumulated message. Text from separate blocks is separated by a newline,
+// as Complete joins them.
+func (p *Provider) Stream(ctx context.Context, req model.Request, emit func(model.Delta)) (model.Response, error) {
+	params, err := p.params(req)
+	if err != nil {
+		return model.Response{}, err
+	}
+	stream := p.client.Beta.Messages.NewStreaming(ctx, params)
+	defer stream.Close()
+	var msg sdk.BetaMessage
+	texts := 0
+	for stream.Next() {
+		event := stream.Current()
+		if err := msg.Accumulate(event); err != nil {
+			return model.Response{}, fmt.Errorf("anthropic: %w", err)
+		}
+		switch event.Type {
+		case "content_block_start":
+			if event.AsContentBlockStart().ContentBlock.Type == "text" {
+				if texts > 0 {
+					emit(model.Delta{Text: "\n"})
+				}
+				texts++
+			}
+		case "content_block_delta":
+			if d := event.AsContentBlockDelta().Delta; d.Type == "text_delta" {
+				emit(model.Delta{Text: d.AsTextDelta().Text})
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return model.Response{}, fmt.Errorf("anthropic: %w", err)
+	}
+	return toResponse(&msg)
+}
+
 func (p *Provider) MaxCostMicros(req model.Request) int64 {
 	modelID := req.Model
 	if modelID == "" {

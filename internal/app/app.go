@@ -91,6 +91,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	}
 	t.OnRelease = conversations.Released
 	rt.Opener = conversations
+	rt.Deltas = conversations
 	recheck := func(ctx context.Context) error {
 		if _, err := g.ExpireApprovals(ctx); err != nil {
 			return err

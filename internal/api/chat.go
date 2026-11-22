@@ -169,6 +169,16 @@ func (s *Server) conversationStream(w http.ResponseWriter, r *http.Request) erro
 	}
 	changed, unsubscribe := s.App.Chat.Subscribe()
 	defer unsubscribe()
+	streamed, unsubscribeDeltas := s.App.Chat.SubscribeDeltas()
+	defer unsubscribeDeltas()
+	turns := map[string]bool{}
+	mine := func(task string) bool {
+		if v, ok := turns[task]; ok {
+			return v
+		}
+		turns[task] = s.App.Chat.ConversationOf(ctx, task) == conv
+		return turns[task]
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -237,11 +247,27 @@ func (s *Server) conversationStream(w http.ResponseWriter, r *http.Request) erro
 			fmt.Fprint(w, ": keep-alive\n\n")
 			flusher.Flush()
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-changed:
-		case <-time.After(poll):
+		for waiting := true; waiting; {
+			select {
+			case <-ctx.Done():
+				return nil
+			case d := <-streamed:
+				if !mine(d.TaskID) {
+					continue
+				}
+				body, _ := json.Marshal(d)
+				event := "delta"
+				if d.Restarted {
+					event = "turn"
+				}
+				fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", after, event, body)
+				flusher.Flush()
+				quiet = time.Now()
+			case <-changed:
+				waiting = false
+			case <-time.After(poll):
+				waiting = false
+			}
 		}
 	}
 }

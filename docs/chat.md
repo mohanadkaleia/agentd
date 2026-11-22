@@ -51,6 +51,9 @@ have Approve, Reject and Edit buttons, questions have choice buttons and a reply
 button cancels a running turn, and a task page has a "Message this task" box. Replies are shown as
 plain text with light formatting; nothing in a reply can load an image or open a link by itself.
 
+The web app shows replies as they are written. The terminal shows each reply whole, when it is
+finished.
+
 ## Exit codes
 
 | Code | Meaning |

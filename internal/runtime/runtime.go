@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agentd/internal/assignments"
@@ -46,9 +47,21 @@ type Runtime struct {
 	// Opener supplies the opening messages of tasks that are not ordinary assignment work,
 	// such as conversation turns.
 	Opener Opener
+	// Deltas receives the text of interactive tasks as the model writes it, when the model
+	// can stream. Nothing streamed is stored; the final message is the checkpoint.
+	Deltas DeltaSink
+	// StreamSilence ends a stream that has sent nothing for this long (default 2 minutes).
+	StreamSilence time.Duration
 
 	wakeOnce sync.Once
 	wake     chan struct{}
+}
+
+// A DeltaSink shows streamed text. Restarted tells it to discard text shown for a task
+// whose attempt failed after it began.
+type DeltaSink interface {
+	Delta(taskID, text string)
+	Restarted(taskID string)
 }
 
 // An Opener writes the opening messages for the tasks it recognises, in place of the
@@ -260,12 +273,12 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 		if res.wait {
 			return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready, NextRunAt: r.Now().Add(r.BaseBackoff)})
 		}
-		resp, err := provider.Complete(ctx, req)
+		resp, streamed, err := r.complete(ctx, task, provider, req)
 		if err != nil {
 			if merr := r.markReservation(context.WithoutCancel(ctx), r.DB, res.id, "unknown"); merr != nil {
 				err = errors.Join(err, merr)
 			}
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && !streamed {
 				switched, ferr := r.fallback(ctx, &rn, task.AssignmentID, a.Policy, msgs, err)
 				if ferr != nil {
 					return r.fail(ctx, lease, task, ferr)
@@ -285,6 +298,9 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 		resp.Message.Role = model.RoleAssistant
 		quarantineInvalidArguments(resp.Message.ToolCalls)
 		if err := r.appendModelMessage(ctx, lease, task, &rn, len(msgs), res.id, resp); err != nil {
+			if streamed {
+				r.Deltas.Restarted(task.ID)
+			}
 			return r.fail(ctx, lease, task, err)
 		}
 	}
@@ -473,4 +489,48 @@ func (r *Runtime) housekeep(ctx context.Context) (err error) {
 		}
 	}()
 	return r.Housekeeping(ctx)
+}
+
+// complete calls the model. An interactive task whose model can stream shows its text as
+// it is written; everything else waits for the whole reply. It reports whether any text
+// was shown, because a model that has started answering is never silently replaced.
+func (r *Runtime) complete(ctx context.Context, task tasks.Task, provider model.Provider, req model.Request) (model.Response, bool, error) {
+	streamer, ok := provider.(model.Streamer)
+	if !ok || r.Deltas == nil || task.Priority < tasks.PriorityInteractive {
+		resp, err := provider.Complete(ctx, req)
+		return resp, false, err
+	}
+	silence := r.StreamSilence
+	if silence <= 0 {
+		silence = 2 * time.Minute
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var quiet atomic.Bool
+	timer := time.AfterFunc(silence, func() { quiet.Store(true); cancel() })
+	defer timer.Stop()
+	streamed := false
+	defer func() {
+		if p := recover(); p != nil {
+			if streamed {
+				r.Deltas.Restarted(task.ID)
+			}
+			panic(p)
+		}
+	}()
+	resp, err := streamer.Stream(ctx, req, func(d model.Delta) {
+		timer.Reset(silence)
+		if d.Text == "" {
+			return
+		}
+		streamed = true
+		r.Deltas.Delta(task.ID, d.Text)
+	})
+	if err != nil && quiet.Load() {
+		err = fmt.Errorf("the model sent nothing for %s", silence)
+	}
+	if err != nil && streamed {
+		r.Deltas.Restarted(task.ID)
+	}
+	return resp, streamed, err
 }

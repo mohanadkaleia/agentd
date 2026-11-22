@@ -54,7 +54,8 @@ type Service struct {
 	// Edit applies an owner-edited version of a pending proposal (approval id, new arguments).
 	Edit func(ctx context.Context, approvalID string, args json.RawMessage, by string) (string, error)
 
-	hub hub
+	hub    hub
+	deltas deltas
 
 	Window         int
 	WindowBytes    int

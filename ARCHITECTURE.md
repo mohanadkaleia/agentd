@@ -369,6 +369,12 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
   questions expire after 72 hours (the task continues with its `default`, or with no answer), with
   one reminder halfway. An overdue obligation whose task waits on a question names the question
   instead of starting catch-up work.
+- **Streaming.** A turn whose model can stream (Anthropic, Ollama) shows its text as it is written,
+  through an in-memory broker to the web app's stream; other tasks never stream. Streamed text is
+  never stored: the final message, written once and fenced on the lease, is still the checkpoint,
+  and budgeting is unchanged. Once any text has been shown the run does not fall back to another
+  model. If an attempt fails after showing text, clients are told to discard it, and the turn's
+  next attempt replaces it. A stream that sends nothing for two minutes is ended.
 - Housekeeping runs every step even when an earlier one fails, and reports all failures together.
 
 ## Known limits

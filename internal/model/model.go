@@ -75,3 +75,15 @@ type Provider interface {
 type CostEstimator interface {
 	MaxCostMicros(req Request) int64
 }
+
+// Delta is a piece of assistant text as the model writes it.
+type Delta struct {
+	Text string
+}
+
+// Streamer is a Provider that can also show its reply as it is written. Stream returns the
+// same Response that Complete would; emit receives assistant text only, never tool-call
+// arguments.
+type Streamer interface {
+	Stream(ctx context.Context, req Request, emit func(Delta)) (Response, error)
+}

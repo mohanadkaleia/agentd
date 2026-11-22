@@ -76,6 +76,7 @@ type Task struct {
 	DeadlineAt   time.Time
 	Skills       []string
 	Result       json.RawMessage
+	Priority     int
 }
 
 func (t Task) Allows(tool string) bool {
@@ -217,10 +218,10 @@ func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	var owner, parent, allowed, result, skills sql.NullString
 	var maxSteps, deadline sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `SELECT id, assignment_id, parent_task_id, title, objective, status, success_json,
-		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json, skills_json
+		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json, skills_json, priority
 		FROM tasks WHERE id = ?`, id).
 		Scan(&t.ID, &t.AssignmentID, &parent, &t.Title, &t.Objective, &t.Status, &success,
-			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result, &skills)
+			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result, &skills, &t.Priority)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}

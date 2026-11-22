@@ -80,33 +80,16 @@ type toolDefinition struct {
 
 type chatResponse struct {
 	Message         message `json:"message"`
+	Done            bool    `json:"done"`
 	DoneReason      string  `json:"done_reason"`
 	PromptEvalCount int64   `json:"prompt_eval_count"`
 	EvalCount       int64   `json:"eval_count"`
 }
 
 func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
-	modelID := req.Model
-	if modelID == "" {
-		modelID = p.cfg.Model
-	}
-	body, err := json.Marshal(chatRequest{
-		Model:    modelID,
-		Messages: toMessages(req.Messages),
-		Tools:    toTools(req.Tools),
-		Options:  options{NumPredict: req.MaxTokens},
-	})
+	modelID, resp, err := p.post(ctx, req, false)
 	if err != nil {
 		return model.Response{}, err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return model.Response{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := p.cfg.HTTPClient.Do(httpReq)
-	if err != nil {
-		return model.Response{}, fmt.Errorf("ollama: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -123,6 +106,75 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 	result := toResponse(out)
 	result.Model = modelID
 	return result, nil
+}
+
+// Stream reads Ollama's streamed chat (one JSON object per line), showing text as it
+// arrives, and returns the same Response as Complete.
+func (p *Provider) Stream(ctx context.Context, req model.Request, emit func(model.Delta)) (model.Response, error) {
+	modelID, resp, err := p.post(ctx, req, true)
+	if err != nil {
+		return model.Response{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return model.Response{}, fmt.Errorf("ollama: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var whole chatResponse
+	var text strings.Builder
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var chunk chatResponse
+		if err := dec.Decode(&chunk); err == io.EOF {
+			break
+		} else if err != nil {
+			return model.Response{}, fmt.Errorf("ollama: decode stream: %w", err)
+		}
+		if chunk.Message.Content != "" {
+			text.WriteString(chunk.Message.Content)
+			emit(model.Delta{Text: chunk.Message.Content})
+		}
+		whole.Message.ToolCalls = append(whole.Message.ToolCalls, chunk.Message.ToolCalls...)
+		if chunk.Done {
+			whole.Done, whole.DoneReason = true, chunk.DoneReason
+			whole.PromptEvalCount, whole.EvalCount = chunk.PromptEvalCount, chunk.EvalCount
+			break
+		}
+	}
+	if !whole.Done {
+		return model.Response{}, fmt.Errorf("ollama: the stream ended before the reply was complete")
+	}
+	whole.Message.Content = text.String()
+	result := toResponse(whole)
+	result.Model = modelID
+	return result, nil
+}
+
+func (p *Provider) post(ctx context.Context, req model.Request, stream bool) (string, *http.Response, error) {
+	modelID := req.Model
+	if modelID == "" {
+		modelID = p.cfg.Model
+	}
+	body, err := json.Marshal(chatRequest{
+		Model:    modelID,
+		Messages: toMessages(req.Messages),
+		Tools:    toTools(req.Tools),
+		Stream:   stream,
+		Options:  options{NumPredict: req.MaxTokens},
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := p.cfg.HTTPClient.Do(httpReq)
+	if err != nil {
+		return "", nil, fmt.Errorf("ollama: %w", err)
+	}
+	return modelID, resp, nil
 }
 
 func toTools(defs []model.ToolDefinition) []tool {

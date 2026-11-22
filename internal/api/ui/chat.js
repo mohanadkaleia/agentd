@@ -16,7 +16,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
     setup(props) {
       const view = reactive({
         conversations: [], conv: "", messages: [], lastRead: 0, error: "", loading: true,
-        working: false, tools: [], draft: "", connected: false, editing: {}, answers: {}, expanded: {},
+        working: false, tools: [], partial: {}, draft: "", connected: false, editing: {}, answers: {}, expanded: {},
         announce: "",
       });
       let source;
@@ -30,19 +30,33 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
       const connect = () => {
         if (source) source.close();
         source = new EventSource(`/api/conversations/${encodeURIComponent(view.conv)}/stream?after=${lastSeq()}`);
-        source.onopen = () => { view.connected = true; retry = 1000; };
+        source.onopen = () => { view.connected = true; retry = 1000; view.partial = {}; };
+        source.addEventListener("delta", (e) => {
+          const d = JSON.parse(e.data);
+          view.partial = { ...view.partial, [d.turn_task_id]: (view.partial[d.turn_task_id] || "") + d.text };
+          scrollDown();
+        });
         source.addEventListener("message", (e) => {
           const m = JSON.parse(e.data);
           const fresh = !view.messages.some((x) => x.id === m.id);
           view.messages = merge(view.messages, m);
           if (fresh && m.author === "agent") view.announce = "Baseet: " + bodyText(m);
           if (fresh && m.author !== "owner") view.tools = [];
+          if (m.turn_task_id && m.author !== "owner" && view.partial[m.turn_task_id] !== undefined) {
+            const rest = { ...view.partial };
+            delete rest[m.turn_task_id];
+            view.partial = rest;
+          }
           if (fresh) scrollDown();
           markRead();
         });
         source.addEventListener("turn", (e) => {
           const t = JSON.parse(e.data);
-          if (typeof t.working === "boolean") {
+          if (t.restarted) {
+            const rest = { ...view.partial };
+            delete rest[t.turn_task_id];
+            view.partial = rest;
+          } else if (typeof t.working === "boolean") {
             view.working = t.working;
             if (!t.working) view.tools = [];
           } else if (t.tool) {
@@ -284,6 +298,8 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
                 `While you were away: ${away.length} new, ${away.filter(open).length} waiting for you`) : null,
               bubble(m),
             ]),
+            ...Object.entries(view.partial).map(([turn, text]) =>
+              h("div", { class: "bubble agent provisional", key: "partial-" + turn, "aria-busy": "true" }, [rich(text), h("div", { class: "muted small" }, "writing…")])),
             view.working ? h("div", { class: "working", role: "status" }, [
               h("span", "Working"),
               ...view.tools.map((t) => h("div", { class: "muted small" }, toolWords(t.tool))),
