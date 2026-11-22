@@ -2,7 +2,7 @@
 
 Baseet is a personal agent that runs continuously on one Mac mini. `agentd` is its runtime: one Go
 process, one SQLite database, any model provider. This document is the domain model and the rules
-the code enforces. The README covers how to run it.
+the code enforces. The README covers installing it; [docs/guide.md](docs/guide.md) covers each feature.
 
 ## Principles
 
