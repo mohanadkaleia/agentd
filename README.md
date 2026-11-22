@@ -214,6 +214,37 @@ Config changes need a restart: `agentd mcp check` first, then `deploy/install.sh
 
 The command center's Tools page shows the same, with a review screen for new or changed tools.
 
+MCP gives the agent things to do, not news of things that happened. To wake an assignment when
+something changes, a server can be polled with no model involved:
+
+```json
+"chat": {"command": "...", "tools": {"meta": {"read_channel": {"effect": "read"}}},
+  "poll": [{"every": "2m", "tool": "read_channel", "args": {"channel_id": "C0123ALERTS", "limit": 50},
+            "items": "messages", "id": "ts", "event": {"source": "chat", "kind": "message.posted"},
+            "payload": {"channel": "channel", "user": "user", "text": "text"},
+            "exclude": {"user": "U_BOT"}, "max_events": 20}]}
+```
+
+Each poll calls the read tool, and every item it has not seen becomes an inbox event (`source`,
+`kind`, an external id from `id`, and only the `payload` fields you map, as strings), which routes
+turn into tasks like any other event. The first poll only records what is there (no backfill);
+after an outage at most `max_events` arrive per poll, and a route's `coalesce` groups a burst into one
+task. Polls only run a tool you declared a read and accepted, and pause during an emergency stop or
+while the server is down or needs sign-in. `exclude` drops the assignment's own posts. A poll that
+fails three times in a row notifies the assignments routing that source, saying the feed is broken
+rather than quiet; `agentd mcp list` shows each poll's last success.
+
+A service that can call out can instead post to `POST /api/events` (over Tailscale, with the bearer
+token) with its own `external_id`, which needs no polling at all:
+
+```bash
+curl -X POST http://100.x.y.z:7777/api/events -H "Authorization: Bearer $(cat api-token)" \
+  -d '{"source": "chat", "kind": "message.posted", "external_id": "C0123:1700000000.1234", "payload": {"channel": "C0123"}}'
+```
+
+Keep the API off public interfaces (agentd refuses to bind it to every interface); a relay that
+receives a public webhook should forward only what the route needs.
+
 Secrets are never written in the file. An `env` value whose name looks secret (`TOKEN`, `KEY`,
 `SECRET`, `PASSWORD`, ...) must reference one: `{"keychain": "agentd/chat-token"}` reads the login
 keychain item with service `agentd` and account `chat-token` (store it with

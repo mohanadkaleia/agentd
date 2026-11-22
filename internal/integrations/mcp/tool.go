@@ -179,7 +179,7 @@ func (t *Tool) lookup(ctx context.Context, call tools.Invocation) (tools.Result,
 		b, _ := json.Marshal(res.StructuredContent)
 		json.Unmarshal(b, &found)
 	} else {
-		json.Unmarshal([]byte(render(res)), &found)
+		json.Unmarshal([]byte(full(res)), &found)
 	}
 	if hit := lookupPath(found, r.Lookup.FoundWhen); present(hit) {
 		id := markerFor(call.IdempotencyKey)
@@ -282,10 +282,13 @@ func present(v any) bool {
 	return true
 }
 
-func render(res *mcp.CallToolResult) string {
+func render(res *mcp.CallToolResult) string { return truncate(full(res), maxOutput) }
+
+// full is a result's whole text, for agentd's own parsing; only the model's copy is capped.
+func full(res *mcp.CallToolResult) string {
 	if res.StructuredContent != nil {
 		if b, err := json.Marshal(res.StructuredContent); err == nil {
-			return truncate(string(b), maxOutput)
+			return string(b)
 		}
 	}
 	var parts []string
@@ -305,7 +308,7 @@ func render(res *mcp.CallToolResult) string {
 			parts = append(parts, "[unsupported content omitted]")
 		}
 	}
-	return truncate(strings.Join(parts, "\n"), maxOutput)
+	return strings.Join(parts, "\n")
 }
 
 func untrusted(content string) json.RawMessage {

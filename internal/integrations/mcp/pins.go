@@ -386,3 +386,7 @@ func Accept(ctx context.Context, db *sql.DB, now time.Time, server, tool, hash, 
 	}
 	return tx.Commit()
 }
+
+func notifyNotification(assignmentID, key, title, body string) notify.Notification {
+	return notify.Notification{AssignmentID: assignmentID, DedupKey: key, Severity: assignments.SeverityAction, Title: title, Body: body}
+}

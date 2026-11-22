@@ -160,6 +160,23 @@ func mcpList(ctx context.Context, db *sql.DB, w io.Writer) error {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Server, s.State, s.Transport, strings.Join(counts, ", "), s.Scopes, detail)
 	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	polls, err := mcp.ListPolls(ctx, db)
+	if err != nil || len(polls) == 0 {
+		return err
+	}
+	fmt.Fprintln(w, "\nPOLLS")
+	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERVER\tPOLL\tLAST SUCCESS\tFAILURES IN A ROW\tLAST ERROR")
+	for _, p := range polls {
+		last := "never"
+		if p.LastSuccessAt != nil {
+			last = p.LastSuccessAt.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", p.Server, p.Poll, last, p.Failures, p.LastError)
+	}
 	return tw.Flush()
 }
 

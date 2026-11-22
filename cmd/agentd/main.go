@@ -161,6 +161,7 @@ func run() error {
 		registered = append(registered, tools.WebSearch{}, mailbox)
 	}
 	var account *gmail.Account
+	var servers *mcp.Manager
 	if args[0] == "serve" {
 		registered = append(registered, &web.Reader{Now: time.Now, Timeout: 30 * time.Second})
 		if *holdings != "" {
@@ -174,7 +175,8 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			servers, found := mcp.Start(ctx, cfg, mcp.Options{DataDir: filepath.Dir(*dbPath), LogDir: *mcpLogs, DB: db, Vault: mcpVault(), Log: log})
+			var found []tools.Tool
+			servers, found = mcp.Start(ctx, cfg, mcp.Options{DataDir: filepath.Dir(*dbPath), LogDir: *mcpLogs, DB: db, Vault: mcpVault(), Log: log})
 			defer servers.Close()
 			servers.Supervise(ctx)
 			registered = append(registered, found...)
@@ -214,6 +216,9 @@ func run() error {
 		}
 		logPolicyWarnings(ctx, a, log)
 		watchGmail(ctx, a, account, *gmailPoll, log)
+		if servers != nil {
+			servers.Poll(ctx, a.Scheduler)
+		}
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		stopAPI()
 		log.Info("agentd stopped")

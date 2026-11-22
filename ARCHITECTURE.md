@@ -246,7 +246,13 @@ count as "did not happen" (audited as `action.assumed_idempotent`), and `reconci
 derived from the idempotency key at dispatch, without changing the persisted arguments or their
 approval hash, then looks it up through a declared, accepted read tool. A hit is "happened", a miss
 stays unknown unless the owner declared the lookup authoritative after an age, and a lookup error is
-unknown. Recheck settles both ways and makes no lookups while halted. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
+unknown. Recheck settles both ways and makes no lookups while halted. Polls (`poll` in the config)
+turn new items from an accepted read tool into inbox events through `Scheduler.Ingest`, without a
+model call: the first poll records what exists, later polls emit unseen ids (namespaced by server
+and poll, so `(source, external_id)` deduplicates overlaps and restarts), at most `max_events` per
+poll, with only mapped fields in the payload. They pause while halted, while the server is down or
+needs sign-in, or while the tool is not accepted, back off on errors, and after three failures in a
+row notify the assignments routing that source that the feed is failing. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
 runtime and gateway see nothing new. The client offers servers no sampling, elicitation or roots, so
 a server cannot spend the model budget, prompt the owner, or ask for files. A child process gets
 only `PATH`, `HOME` and its configured env. Server annotations (`readOnlyHint` and the rest) are

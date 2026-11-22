@@ -41,8 +41,37 @@ type ServerConfig struct {
 	CallTimeout policy.Duration   `json:"call_timeout,omitzero"`
 	Tools       ToolFilter        `json:"tools,omitzero"`
 
-	MaxConcurrent int  `json:"max_concurrent,omitempty"`
-	Disabled      bool `json:"disabled,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
+	Disabled      bool   `json:"disabled,omitempty"`
+	Polls         []Poll `json:"poll,omitempty"`
+}
+
+// Poll turns new items from a read tool into inbox events, with no model involved. It
+// calls the tool every interval, emits items it has not seen before (none on the first
+// poll), and maps only the named fields into the event payload.
+type Poll struct {
+	Name      string            `json:"name,omitempty"`
+	Every     policy.Duration   `json:"every"`
+	Tool      string            `json:"tool"`
+	Args      map[string]any    `json:"args,omitempty"`
+	Items     string            `json:"items"`
+	ID        string            `json:"id"`
+	Event     PollEvent         `json:"event"`
+	Payload   map[string]string `json:"payload,omitempty"`
+	Exclude   map[string]string `json:"exclude,omitempty"`
+	MaxEvents int               `json:"max_events,omitempty"`
+}
+
+type PollEvent struct {
+	Source string `json:"source"`
+	Kind   string `json:"kind"`
+}
+
+func (p Poll) key() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.Tool
 }
 
 // Auth is how agentd authenticates to a remote server: "bearer" with a stored token, or
@@ -124,6 +153,34 @@ var (
 	secretish  = regexp.MustCompile(`(?i)token|secret|key|password|passwd|credential|auth|cookie`)
 	keychainID = regexp.MustCompile(`^[a-z0-9.-]+/[a-z0-9-]+$`)
 )
+
+func validatePoll(s ServerConfig, p Poll) error {
+	switch {
+	case p.Every.Duration < 10*time.Second:
+		return errors.New(`every must be at least "10s"`)
+	case !s.Tools.allows(p.Tool) || s.Tools.Meta[p.Tool].Effect != "read":
+		return fmt.Errorf("tool %q must be included and declared \"effect\": \"read\": a poll calls it without the gateway", p.Tool)
+	case !argPath.MatchString(p.Items) || !argPath.MatchString(p.ID):
+		return errors.New(`items and id are paths into the result, like "messages" and "ts"`)
+	case !serverName.MatchString(p.Event.Source) || p.Event.Kind == "":
+		return errors.New("event.source (lowercase) and event.kind are required")
+	case p.Name != "" && !serverName.MatchString(p.Name):
+		return fmt.Errorf("poll name %q: lowercase letters, digits, - and _", p.Name)
+	case p.MaxEvents < 0:
+		return errors.New("max_events must be positive")
+	}
+	for field, path := range p.Payload {
+		if !envName.MatchString(field) || !argPath.MatchString(path) {
+			return fmt.Errorf("payload %q: %q must be a path into the item", field, path)
+		}
+	}
+	for field := range p.Exclude {
+		if _, ok := p.Payload[field]; !ok {
+			return fmt.Errorf("exclude %q must name a payload field", field)
+		}
+	}
+	return nil
+}
 
 func validateRecovery(s ServerConfig, tool string, m ToolMeta) error {
 	if (m.Idempotent || m.Reconcile != nil) && m.Effect == "read" {
@@ -308,6 +365,16 @@ func (c Config) validate(mode os.FileMode) error {
 			if err := validateRecovery(s, tool, m); err != nil {
 				return fmt.Errorf("server %q tool %q: %w", name, tool, err)
 			}
+		}
+		seen := map[string]bool{}
+		for i, p := range s.Polls {
+			if err := validatePoll(s, p); err != nil {
+				return fmt.Errorf("server %q poll %d: %w", name, i, err)
+			}
+			if seen[p.key()] {
+				return fmt.Errorf("server %q: two polls named %q; give them distinct names", name, p.key())
+			}
+			seen[p.key()] = true
 		}
 	}
 	return nil
