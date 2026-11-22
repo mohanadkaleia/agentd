@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -35,9 +36,15 @@ type Server struct {
 	config  ServerConfig
 	log     *slog.Logger
 	connect func(context.Context) (mcp.Transport, error)
+	store   *store
+	pinTTL  time.Duration
 
-	mu      sync.Mutex
-	session *mcp.ClientSession
+	mu       sync.Mutex
+	session  *mcp.ClientSession
+	listed   map[string]listed
+	defs     map[string]model.ToolDefinition
+	accepted map[string]string
+	loadedAt time.Time
 }
 
 type Manager struct {
@@ -45,17 +52,19 @@ type Manager struct {
 }
 
 // Start connects to every configured server and returns the tools they offer. A server
-// that fails to start is logged and skipped; agentd starts without its tools.
-func Start(ctx context.Context, c Config, dataDir string, log *slog.Logger) (*Manager, []tools.Tool) {
+// that fails to start is logged and skipped; agentd starts without its tools. A tool is
+// registered whatever its review status; it runs only once its definition is accepted.
+func Start(ctx context.Context, c Config, dataDir string, db *sql.DB, log *slog.Logger) (*Manager, []tools.Tool) {
 	names := make([]string, 0, len(c.Servers))
 	for name := range c.Servers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	m := &Manager{}
+	st := newStore(db, time.Now)
 	var registered []tools.Tool
 	for _, name := range names {
-		s := newServer(name, c.Servers[name], dataDir, log)
+		s := newServer(name, c.Servers[name], dataDir, st, log)
 		found, err := s.start(ctx)
 		if err != nil {
 			log.Error("mcp server unavailable", "server", name, "err", err)
@@ -74,8 +83,8 @@ func (m *Manager) Close() {
 	}
 }
 
-func newServer(name string, c ServerConfig, dataDir string, log *slog.Logger) *Server {
-	s := &Server{Name: name, config: c, log: log.With("mcp_server", name)}
+func newServer(name string, c ServerConfig, dataDir string, st *store, log *slog.Logger) *Server {
+	s := &Server{Name: name, config: c, log: log.With("mcp_server", name), store: st, pinTTL: 2 * time.Second}
 	s.connect = func(context.Context) (mcp.Transport, error) {
 		dir := c.Dir
 		if dir == "" {
@@ -115,16 +124,27 @@ func (s *Server) start(ctx context.Context) ([]tools.Tool, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "agentd", Version: "1"}, &mcp.ClientOptions{
 		Capabilities:   &mcp.ClientCapabilities{},
 		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			go func() {
+				if err := s.refresh(context.Background()); err != nil {
+					s.log.Error("mcp tool list refresh", "err", err)
+				}
+			}()
+		},
 	})
 	cs, err := client.Connect(ctx, t, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
-	if init := cs.InitializeResult(); init == nil || init.Capabilities == nil || init.Capabilities.Tools == nil {
+	init := cs.InitializeResult()
+	if init == nil || init.Capabilities == nil || init.Capabilities.Tools == nil {
 		cs.Close()
 		return nil, fmt.Errorf("server does not offer tools")
 	}
 	found, err := s.discover(ctx, cs)
+	if err == nil {
+		err = s.record(ctx, init.Instructions)
+	}
 	if err != nil {
 		cs.Close()
 		return nil, err
@@ -149,6 +169,8 @@ func (s *Server) start(ctx context.Context) ([]tools.Tool, error) {
 
 func (s *Server) discover(ctx context.Context, cs *mcp.ClientSession) ([]tools.Tool, error) {
 	var found []tools.Tool
+	listed := map[string]listed{}
+	defs := map[string]model.ToolDefinition{}
 	for remote, err := range cs.Tools(ctx, nil) {
 		if err != nil {
 			return nil, fmt.Errorf("tools/list: %w", err)
@@ -156,43 +178,79 @@ func (s *Server) discover(ctx context.Context, cs *mcp.ClientSession) ([]tools.T
 		if !s.config.Tools.allows(remote.Name) {
 			continue
 		}
-		if len(found) == maxToolsPerServer {
+		if len(listed) == maxToolsPerServer {
 			s.log.Warn("mcp server offers too many tools; ignoring the rest", "limit", maxToolsPerServer)
 			break
 		}
-		t, err := s.wrap(remote)
+		t, l, err := s.wrap(remote)
 		if err != nil {
 			s.log.Warn("mcp tool skipped", "tool", remote.Name, "err", err)
 			continue
 		}
+		listed[remote.Name], defs[remote.Name] = l, t.def
 		found = append(found, t)
 	}
+	s.mu.Lock()
+	s.listed, s.defs = listed, defs
+	s.mu.Unlock()
 	return found, nil
 }
 
-func (s *Server) wrap(remote *mcp.Tool) (*Tool, error) {
+// refresh re-reads the tool list after the server announces a change. Tools that are new
+// since startup are recorded for review and registered on the next restart.
+func (s *Server) refresh(ctx context.Context) error {
+	cs := s.live()
+	if cs == nil {
+		return nil
+	}
+	if _, err := s.discover(ctx, cs); err != nil {
+		return err
+	}
+	return s.record(ctx, cs.InitializeResult().Instructions)
+}
+
+func (s *Server) record(ctx context.Context, instructions string) error {
+	s.mu.Lock()
+	listed := s.listed
+	s.loadedAt = time.Time{}
+	s.mu.Unlock()
+	review, err := s.store.sync(ctx, s.Name, instructions, listed)
+	if err != nil {
+		return err
+	}
+	if len(review) > 0 {
+		s.log.Warn("mcp tools await review; they will not run until accepted", "tools", review, "review", "agentd mcp review "+s.Name)
+	}
+	return s.store.notifyReview(ctx, s.Name, review, listed)
+}
+
+func (s *Server) wrap(remote *mcp.Tool) (*Tool, listed, error) {
 	name := s.Name + "__" + remote.Name
 	if !toolName.MatchString(name) {
-		return nil, fmt.Errorf("name %q cannot be offered to models (letters, digits, _ and -, at most 64)", name)
+		return nil, listed{}, fmt.Errorf("name %q cannot be offered to models (letters, digits, _ and -, at most 64)", name)
 	}
-	schema, err := json.Marshal(remote.InputSchema)
+	def, hash, err := definitionOf(remote)
 	if err != nil {
-		return nil, err
+		return nil, listed{}, err
 	}
-	if len(schema) > maxSchemaBytes {
-		return nil, fmt.Errorf("input schema is %d bytes, over the %d byte limit", len(schema), maxSchemaBytes)
+	if len(def.InputSchema) > maxSchemaBytes {
+		return nil, listed{}, fmt.Errorf("input schema is %d bytes, over the %d byte limit", len(def.InputSchema), maxSchemaBytes)
 	}
 	var shape struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal(schema, &shape) != nil || shape.Type != "object" {
-		return nil, fmt.Errorf("input schema must be a JSON object schema")
+	if json.Unmarshal(def.InputSchema, &shape) != nil || shape.Type != "object" {
+		return nil, listed{}, fmt.Errorf("input schema must be a JSON object schema")
+	}
+	schema, err := cleanSchema(def.InputSchema)
+	if err != nil {
+		return nil, listed{}, err
 	}
 	meta := s.config.Tools.Meta[remote.Name]
 	effect := tools.EffectWrite
 	if meta.Effect == "read" {
 		if a := remote.Annotations; a != nil && a.DestructiveHint != nil && *a.DestructiveHint {
-			return nil, fmt.Errorf("declared a read, but the server marks it destructive")
+			return nil, listed{}, fmt.Errorf("declared a read, but the server marks it destructive")
 		}
 		effect = tools.EffectRead
 	}
@@ -202,9 +260,49 @@ func (s *Server) wrap(remote *mcp.Tool) (*Tool, error) {
 	}
 	return &Tool{server: s, remote: remote.Name, effect: effect, resource: resource, def: model.ToolDefinition{
 		Name:        name,
-		Description: truncate(remote.Description, maxDescription),
+		Description: clean(remote.Description, maxDescription),
 		InputSchema: schema,
-	}}, nil
+	}}, listed{def: def, hash: hash}, nil
+}
+
+func (s *Server) definition(remote string, fallback model.ToolDefinition) model.ToolDefinition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d, ok := s.defs[remote]; ok {
+		return d
+	}
+	return fallback
+}
+
+func (s *Server) listedHash(remote string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.listed[remote]
+	return l.hash, ok
+}
+
+func (s *Server) pin(remote string) (string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadedAt.IsZero() || time.Since(s.loadedAt) >= s.pinTTL {
+		accepted, err := s.store.accepted(context.Background(), s.Name)
+		if err != nil {
+			return "", "cannot read its review status: " + err.Error()
+		}
+		s.accepted, s.loadedAt = accepted, time.Now()
+	}
+	review := "run: agentd mcp review " + s.Name
+	current, offered := s.listed[remote]
+	accepted := s.accepted[remote]
+	switch {
+	case !offered:
+		return accepted, "the server no longer offers it"
+	case accepted == "":
+		return "", "not reviewed yet; " + review
+	case accepted != current.hash:
+		return accepted, "its definition changed since it was accepted; " + review
+	}
+	return accepted, ""
 }
 
 func (s *Server) live() *mcp.ClientSession {

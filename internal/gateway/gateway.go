@@ -70,6 +70,7 @@ type Action struct {
 	Status         string
 	IdempotencyKey string
 	Result         json.RawMessage
+	DefinitionHash string
 	scope          []string
 }
 
@@ -140,6 +141,9 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 			a.Status, a.Result = Failed, errorJSON("invalid arguments: "+err.Error())
 		}
 		a.Resource = resource
+		if p, ok := tool.(tools.Pinned); ok {
+			a.DefinitionHash, _ = p.Pin()
+		}
 	}
 
 	p, err := g.Assignments.Get(ctx, c.AssignmentID)
@@ -153,10 +157,10 @@ func (g *Gateway) prepare(ctx context.Context, c Call, key string) (Action, erro
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO actions (id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
-		resource, policy_version, status, idempotency_key, result_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		resource, policy_version, status, idempotency_key, result_json, definition_hash, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`,
 		a.ID, a.RunID, a.TaskID, a.AssignmentID, a.ToolName, string(a.Arguments), a.ArgumentsHash,
-		a.Resource, p.PolicyVersion, a.Status, a.IdempotencyKey, nullable(a.Result), now.UnixMilli(), now.UnixMilli()); err != nil {
+		a.Resource, p.PolicyVersion, a.Status, a.IdempotencyKey, nullable(a.Result), a.DefinitionHash, now.UnixMilli(), now.UnixMilli()); err != nil {
 		return a, err
 	}
 	if err := audit.Record(ctx, tx, now, a.AssignmentID, "agent", "action."+a.Status, a.ID,
@@ -178,7 +182,17 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 		return Outcome{Kind: Paused}, err
 	}
 	if tool == nil {
-		return g.unavailable(ctx, a)
+		return g.unavailable(ctx, a, fmt.Sprintf("tool %q is unavailable", a.ToolName))
+	}
+	if p, ok := tool.(tools.Pinned); ok {
+		hash, reason := p.Pin()
+		if reason != "" {
+			return g.unavailable(ctx, a, fmt.Sprintf("tool %q is unavailable: %s", a.ToolName, reason))
+		}
+		if hash != a.DefinitionHash {
+			return g.finish(ctx, a, a.Status, Denied, errorJSON(fmt.Sprintf(
+				"tool %q was redefined after this call was proposed; propose it again under the current definition", a.ToolName)), "")
+		}
 	}
 	task, err := g.Tasks.Get(ctx, a.TaskID)
 	if err != nil {
@@ -252,8 +266,8 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 
 var errHalted = errors.New("system is halted")
 
-func (g *Gateway) unavailable(ctx context.Context, a *Action) (Outcome, error) {
-	out := Outcome{Kind: Unavailable, Content: fmt.Sprintf("tool %q is unavailable", a.ToolName)}
+func (g *Gateway) unavailable(ctx context.Context, a *Action, reason string) (Outcome, error) {
+	out := Outcome{Kind: Unavailable, Content: reason}
 	var since sql.NullInt64
 	if err := g.DB.QueryRowContext(ctx, `SELECT MIN(created_at) FROM audit_log
 		WHERE object_id = ? AND operation = 'action.tool_unavailable' AND created_at >= COALESCE(
@@ -389,7 +403,7 @@ func (g *Gateway) setStatus(ctx context.Context, a *Action, from, to string) err
 }
 
 const actionColumns = `id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
-	resource, status, idempotency_key, result_json`
+	resource, status, idempotency_key, result_json, COALESCE(definition_hash, '')`
 
 func (g *Gateway) loadByKey(ctx context.Context, key string) (Action, error) {
 	return scanAction(g.DB.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM actions WHERE idempotency_key = ?`, key))
@@ -401,7 +415,7 @@ func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	var result sql.NullString
 	err := row.
 		Scan(&a.ID, &a.RunID, &a.TaskID, &a.AssignmentID, &a.ToolName, &args, &a.ArgumentsHash,
-			&a.Resource, &a.Status, &a.IdempotencyKey, &result)
+			&a.Resource, &a.Status, &a.IdempotencyKey, &result, &a.DefinitionHash)
 	a.Arguments = json.RawMessage(args)
 	if result.Valid {
 		a.Result = json.RawMessage(result.String)

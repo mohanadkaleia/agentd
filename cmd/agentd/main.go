@@ -47,6 +47,9 @@ commands:
   gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
   ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
+  mcp review [server]                  show MCP tools that are new or changed since you accepted them
+  mcp accept <server> <tool>... | -all <server>
+                                       accept the definitions shown; only accepted tools run
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
   demo                                 seed the airline-refund demo project
@@ -112,6 +115,9 @@ func run() error {
 	}
 	defer db.Close()
 
+	if args[0] == "mcp" {
+		return mcpCommand(ctx, db, args[1:])
+	}
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
 	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
@@ -162,7 +168,7 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), log)
+			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), db, log)
 			defer servers.Close()
 			registered = append(registered, found...)
 		}

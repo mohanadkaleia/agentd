@@ -184,6 +184,7 @@ Each layer removes work before the next, more expensive one:
 18. An obligation is judged only by recorded evidence (a delivered notification, a successful action, or a received event), never by a schedule having fired. An overdue obligation gets at most one remediation task per missed interval, none while an earlier one is still open or blocked, and an escalation to the owner after three missed intervals; an obligation about an outside feed notifies instead of spawning work. Nothing happens for a paused, revoked or halted assignment.
 19. A run talks to one model. It is pinned when the run opens, to the first configured model the assignment's `models` policy allows, and changes only before the model's first reply (fallback after an error) or when the pinned model is gone and the conversation holds no provider-private data. Every switch is audited, and a local-only assignment is never sent to a cloud model.
 20. A tool that is not registered when its persisted call comes up never crashes the process. A prepared or approved call waits for it with backoff, making no model call and counting no failure, and is authorized against the live tool once it returns; after 24 hours the task blocks and the owner is notified once. An interrupted dispatch whose tool is gone has an unknown outcome (invariant 4). A panic in one task fails only that attempt, and a panic in housekeeping is logged; the other workers keep running.
+21. An MCP tool runs only under a definition the owner accepted. Installing or connecting a server grants nothing, and a definition that changed since acceptance cannot dispatch until accepted again.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -235,7 +236,14 @@ because the protocol has no idempotency keys. A read that fails is just failed, 
 read runs again. The owner may also name the argument (`channel_id`, `message.channel`) whose value
 is the policy resource; a call missing it, or naming several values, is an argument error before
 anything is sent. Policy rules name exact tools; there are no wildcards, because a server update
-could add a tool a pattern would silently allow.
+could add a tool a pattern would silently allow. Each tool's definition (name, description, schema,
+annotations, as the server sent them) is hashed and recorded in `mcp_tools`; only a definition the
+owner accepted (`agentd mcp accept`, or the API with the exact hash they saw) is offered or run. A
+changed or removed tool is unavailable (its calls wait, per invariant 20) until reviewed, and an
+action records the definition hash it was proposed under, so it never dispatches under another.
+Descriptions are cleaned of control, tag and bidi-override characters and capped before they reach
+a prompt; the hash covers the original text. Server `instructions` are kept for the owner's review
+and never sent to a model.
 
 **Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
 each pending notification by pushing its next attempt two minutes out, sends it through the

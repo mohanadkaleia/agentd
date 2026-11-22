@@ -28,7 +28,9 @@ type Tool struct {
 	resource []string
 }
 
-func (t *Tool) Definition() model.ToolDefinition { return t.def }
+func (t *Tool) Definition() model.ToolDefinition { return t.server.definition(t.remote, t.def) }
+
+func (t *Tool) Pin() (string, string) { return t.server.pin(t.remote) }
 
 func (t *Tool) Effect() tools.Effect { return t.effect }
 
@@ -69,6 +71,9 @@ func (t *Tool) Resource(args json.RawMessage) (string, error) {
 func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result, error) {
 	if !isObject(call.Arguments) {
 		return tools.Result{}, fmt.Errorf("%w: arguments must be a JSON object", tools.ErrNotExecuted)
+	}
+	if _, unavailable := t.Pin(); unavailable != "" {
+		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrNotExecuted, unavailable)
 	}
 	cs := t.server.live()
 	if cs == nil {

@@ -15,6 +15,7 @@ import (
 	"agentd/internal/app"
 	"agentd/internal/assignments"
 	"agentd/internal/gateway"
+	"agentd/internal/integrations/mcp"
 	"agentd/internal/notify"
 	"agentd/internal/outcomes"
 	"agentd/internal/overview"
@@ -62,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 		"GET /api/system":                                         s.systemStatus,
 		"POST /api/system/emergency-stop":                         s.emergencyStop,
 		"POST /api/system/resume":                                 s.systemResume,
+		"GET /api/mcp/tools":                                      s.listMCPTools,
+		"POST /api/mcp/tools/{server}/{tool}/accept":              s.acceptMCPTool,
 	}
 	for pattern, h := range routes {
 		mux.HandleFunc(pattern, s.wrap(h))
@@ -131,7 +134,8 @@ func classify(err error) (int, string) {
 	case errors.Is(err, assignments.ErrWrongKind), errors.Is(err, assignments.ErrTerminated),
 		errors.Is(err, assignments.ErrNotPaused), errors.Is(err, gateway.ErrApprovalNotPending),
 		errors.Is(err, gateway.ErrApprovalExpired), errors.Is(err, notify.ErrNotPending),
-		errors.Is(err, runtime.ErrNotBlocked), errors.Is(err, runtime.ErrUnresolvedWork), errors.Is(err, gateway.ErrNotUnresolved):
+		errors.Is(err, runtime.ErrNotBlocked), errors.Is(err, runtime.ErrUnresolvedWork), errors.Is(err, gateway.ErrNotUnresolved),
+		errors.Is(err, mcp.ErrHashMismatch):
 		return http.StatusConflict, err.Error()
 	}
 	return http.StatusInternalServerError, "internal error"
@@ -345,6 +349,30 @@ func (s *Server) assignmentAction(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	return ok(w, assignmentSummary{ID: a.ID, Kind: a.Kind, Name: a.Name, Status: a.Status, StatusReason: a.StatusReason})
+}
+
+func (s *Server) listMCPTools(w http.ResponseWriter, r *http.Request) error {
+	pins, err := mcp.ListPins(r.Context(), s.App.DB, r.URL.Query().Get("server"))
+	if err != nil {
+		return err
+	}
+	return ok(w, pins)
+}
+
+func (s *Server) acceptMCPTool(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Hash string `json:"definition_hash"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	if body.Hash == "" {
+		return badRequest("definition_hash is required: accept exactly the definition you reviewed")
+	}
+	if err := mcp.Accept(r.Context(), s.App.DB, time.Now(), r.PathValue("server"), r.PathValue("tool"), body.Hash, "api"); err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"status": mcp.StatusAccepted})
 }
 
 func (s *Server) setPolicy(w http.ResponseWriter, r *http.Request) error {

@@ -201,3 +201,25 @@ func TestModelIsOfferedOnlyToolsThePolicyCanAllow(t *testing.T) {
 		t.Fatalf("offered tools = %v, want the policy's tools and not unruled", offered)
 	}
 }
+
+type unreviewedSearch struct{ tools.WebSearch }
+
+func (unreviewedSearch) Pin() (string, string) { return "", "not reviewed yet" }
+
+func TestUnreviewedPinnedToolsAreNotOffered(t *testing.T) {
+	var offered []string
+	h := newHarness(t, func(req model.Request) model.Message {
+		if offered == nil {
+			for _, d := range req.Tools {
+				offered = append(offered, d.Name)
+			}
+		}
+		return demo.Script(req)
+	})
+	h.tools = func(mb *tools.Mailbox) tools.Registry { return tools.NewRegistry(unreviewedSearch{}, mb) }
+	h.restart()
+	h.drain()
+	if slices.Contains(offered, "web_search") || !slices.Contains(offered, "send_email") {
+		t.Fatalf("offered = %v, want send_email but not the unreviewed web_search", offered)
+	}
+}

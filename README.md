@@ -145,8 +145,18 @@ servers listed in the file and registers each of their tools as `<server>__<tool
                      "post_message": {"effect": "write", "resource": "channel_id"}}}}}}
 ```
 
-Installing a server grants nothing. A tool runs only when an assignment's policy has a rule for it,
-and the model is only shown tools its policy can allow:
+Installing a server grants nothing. Every tool starts unreviewed and does not run until you accept
+its exact definition:
+
+```bash
+./bin/agentd mcp review          # new or changed tools: description (hidden characters shown), schema, server hints
+./bin/agentd mcp accept chat post_message read_channel
+```
+
+If a server later changes a tool's description, schema or hints, that tool stops (calls to it
+wait) until you review it again, and assignments using it get one notification; a call approved
+under the old definition never runs under the new one. A tool also runs only when an assignment's
+policy has a rule for it, and the model is only shown tools its policy can allow:
 
 ```json
 "chat__read_channel": {"mode": "allow", "resources": ["C0123ALERTS"], "otherwise": "deny"},

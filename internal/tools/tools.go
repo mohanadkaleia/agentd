@@ -53,6 +53,21 @@ type Tool interface {
 	Reconcile(ctx context.Context, call Invocation) (Result, Finding, error)
 }
 
+// Pinned tools run only under the definition the owner accepted. Pin returns that
+// definition's hash, or why the tool cannot run now.
+type Pinned interface {
+	Tool
+	Pin() (hash, unavailable string)
+}
+
+func Ready(t Tool) bool {
+	if p, ok := t.(Pinned); ok {
+		_, unavailable := p.Pin()
+		return unavailable == ""
+	}
+	return t != nil
+}
+
 type Untargeted interface {
 	Tool
 	NoResource() bool

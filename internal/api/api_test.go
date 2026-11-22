@@ -17,6 +17,7 @@ import (
 	"agentd/internal/app"
 	"agentd/internal/assignments"
 	"agentd/internal/demo"
+	"agentd/internal/integrations/mcp"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/notify"
@@ -389,5 +390,30 @@ func TestShowReportsHalt(t *testing.T) {
 	e.do("GET", "/api/assignments/"+projectID, nil, &detail)
 	if detail["next"].(map[string]any)["what"] != "halted (emergency stop): drill" {
 		t.Fatalf("next while halted = %v", detail["next"])
+	}
+}
+
+func TestMCPToolsAreReviewedOverHTTP(t *testing.T) {
+	e := setup(t, nil)
+	if _, err := e.app.DB.Exec(`INSERT INTO mcp_tools (server, tool, definition_hash, definition_json, status, first_seen_at, changed_at)
+		VALUES ('chat', 'post', 'h1', '{"name":"post","inputSchema":{"type":"object"}}', 'new', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	var pins []mcp.Pin
+	if code := e.do("GET", "/api/mcp/tools", nil, &pins); code != 200 || len(pins) != 1 || pins[0].Status != mcp.StatusNew {
+		t.Fatalf("list = %d %+v", code, pins)
+	}
+	if code := e.do("POST", "/api/mcp/tools/chat/post/accept", map[string]string{}, nil); code != 400 {
+		t.Fatalf("accept without a hash = %d, want 400", code)
+	}
+	if code := e.do("POST", "/api/mcp/tools/chat/post/accept", map[string]string{"definition_hash": "stale"}, nil); code != 409 {
+		t.Fatalf("accept with a stale hash = %d, want 409", code)
+	}
+	if code := e.do("POST", "/api/mcp/tools/chat/post/accept", map[string]string{"definition_hash": "h1"}, nil); code != 200 {
+		t.Fatalf("accept = %d, want 200", code)
+	}
+	e.do("GET", "/api/mcp/tools?server=chat", nil, &pins)
+	if pins[0].Status != mcp.StatusAccepted || pins[0].AcceptedBy != "api" {
+		t.Fatalf("after accept = %+v", pins[0])
 	}
 }
