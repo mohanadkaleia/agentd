@@ -176,8 +176,24 @@ as agentd's user with only `PATH`, `HOME` (its own directory under the data dir)
 list; it never sees agentd's environment, and it is never offered model access, prompts to you, or
 your files. Results are capped at 20,000 characters and marked untrusted. Commands must be absolute
 paths; pin versions rather than `npx some-server@latest`, which runs new code on every start. The
-file must not be writable by others, and must be `chmod 600` when it sets `env`. A server that fails
-to start is logged and skipped; tasks that need its tools wait for it (see `agentd show`).
+file must not be writable by others, and must be `chmod 600` when it sets `env`.
+
+agentd keeps servers running: one that crashes, drops its connection or fails to start is retried
+after 1 s, then 2 s, doubling up to 5 minutes; after five failures within an hour it stays down and
+you get one notification. A call that runs past `call_timeout` (default 60 s) restarts a local server,
+and `max_concurrent` (default 3) caps calls in flight per server. While a server is down its tools
+keep their names but are not offered, and calls to them wait, with no model calls and no spend.
+Config changes need a restart: `agentd mcp check` first, then `deploy/install.sh --mcp-config FILE ...`
+(which also puts each local server's stderr in `~/Library/Logs/agentd/mcp-<server>.log`).
+
+```bash
+./bin/agentd mcp list               # state of every server: ready, needs_review, needs_auth, failed, disabled
+./bin/agentd mcp tools chat         # each tool: review status, declared effect and resource, calls, manual resolves
+./bin/agentd mcp test -config ~/agentd-mcp.json chat     # connect and list, calling nothing
+./bin/agentd mcp restart chat       # the running agentd reconnects it and forgets its failures
+```
+
+The command center's Tools page shows the same, with a review screen for new or changed tools.
 
 Secrets are never written in the file. An `env` value whose name looks secret (`TOKEN`, `KEY`,
 `SECRET`, `PASSWORD`, ...) must reference one: `{"keychain": "agentd/chat-token"}` reads the login

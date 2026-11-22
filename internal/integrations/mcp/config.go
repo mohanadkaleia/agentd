@@ -40,6 +40,9 @@ type ServerConfig struct {
 	Auth        *Auth             `json:"auth,omitempty"`
 	CallTimeout policy.Duration   `json:"call_timeout,omitzero"`
 	Tools       ToolFilter        `json:"tools,omitzero"`
+
+	MaxConcurrent int  `json:"max_concurrent,omitempty"`
+	Disabled      bool `json:"disabled,omitempty"`
 }
 
 // Auth is how agentd authenticates to a remote server: "bearer" with a stored token, or

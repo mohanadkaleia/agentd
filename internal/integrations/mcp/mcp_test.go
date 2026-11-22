@@ -42,6 +42,9 @@ func runChild() {
 	srv.AddTool(&mcp.Tool{Name: "env", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return text(strings.Join(os.Environ(), "\n")), nil
 	})
+	srv.AddTool(&mcp.Tool{Name: "pid", InputSchema: object}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return text(fmt.Sprint(os.Getpid())), nil
+	})
 	srv.AddTool(&mcp.Tool{Name: "hang", InputSchema: object}, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		os.WriteFile("hanging", []byte(fmt.Sprint(os.Getpid())), 0o600)
 		<-ctx.Done()

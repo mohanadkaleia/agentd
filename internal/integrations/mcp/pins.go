@@ -51,6 +51,9 @@ type Pin struct {
 	AcceptedAt   *time.Time      `json:"accepted_at,omitempty"`
 	AcceptedBy   string          `json:"accepted_by,omitempty"`
 	ChangedAt    time.Time       `json:"changed_at"`
+
+	Description         string `json:"description_visible"`
+	AcceptedDescription string `json:"accepted_description_visible,omitempty"`
 }
 
 func definitionOf(t *mcp.Tool) (Definition, string, error) {
@@ -336,9 +339,19 @@ func ListPins(ctx context.Context, db *sql.DB, server string) ([]Pin, error) {
 			p.AcceptedAt = &t
 		}
 		p.ChangedAt = time.UnixMilli(changed)
+		p.Description = visibleDescription(p.Definition)
+		p.AcceptedDescription = visibleDescription(p.Accepted)
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func visibleDescription(raw json.RawMessage) string {
+	var d Definition
+	if len(raw) == 0 || json.Unmarshal(raw, &d) != nil {
+		return ""
+	}
+	return Visible(d.Description)
 }
 
 func Instructions(ctx context.Context, db *sql.DB, server string) (string, error) {

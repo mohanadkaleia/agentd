@@ -417,3 +417,27 @@ func TestMCPToolsAreReviewedOverHTTP(t *testing.T) {
 		t.Fatalf("after accept = %+v", pins[0])
 	}
 }
+
+func TestMCPServersOverHTTP(t *testing.T) {
+	e := setup(t, nil)
+	req, _ := http.NewRequest("GET", e.srv.URL+"/api/mcp/servers", nil)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 401 {
+		t.Fatalf("servers without a token = %v %v, want 401", resp.StatusCode, err)
+	}
+	if code := e.do("POST", "/api/mcp/servers/nope/restart", nil, nil); code != 404 {
+		t.Fatalf("restart of an unknown server = %d, want 404", code)
+	}
+	e.app.DB.Exec(`INSERT INTO mcp_servers (server, seen_at, state, transport, last_error) VALUES ('chat', 0, 'failed', 'stdio', 'boom')`)
+	var servers []mcp.ServerStatus
+	if code := e.do("GET", "/api/mcp/servers", nil, &servers); code != 200 || len(servers) != 1 || servers[0].State != "failed" {
+		t.Fatalf("servers = %d %+v", code, servers)
+	}
+	if code := e.do("POST", "/api/mcp/servers/chat/restart", nil, nil); code != 200 {
+		t.Fatalf("restart = %d", code)
+	}
+	var flag int
+	e.app.DB.QueryRow(`SELECT restart_requested FROM mcp_servers WHERE server = 'chat'`).Scan(&flag)
+	if flag != 1 {
+		t.Fatal("restart was not requested")
+	}
+}

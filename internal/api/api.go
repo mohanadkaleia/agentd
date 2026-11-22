@@ -65,6 +65,10 @@ func (s *Server) Handler() http.Handler {
 		"POST /api/system/resume":                                 s.systemResume,
 		"GET /api/mcp/tools":                                      s.listMCPTools,
 		"POST /api/mcp/tools/{server}/{tool}/accept":              s.acceptMCPTool,
+		"GET /api/mcp/servers":                                    s.listMCPServers,
+		"GET /api/mcp/servers/{server}/tools":                     s.listMCPTools,
+		"POST /api/mcp/servers/{server}/tools/{tool}/accept":      s.acceptMCPTool,
+		"POST /api/mcp/servers/{server}/restart":                  s.restartMCPServer,
 	}
 	for pattern, h := range routes {
 		mux.HandleFunc(pattern, s.wrap(h))
@@ -352,11 +356,30 @@ func (s *Server) assignmentAction(w http.ResponseWriter, r *http.Request) error 
 }
 
 func (s *Server) listMCPTools(w http.ResponseWriter, r *http.Request) error {
-	pins, err := mcp.ListPins(r.Context(), s.App.DB, r.URL.Query().Get("server"))
+	server := r.PathValue("server")
+	if server == "" {
+		server = r.URL.Query().Get("server")
+	}
+	pins, err := mcp.ListPins(r.Context(), s.App.DB, server)
 	if err != nil {
 		return err
 	}
 	return ok(w, pins)
+}
+
+func (s *Server) listMCPServers(w http.ResponseWriter, r *http.Request) error {
+	servers, err := mcp.ListServers(r.Context(), s.App.DB)
+	if err != nil {
+		return err
+	}
+	return ok(w, servers)
+}
+
+func (s *Server) restartMCPServer(w http.ResponseWriter, r *http.Request) error {
+	if err := mcp.RequestRestart(r.Context(), s.App.DB, r.PathValue("server")); err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"status": "restart requested"})
 }
 
 func (s *Server) acceptMCPTool(w http.ResponseWriter, r *http.Request) error {

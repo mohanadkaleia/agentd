@@ -6,6 +6,7 @@ const state = reactive({
   route: location.hash.slice(1) || "/",
   system: { halted: false },
   counts: { approvals: 0, unresolved: 0 },
+  servers: [],
   toast: "",
 });
 
@@ -46,10 +47,11 @@ async function act(label, method, path, body) {
 
 async function refreshShell() {
   try {
-    const [system, approvals, unresolved] = await Promise.all([
-      api("GET", "/api/system"), api("GET", "/api/approvals"), api("GET", "/api/actions/unresolved"),
+    const [system, approvals, unresolved, servers] = await Promise.all([
+      api("GET", "/api/system"), api("GET", "/api/approvals"), api("GET", "/api/actions/unresolved"), api("GET", "/api/mcp/servers"),
     ]);
     state.system = system;
+    state.servers = servers;
     state.counts = { approvals: approvals.length, unresolved: unresolved.length };
   } catch (e) { /* the view shows its own error */ }
 }
@@ -79,8 +81,10 @@ function shell(content) {
   return () => {
     if (state.signedIn === false) return h(Login);
     if (state.signedIn === null) return h("main", h("p", { class: "muted" }, "Loading…"));
-    const items = [["/", "Assignments"], ["/inbox", "Inbox"], ["/activity", "Activity"]];
+    const items = [["/", "Assignments"], ["/inbox", "Inbox"], ["/tools", "Tools"], ["/activity", "Activity"]];
     const waiting = state.counts.approvals + state.counts.unresolved;
+    const troubled = state.servers.filter((s) => s.state === "needs_auth" || s.state === "failed");
+    const reviews = state.servers.filter((s) => s.state === "needs_review").length;
     return h("div", [
       state.system.halted
         ? h("div", { class: "halted", role: "alert" }, [
@@ -94,6 +98,7 @@ function shell(content) {
         h("nav", { "aria-label": "Main" }, items.map(([to, text]) =>
           h("a", { href: "#" + to, class: state.route === to ? "active" : "", "aria-current": state.route === to ? "page" : null }, [
             text, to === "/inbox" && waiting ? [" ", h("span", { class: "badge", "aria-label": waiting + " waiting" }, String(waiting))] : null,
+            to === "/tools" && troubled.length + reviews ? [" ", h("span", { class: "badge", "aria-label": (troubled.length + reviews) + " need attention" }, String(troubled.length + reviews))] : null,
           ]))),
         state.system.halted ? null : h("button", {
           class: "danger",
@@ -104,6 +109,12 @@ function shell(content) {
         }, "Emergency stop"),
         h("button", { onClick: async () => { await api("DELETE", "/ui/session").catch(() => {}); state.signedIn = false; state.csrf = null; } }, "Sign out"),
       ]),
+      troubled.length && state.route !== "/tools"
+        ? h("div", { class: "card banner", role: "alert" }, [
+            h("strong", "Tools unavailable: "),
+            troubled.map((s) => s.server + " " + s.state.replace("_", " ")).join(", "), " · ", link("/tools", "details"),
+          ])
+        : null,
       h("main", content()),
       h("div", { class: "sr-only", role: "status", "aria-live": "polite" }, state.toast),
       state.toast ? h("div", { class: "toast", "aria-hidden": "true" }, state.toast) : null,
@@ -315,6 +326,51 @@ const Inbox = {
   },
 };
 
+const Tools = {
+  setup() {
+    const { view, load } = loader(async () => {
+      const [servers, tools] = await Promise.all([api("GET", "/api/mcp/servers"), api("GET", "/api/mcp/tools")]);
+      state.servers = servers;
+      return { servers, tools };
+    });
+    onMounted(load);
+    const accept = async (p) => {
+      if (!confirm(`Accept ${p.server}__${p.tool} exactly as shown (definition ${p.definition_hash.slice(0, 12)})?`)) return;
+      if (await act("Accept", "POST", `/api/mcp/servers/${encodeURIComponent(p.server)}/tools/${encodeURIComponent(p.tool)}/accept`, { definition_hash: p.definition_hash })) load();
+    };
+    const restart = async (s) => {
+      if (await act("Restart", "POST", `/api/mcp/servers/${encodeURIComponent(s.server)}/restart`)) load();
+    };
+    const schema = (raw) => { try { return pretty(JSON.parse(JSON.stringify(raw)).inputSchema); } catch { return ""; } };
+    return shell(() => {
+      if (view.loading) return h("p", { class: "muted" }, "Loading…");
+      if (view.error) return h("p", { role: "alert" }, view.error);
+      const d = view.data;
+      const pending = d.tools.filter((p) => p.status === "new" || p.status === "changed");
+      return [
+        h("h2", "MCP servers"),
+        d.servers.length ? h("section", { class: "card" }, h("table", h("tbody", d.servers.map((s) => h("tr", [
+          h("td", [h("strong", s.server), h("div", { class: "muted" }, s.transport + (s.scopes ? " · scopes " + s.scopes : ""))]),
+          h("td", status(s.state)),
+          h("td", { class: "muted" }, Object.entries(s.tools).map(([k, v]) => v + " " + k).join(", ")),
+          h("td", { class: "muted" }, [s.last_error || "", s.next_retry_at ? " · retry " + fmtTime(s.next_retry_at) : ""]),
+          h("td", s.state === "failed" ? h("button", { onClick: () => restart(s) }, "Restart") : null),
+        ]))))) : h("p", { class: "muted" }, "No MCP server has run yet. Start agentd with -mcp-config."),
+        h("h2", "Tools awaiting review"),
+        pending.length ? pending.map((p) => h("article", { class: "card" }, [
+          h("h3", [p.server + "__" + p.tool, " ", status(p.status)]),
+          h("p", { class: "muted" }, "Text is shown with hidden characters escaped. A tool runs only after you accept this exact definition."),
+          h("h4", "Description"), h("pre", p.description_visible || "(none)"),
+          h("h4", "Input schema"), h("pre", schema(p.definition)),
+          p.status === "changed" ? [h("h4", "Previously accepted description"), h("pre", p.accepted_description_visible || "(none)"),
+            h("h4", "Previously accepted schema"), h("pre", schema(p.accepted_definition))] : null,
+          h("div", { class: "row" }, h("button", { class: "primary", onClick: () => accept(p) }, "Accept this definition")),
+        ])) : h("p", { class: "muted" }, "Nothing to review."),
+      ];
+    });
+  },
+};
+
 const Activity = {
   setup() {
     const feed = reactive({ rows: [], connected: false, error: "" });
@@ -378,6 +434,7 @@ const App = {
       if (r.startsWith("/t/")) return h(Task, { id: decodeURIComponent(r.slice(3)), key: r });
       if (r === "/inbox") return h(Inbox, { key: r });
       if (r === "/activity") return h(Activity, { key: r });
+      if (r === "/tools") return h(Tools, { key: r });
       return h(Assignments, { key: "/" });
     };
   },

@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-    echo "usage: deploy/install.sh [--dry-run] [--listen ADDR] <model> [workers]"
+    echo "usage: deploy/install.sh [--dry-run] [--listen ADDR] [--mcp-config FILE] <model> [workers]"
     echo "  model:  anthropic[/model-id] | ollama/model-id"
     echo "  listen: 127.0.0.1:PORT, tailscale:PORT (this Mac's Tailscale IP), or a specific IP:PORT"
     exit 2
@@ -10,10 +10,12 @@ usage() {
 
 dry_run=0
 listen=""
+mcp_config=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) dry_run=1; shift ;;
         --listen) [ $# -ge 2 ] || usage; listen=$2; shift 2 ;;
+        --mcp-config) [ $# -ge 2 ] || usage; mcp_config=$2; shift 2 ;;
         --*) usage ;;
         *) break ;;
     esac
@@ -52,6 +54,21 @@ if [ -n "$listen" ]; then
     esac
 fi
 
+if [ -n "$mcp_config" ]; then
+    case "$mcp_config" in
+        /*) ;;
+        *) echo "--mcp-config needs an absolute path"; exit 1 ;;
+    esac
+    if printf '%s' "$mcp_config" | grep -q '[&<>]'; then
+        echo "--mcp-config path may not contain & < >"
+        exit 1
+    fi
+    [ -f "$mcp_config" ] || { echo "no MCP config at $mcp_config"; exit 1; }
+    case "$(stat -f %Lp "$mcp_config")" in
+        *[2367]?|*?[2367]) echo "$mcp_config is writable by group or others; chmod 600 it (it names programs agentd runs)"; exit 1 ;;
+    esac
+fi
+
 label=local.agentd
 repo=$(cd "$(dirname "$0")/.." && pwd)
 support="$HOME/Library/Application Support/agentd"
@@ -63,6 +80,9 @@ trap 'rm -f "$rendered"' EXIT
 listen_args=""
 if [ -n "$listen" ]; then
     listen_args='\n        <string>-listen</string>\n        <string>'"$listen"'</string>'
+fi
+if [ -n "$mcp_config" ]; then
+    listen_args="$listen_args"'\n        <string>-mcp-config</string>\n        <string>'"$mcp_config"'</string>\n        <string>-mcp-log-dir</string>\n        <string>'"$logs"'</string>'
 fi
 
 awk -v home="$HOME" -v model="$model" -v workers="$workers" -v listen_args="$listen_args" '{
@@ -96,6 +116,9 @@ launchctl bootstrap "gui/$(id -u)" "$plist"
 echo "agentd installed and running ($model, $workers workers)"
 if [ -n "$listen" ]; then
     echo "  api:     http://$listen  (token: \"$support/api-token\", created on first start)"
+fi
+if [ -n "$mcp_config" ]; then
+    echo "  mcp:     $mcp_config (check it first: agentd mcp check -config \"$mcp_config\"; server logs in $logs/mcp-*.log)"
 fi
 echo "  skills:  $support/skills/*.md"
 echo "  status:  AGENTD_DB=\"$support/agentd.db\" \"$support/bin/agentd\" status"

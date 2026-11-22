@@ -76,15 +76,28 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 	if _, unavailable := t.Pin(); unavailable != "" {
 		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrNotExecuted, unavailable)
 	}
-	cs := t.server.ensure(ctx)
+	cs := t.server.live()
 	if cs == nil {
 		return tools.Result{}, fmt.Errorf("%w: mcp server %q is not connected", tools.ErrNotExecuted, t.server.Name)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), t.server.timeout())
 	defer cancel()
+	select {
+	case t.server.sem <- struct{}{}:
+		defer func() { <-t.server.sem }()
+	case <-ctx.Done():
+		return tools.Result{}, fmt.Errorf("%w: mcp server %q is busy with other calls", tools.ErrNotExecuted, t.server.Name)
+	}
+	if ctx.Err() != nil {
+		return tools.Result{}, fmt.Errorf("%w: mcp server %q was busy until the call's time ran out", tools.ErrNotExecuted, t.server.Name)
+	}
 	var denied atomic.Bool
 	ctx = context.WithValue(ctx, deniedKey{}, &denied)
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: t.remote, Arguments: call.Arguments})
+	if err != nil && ctx.Err() != nil && t.server.config.URL == "" {
+		t.server.log.Warn("mcp call exceeded its time limit; restarting the server", "tool", t.def.Name)
+		go t.server.closeSession(cs)
+	}
 	if err != nil && denied.Load() {
 		return tools.Result{}, fmt.Errorf("%w: the server refused agentd's credentials: %v", tools.ErrNotExecuted, err)
 	}

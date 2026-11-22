@@ -276,13 +276,13 @@ func (s *Server) remoteTransport() (mcp.Transport, error) {
 
 // SignIn runs the OAuth authorization-code flow with PKCE for one server, in the
 // foreground, and stores the result where `agentd serve` reads it.
-func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func(string) error, out io.Writer) error {
+func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func(string) error, out io.Writer) (string, error) {
 	if c.URL == "" || c.Auth == nil || c.Auth.Type != "oauth" {
-		return fmt.Errorf("server %q is not a url server with oauth auth", name)
+		return "", fmt.Errorf("server %q is not a url server with oauth auth", name)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer ln.Close()
 	redirect := fmt.Sprintf("http://%s/callback", ln.Addr())
@@ -340,7 +340,7 @@ func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func
 		if c.Auth.ClientSecret != nil {
 			secret, err := v.resolve(*c.Auth.ClientSecret)
 			if err != nil {
-				return err
+				return "", err
 			}
 			creds.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: secret}
 		}
@@ -354,17 +354,17 @@ func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func
 	}
 	handler, err := auth.NewAuthorizationCodeHandler(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "agentd", Version: "1"}, &mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{}})
 	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.URL, HTTPClient: httpClient(c.URL), OAuthHandler: handler,
 		DisableStandaloneSSE: true}, nil)
 	if err != nil {
-		return fmt.Errorf("sign-in: %w", err)
+		return "", fmt.Errorf("sign-in: %w", err)
 	}
 	defer cs.Close()
 	if saved.Token == nil {
-		return errors.New("the server accepted agentd without signing in; auth.type oauth is not needed")
+		return "", errors.New("the server accepted agentd without signing in; auth.type oauth is not needed")
 	}
 	if ts, err := handler.TokenSource(ctx); err == nil && ts != nil {
 		if latest, err := ts.Token(); err == nil {
@@ -378,12 +378,13 @@ func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func
 		fmt.Fprintln(out, "warning: no refresh token was issued, so you will need to sign in again when this one expires")
 	}
 	if err := v.saveCredential(name, saved); err != nil {
-		return err
+		return "", err
 	}
-	scopes := "(none listed)"
-	if len(saved.Scopes) > 0 {
-		scopes = strings.Join(saved.Scopes, " ")
+	scopes := strings.Join(saved.Scopes, " ")
+	shown := scopes
+	if shown == "" {
+		shown = "(none listed)"
 	}
-	fmt.Fprintf(out, "signed in to %s; scopes: %s\nA running agentd uses the new sign-in on its next call.\n", name, scopes)
-	return nil
+	fmt.Fprintf(out, "signed in to %s; scopes: %s\nA running agentd uses the new sign-in within seconds.\n", name, shown)
+	return scopes, nil
 }

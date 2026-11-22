@@ -4,7 +4,7 @@
 set -eu
 
 usage() {
-    echo "usage: deploy/provision-user.sh [--apply] [--user NAME] [--listen ADDR] [--migrate] <model> [workers]"
+    echo "usage: deploy/provision-user.sh [--apply] [--user NAME] [--listen ADDR] [--mcp-config FILE] [--migrate] <model> [workers]"
     echo "       deploy/provision-user.sh [--apply] --rollback"
     echo "  --apply    make the changes (needs sudo); without it, only print them"
     echo "  --user     account to run as (default: baseet)"
@@ -16,6 +16,7 @@ usage() {
 apply=0
 user=baseet
 listen=""
+mcp_config=""
 migrate=0
 rollback=0
 while [ $# -gt 0 ]; do
@@ -23,6 +24,7 @@ while [ $# -gt 0 ]; do
         --apply) apply=1; shift ;;
         --user) [ $# -ge 2 ] || usage; user=$2; shift 2 ;;
         --listen) [ $# -ge 2 ] || usage; listen=$2; shift 2 ;;
+        --mcp-config) [ $# -ge 2 ] || usage; mcp_config=$2; shift 2 ;;
         --migrate) migrate=1; shift ;;
         --rollback) rollback=1; shift ;;
         --*) usage ;;
@@ -101,6 +103,24 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 listen_args=""
 if [ -n "$listen" ]; then
     listen_args='\n        <string>-listen</string>\n        <string>'"$listen"'</string>'
+fi
+if [ -n "$mcp_config" ]; then
+    case "$mcp_config" in
+        /*) ;;
+        *) echo "--mcp-config needs an absolute path"; exit 1 ;;
+    esac
+    if printf '%s' "$mcp_config" | grep -q '[&<>]'; then
+        echo "--mcp-config path may not contain & < >"
+        exit 1
+    fi
+    [ -f "$mcp_config" ] || { echo "no MCP config at $mcp_config"; exit 1; }
+    case "$(stat -f %Lp "$mcp_config")" in
+        *[2367]?|*?[2367]) echo "$mcp_config is writable by group or others; chmod 600 it (it names programs agentd runs)"; exit 1 ;;
+    esac
+fi
+if [ -n "$mcp_config" ]; then
+    listen_args="$listen_args"'\n        <string>-mcp-config</string>\n        <string>'"$mcp_config"'</string>\n        <string>-mcp-log-dir</string>\n        <string>'"$logs"'</string>'
+    echo "note: $user must be able to read $mcp_config and run every server binary it names; keep them writable by an admin only"
 fi
 rendered=$(mktemp)
 binary=$(mktemp)

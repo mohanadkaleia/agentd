@@ -8,61 +8,196 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"agentd/internal/integrations/mcp"
 )
 
-func mcpCommand(ctx context.Context, db *sql.DB, args []string) error {
+func mcpCommand(ctx context.Context, db *sql.DB, dataDir string, args []string) error {
+	usage := fmt.Errorf("usage: agentd mcp list | tools <server> | review [server] | accept <server> (<tool>... | -all) |\n" +
+		"       auth <server> | test <server> | restart <server> | check   (auth, test and check read -config FILE or AGENTD_MCP_CONFIG)")
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agentd mcp auth <server> | review [server] | accept <server> (<tool>... | -all)")
+		return usage
+	}
+	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	path := fs.String("config", envOr("AGENTD_MCP_CONFIG", ""), "the MCP config file agentd serve uses")
+	all := fs.Bool("all", false, "accept every new or changed tool of the server (each is printed first)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	config := func() (mcp.Config, error) {
+		if *path == "" {
+			return mcp.Config{}, fmt.Errorf("this command needs the MCP config: -config FILE or AGENTD_MCP_CONFIG")
+		}
+		return mcp.Load(*path)
+	}
+	server := func() (string, mcp.ServerConfig, error) {
+		if len(rest) != 1 {
+			return "", mcp.ServerConfig{}, usage
+		}
+		cfg, err := config()
+		if err != nil {
+			return "", mcp.ServerConfig{}, err
+		}
+		c, ok := cfg.Servers[rest[0]]
+		if !ok {
+			return "", mcp.ServerConfig{}, fmt.Errorf("no server %q in %s", rest[0], *path)
+		}
+		return rest[0], c, nil
 	}
 	switch args[0] {
-	case "auth":
-		fs := flag.NewFlagSet("auth", flag.ContinueOnError)
-		path := fs.String("config", envOr("AGENTD_MCP_CONFIG", ""), "the MCP config file agentd serve uses")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
+	case "list":
+		return mcpList(ctx, db, os.Stdout)
+	case "tools":
+		if len(rest) != 1 {
+			return usage
 		}
-		if fs.NArg() != 1 || *path == "" {
-			return fmt.Errorf("usage: agentd mcp auth -config FILE <server> (or set AGENTD_MCP_CONFIG)")
+		var meta map[string]mcp.ToolMeta
+		if cfg, err := config(); err == nil {
+			meta = cfg.Servers[rest[0]].Tools.Meta
 		}
-		cfg, err := mcp.Load(*path)
-		if err != nil {
-			return err
-		}
-		server, ok := cfg.Servers[fs.Arg(0)]
-		if !ok {
-			return fmt.Errorf("no server %q in %s", fs.Arg(0), *path)
-		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
-		return mcp.SignIn(ctx, fs.Arg(0), server, mcpVault(), func(url string) error {
-			return exec.Command("/usr/bin/open", url).Run()
-		}, os.Stdout)
+		return mcpTools(ctx, db, os.Stdout, rest[0], meta, time.Now())
 	case "review":
-		server := ""
-		if len(args) > 1 {
-			server = args[1]
+		name := ""
+		if len(rest) > 0 {
+			name = rest[0]
 		}
-		return mcpReview(ctx, db, os.Stdout, server)
+		return mcpReview(ctx, db, os.Stdout, name)
 	case "accept":
-		fs := flag.NewFlagSet("accept", flag.ContinueOnError)
-		all := fs.Bool("all", false, "accept every new or changed tool of the server (each is printed first)")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		rest := fs.Args()
 		if len(rest) == 0 || (len(rest) == 1) != *all {
 			return fmt.Errorf("usage: agentd mcp accept <server> <tool>... | agentd mcp accept -all <server>")
 		}
 		return mcpAccept(ctx, db, os.Stdout, rest[0], rest[1:], *all)
+	case "auth":
+		name, c, err := server()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		scopes, err := mcp.SignIn(ctx, name, c, mcpVault(), func(url string) error {
+			return exec.Command("/usr/bin/open", url).Run()
+		}, os.Stdout)
+		if err != nil {
+			return err
+		}
+		return mcp.RecordScopes(ctx, db, time.Now(), name, scopes)
+	case "test":
+		name, c, err := server()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		pins, err := mcp.Probe(ctx, name, c, mcp.Options{DataDir: dataDir, DB: db, Vault: mcpVault(),
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		fmt.Printf("%s: connected, initialized and listed %d tool(s); no tool was called\n", name, len(pins))
+		for _, p := range pins {
+			fmt.Printf("  %s__%s\t%s\n", p.Server, p.Tool, p.Status)
+		}
+		return nil
+	case "restart":
+		if len(rest) != 1 {
+			return usage
+		}
+		if err := mcp.RequestRestart(ctx, db, rest[0]); err != nil {
+			return fmt.Errorf("no server %q has run yet: %w", rest[0], err)
+		}
+		fmt.Printf("asked the running agentd to restart %s (within a few seconds)\n", rest[0])
+		return nil
+	case "check":
+		cfg, err := config()
+		if err != nil {
+			return err
+		}
+		var problems []string
+		for name, c := range cfg.Servers {
+			for _, err := range mcp.Check(name, c, mcpVault()) {
+				problems = append(problems, err.Error())
+			}
+		}
+		if len(problems) > 0 {
+			slices.Sort(problems)
+			return fmt.Errorf("%s has problems:\n  %s", *path, strings.Join(problems, "\n  "))
+		}
+		fmt.Printf("%s is valid: %d server(s), every secret resolves\n", *path, len(cfg.Servers))
+		return nil
 	}
-	return fmt.Errorf("unknown mcp command %q", args[0])
+	return usage
+}
+
+func mcpList(ctx context.Context, db *sql.DB, w io.Writer) error {
+	servers, err := mcp.ListServers(ctx, db)
+	if err != nil {
+		return err
+	}
+	if len(servers) == 0 {
+		fmt.Fprintln(w, "no MCP server has run yet")
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERVER\tSTATE\tTRANSPORT\tTOOLS\tSCOPES\tDETAIL")
+	for _, s := range servers {
+		counts := []string{}
+		for _, status := range []string{mcp.StatusAccepted, mcp.StatusNew, mcp.StatusChanged, mcp.StatusRemoved} {
+			if n := s.Tools[status]; n > 0 {
+				counts = append(counts, fmt.Sprintf("%d %s", n, status))
+			}
+		}
+		detail := s.LastError
+		if s.NextRetryAt != nil {
+			detail += " (retry " + s.NextRetryAt.Local().Format("15:04:05") + ")"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Server, s.State, s.Transport, strings.Join(counts, ", "), s.Scopes, detail)
+	}
+	return tw.Flush()
+}
+
+func mcpTools(ctx context.Context, db *sql.DB, w io.Writer, server string, meta map[string]mcp.ToolMeta, now time.Time) error {
+	pins, err := mcp.ListPins(ctx, db, server)
+	if err != nil {
+		return err
+	}
+	if len(pins) == 0 {
+		return fmt.Errorf("no tools recorded for %q", server)
+	}
+	since := now.Add(-30 * 24 * time.Hour).UnixMilli()
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TOOL\tSTATUS\tEFFECT\tRESOURCE\tSERVER HINTS (not trusted)\tCALLS 30D\tRESOLVED BY HAND 30D")
+	for _, p := range pins {
+		name := p.Server + "__" + p.Tool
+		effect, resource := "write", "-"
+		if m, ok := meta[p.Tool]; ok {
+			if m.Effect != "" {
+				effect = m.Effect
+			}
+			if m.Resource != "" {
+				resource = m.Resource
+			}
+		}
+		var d mcp.Definition
+		json.Unmarshal(p.Definition, &d)
+		hints := "-"
+		if len(d.Annotations) > 0 {
+			hints = string(d.Annotations)
+		}
+		var calls, resolved int
+		db.QueryRowContext(ctx, `SELECT COUNT(*) FROM actions WHERE tool_name = ? AND created_at > ?`, name, since).Scan(&calls)
+		db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_log l JOIN actions a ON a.id = l.object_id
+			WHERE l.operation LIKE 'action.resolved_%' AND a.tool_name = ? AND l.created_at > ?`, name, since).Scan(&resolved)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%d\n", name, p.Status, effect, resource, hints, calls, resolved)
+	}
+	return tw.Flush()
 }
 
 func mcpReview(ctx context.Context, db *sql.DB, w io.Writer, server string) error {

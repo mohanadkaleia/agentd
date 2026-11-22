@@ -47,10 +47,14 @@ commands:
   gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
   ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
-  mcp auth [-config FILE] <server>     sign in to a remote MCP server (OAuth) in your browser
+  mcp list                             MCP servers: state, transport, tools by review status, scopes, last error
+  mcp tools <server>                   a server's tools: status, declared effect and resource, calls, manual resolves
   mcp review [server]                  show MCP tools that are new or changed since you accepted them
   mcp accept <server> <tool>... | -all <server>
                                        accept the definitions shown; only accepted tools run
+  mcp auth | test | check [-config FILE] [server]
+                                       sign in (OAuth), connect and list without calling, or validate the config
+  mcp restart <server>                 ask the running agentd to reconnect a server and forget its failures
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
   demo                                 seed the airline-refund demo project
@@ -117,7 +121,7 @@ func run() error {
 	defer db.Close()
 
 	if args[0] == "mcp" {
-		return mcpCommand(ctx, db, args[1:])
+		return mcpCommand(ctx, db, filepath.Dir(*dbPath), args[1:])
 	}
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
@@ -126,6 +130,7 @@ func run() error {
 	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
 	holdings := cmd.String("holdings", envOr("AGENTD_HOLDINGS", ""), "JSON holdings snapshot that portfolio_positions reads (off when empty)")
 	mcpConfig := cmd.String("mcp-config", envOr("AGENTD_MCP_CONFIG", ""), "JSON file listing MCP servers whose tools to register (off when empty)")
+	mcpLogs := cmd.String("mcp-log-dir", envOr("AGENTD_MCP_LOG_DIR", ""), "directory for one stderr log per local MCP server (the main log when empty)")
 	demoTools := cmd.Bool("demo-tools", false, "register the simulated web_search and send_email tools used by the demo")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside the simulated send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
@@ -169,8 +174,9 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), db, mcpVault(), log)
+			servers, found := mcp.Start(ctx, cfg, mcp.Options{DataDir: filepath.Dir(*dbPath), LogDir: *mcpLogs, DB: db, Vault: mcpVault(), Log: log})
 			defer servers.Close()
+			servers.Supervise(ctx)
 			registered = append(registered, found...)
 		}
 	}
@@ -347,6 +353,7 @@ func status(ctx context.Context, a *app.App) error {
 		{"EVENTS", `SELECT id, source, kind, COALESCE(external_id, ''), CASE WHEN processed_at IS NULL THEN 'pending' ELSE 'routed:' || routed_count END FROM events ORDER BY received_at`},
 		{"SCHEDULES", `SELECT id, title, interval_ms / 1000 || 's', datetime(next_fire_at / 1000, 'unixepoch', 'localtime') FROM schedules ORDER BY created_at`},
 		{"ACTIONS", `SELECT id, tool_name, resource, status FROM actions ORDER BY created_at`},
+		{"MCP SERVERS", `SELECT server, state, transport, last_error FROM mcp_servers ORDER BY server`},
 		{"APPROVALS", `SELECT ap.id, a.tool_name, a.resource, ap.status FROM approvals ap JOIN actions a ON a.id = ap.action_id ORDER BY ap.requested_at`},
 		{"SIMULATED MAILBOX (demo tools)", `SELECT recipient, subject, message_id FROM mock_mailbox ORDER BY sent_at`},
 	}

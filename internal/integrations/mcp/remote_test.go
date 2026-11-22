@@ -302,7 +302,7 @@ func TestOAuthSignInRefreshesOnceAndRecoversFromRevocation(t *testing.T) {
 	var out bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := SignIn(ctx, "remote", cfg, v.vault(), browser, &out); err != nil {
+	if _, err := SignIn(ctx, "remote", cfg, v.vault(), browser, &out); err != nil {
 		t.Fatalf("sign-in: %v\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "scopes: read") {
@@ -347,7 +347,7 @@ func TestOAuthSignInRefreshesOnceAndRecoversFromRevocation(t *testing.T) {
 		t.Fatal("a tool call reached the server without valid credentials")
 	}
 
-	if err := SignIn(ctx, "remote", cfg, v.vault(), browser, &out); err != nil {
+	if _, err := SignIn(ctx, "remote", cfg, v.vault(), browser, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !tools.Ready(echo) {
@@ -374,7 +374,7 @@ func TestSignInNotificationIsSentOnce(t *testing.T) {
 	cfg := ServerConfig{URL: r.url(), Auth: &Auth{Type: "oauth"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := SignIn(ctx, "remote", cfg, v.vault(), browser, io.Discard); err != nil {
+	if _, err := SignIn(ctx, "remote", cfg, v.vault(), browser, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	w := newWorldWith(t, newFake(), ToolFilter{}, policy.Policy{Tools: map[string]policy.Rule{"remote__echo": {Mode: policy.Allow}}}, true)
@@ -420,11 +420,15 @@ func TestRemoteTimeoutAfterSendIsAmbiguous(t *testing.T) {
 
 func TestRemoteServerDownIsNotSentAndSessionLossReconnects(t *testing.T) {
 	r := newRemote(t, true)
-	_, all, err := r.server(t, ServerConfig{}, Vault{}, quiet)
+	s, all, err := r.server(t, ServerConfig{}, Vault{}, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	echo := all["remote__echo"]
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.poll = 20 * time.Millisecond
+	go s.supervise(ctx)
 
 	r.swap(true)
 	call(t, echo, `{}`)
