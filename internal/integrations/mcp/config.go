@@ -82,6 +82,7 @@ type Auth struct {
 	ClientID     string   `json:"client_id,omitempty"`
 	ClientSecret *Secret  `json:"client_secret,omitempty"`
 	Scopes       []string `json:"scopes,omitempty"`
+	RedirectPort int      `json:"redirect_port,omitempty"`
 }
 
 // Secret is a literal value or a reference: {"keychain": "service/account"} or {"file": "/abs/path"}.
@@ -121,6 +122,7 @@ type ToolFilter struct {
 // authority. Declaring a write as a read is unsafe: after a crash mid-call agentd runs a
 // read again.
 type ToolMeta struct {
+	Name       string         `json:"name,omitempty"`
 	Effect     string         `json:"effect,omitempty"`
 	Resource   string         `json:"resource,omitempty"`
 	Idempotent bool           `json:"idempotent,omitempty"`
@@ -150,6 +152,7 @@ var (
 	serverName = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
 	envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	argPath    = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`)
+	localName  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,56}$`)
 	secretish  = regexp.MustCompile(`(?i)token|secret|key|password|passwd|credential|auth|cookie`)
 	keychainID = regexp.MustCompile(`^[a-z0-9.-]+/[a-z0-9-]+$`)
 )
@@ -259,6 +262,9 @@ func validateRemote(name string, s ServerConfig) error {
 		}
 		return a.Token.validate()
 	case "oauth":
+		if a.RedirectPort < 0 || a.RedirectPort > 65535 {
+			return fmt.Errorf("server %q: auth.redirect_port must be a port number", name)
+		}
 		if a.ClientSecret == nil {
 			return nil
 		}
@@ -355,6 +361,9 @@ func (c Config) validate(mode os.FileMode) error {
 		for tool, m := range s.Tools.Meta {
 			if !s.Tools.allows(tool) {
 				return fmt.Errorf("server %q: meta for %q, which include/exclude leaves out", name, tool)
+			}
+			if m.Name != "" && !localName.MatchString(m.Name) {
+				return fmt.Errorf("server %q tool %q: name %q may use letters, digits, _ and - only", name, tool, m.Name)
 			}
 			if m.Effect != "" && m.Effect != "read" && m.Effect != "write" {
 				return fmt.Errorf("server %q tool %q: effect must be \"read\" or \"write\"", name, tool)

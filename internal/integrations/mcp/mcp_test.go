@@ -731,3 +731,26 @@ func TestAcceptRequiresTheShownDefinition(t *testing.T) {
 		t.Fatalf("accept with a stale hash err = %v, want ErrHashMismatch", err)
 	}
 }
+
+func TestToolsWithDottedNamesCanBeNamedByTheOwner(t *testing.T) {
+	f := &fake{srv: mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)}
+	f.srv.AddTool(&mcp.Tool{Name: "gmail.search_threads", InputSchema: object}, noop)
+	f.srv.AddTool(&mcp.Tool{Name: "gmail.get_thread", InputSchema: object}, noop)
+	found := f.start(t, ToolFilter{Meta: map[string]ToolMeta{"gmail.search_threads": {Name: "search_threads", Effect: "read"}}})
+	if len(found) != 1 || found["fake__search_threads"] == nil {
+		t.Fatalf("registered %v, want only the tool the owner named (dots are not valid model tool names)", found)
+	}
+	if _, err := call(t, found["fake__search_threads"], `{}`); err != nil {
+		t.Fatalf("call through the owner's name: %v", err)
+	}
+}
+
+func TestExampleConfigLoads(t *testing.T) {
+	c, err := Load("../../../docs/examples/mcp.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Servers["slack"].Auth.RedirectPort != 53682 || c.Servers["gmail"].Tools.Meta["gmail.search_threads"].Name != "search_threads" {
+		t.Fatalf("example config = %+v", c)
+	}
+}

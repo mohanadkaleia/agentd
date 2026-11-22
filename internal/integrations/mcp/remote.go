@@ -280,7 +280,7 @@ func SignIn(ctx context.Context, name string, c ServerConfig, v Vault, open func
 	if c.URL == "" || c.Auth == nil || c.Auth.Type != "oauth" {
 		return "", fmt.Errorf("server %q is not a url server with oauth auth", name)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", c.Auth.RedirectPort))
 	if err != nil {
 		return "", err
 	}

@@ -185,6 +185,8 @@ Each layer removes work before the next, more expensive one:
 19. A run talks to one model. It is pinned when the run opens, to the first configured model the assignment's `models` policy allows, and changes only before the model's first reply (fallback after an error) or when the pinned model is gone and the conversation holds no provider-private data. Every switch is audited, and a local-only assignment is never sent to a cloud model.
 20. A tool that is not registered when its persisted call comes up never crashes the process. A prepared or approved call waits for it with backoff, making no model call and counting no failure, and is authorized against the live tool once it returns; after 24 hours the task blocks and the owner is notified once. An interrupted dispatch whose tool is gone has an unknown outcome (invariant 4). A panic in one task fails only that attempt, and a panic in housekeeping is logged; the other workers keep running.
 21. An MCP tool runs only under a definition the owner accepted. Installing or connecting a server grants nothing, and a definition that changed since acceptance cannot dispatch until accepted again.
+22. An MCP tool is a write unless the owner declared it a read; server annotations are never applied. An interrupted MCP write is retried only when the owner declared it idempotent, and is settled without a person only by finding its marker through a declared lookup.
+23. An MCP server never gets model access, the owner's attention or files through the protocol: agentd offers no sampling, elicitation or roots, sends no server instructions to a model, and starts a local server with only `PATH`, `HOME` and its configured environment.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -298,6 +300,11 @@ the same stores and gateway as the runtime. Provider-native model payloads never
   macOS user can read them without a prompt. The keychain protects against other users, not against
   malware running as you. `deploy/provision-user.sh` moves agentd to a dedicated non-admin account
   with owner-only secret files instead ([docs/isolation.md](docs/isolation.md)); it is opt-in.
+- **MCP writes without a declared recovery need a person.** An interrupted or failed write to a
+  tool that is neither `idempotent` nor `reconcile`d blocks its task until `agentd resolve`.
+  `agentd mcp tools` counts these per tool.
+- **MCP config changes need a restart**, and tools a server adds while running are recorded for
+  review but registered only on the next start.
 - **MCP read scope is by argument, not content.** A `resources` list on an MCP tool matches the
   argument the owner named (which channel was asked for), not what comes back. agentd cannot filter
   results it does not understand, so a search-style MCP read with no resource argument is access to
@@ -336,7 +343,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/notify` | Notification outbox and the `notify` tool. |
 | `internal/outcomes` | Completion criteria evidence and automatic project completion. |
 | `internal/watchdog` | Obligations: health from evidence, catch-up tasks and escalation. |
-| `internal/integrations/mcp` | MCP servers' tools as agentd tools (stdio), config file. |
+| `internal/integrations/mcp` | MCP servers' tools as agentd tools (stdio and Streamable HTTP, OAuth), definition pinning, supervision, polls, reconciliation. `mcptest` is an in-process fake chat server for tests. |
 | `internal/integrations/ntfy` | Phone delivery channel for notifications. |
 | `internal/integrations/portfolio` | `portfolio_positions`: read-only holdings from an owner-kept snapshot, exact decimal values and weights. |
 | `internal/integrations/web` | `web_read`: one public page as text, with an address guard against local and private networks. |

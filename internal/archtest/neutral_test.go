@@ -49,7 +49,7 @@ func TestOnlyAdaptersTouchProviders(t *testing.T) {
 					t.Errorf("%s imports adapter %s; only cmd/ may choose a provider", rel, pkg)
 				}
 			}
-			if strings.HasPrefix(pkg, mcpSDK) && dir != "internal/integrations/mcp" {
+			if strings.HasPrefix(pkg, mcpSDK) && dir != "internal/integrations/mcp" && !strings.HasPrefix(dir, "internal/integrations/mcp/") {
 				t.Errorf("%s imports the MCP SDK; only internal/integrations/mcp may", rel)
 			}
 			for _, sdk := range providerSDKs {

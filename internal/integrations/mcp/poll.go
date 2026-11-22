@@ -36,6 +36,19 @@ func (m *Manager) Poll(ctx context.Context, sch *scheduler.Scheduler) {
 	}
 }
 
+// PollNow runs every poll once, for callers that drive time themselves.
+func (m *Manager) PollNow(ctx context.Context, sch *scheduler.Scheduler) int {
+	total := 0
+	for _, s := range m.Servers {
+		for _, p := range s.config.Polls {
+			if n, err := s.pollOnce(ctx, p, sch); err == nil {
+				total += n
+			}
+		}
+	}
+	return total
+}
+
 func (s *Server) pollLoop(ctx context.Context, p Poll, sch *scheduler.Scheduler) {
 	wait := p.Every.Duration
 	for {

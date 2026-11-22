@@ -194,6 +194,9 @@ func mcpTools(ctx context.Context, db *sql.DB, w io.Writer, server string, meta 
 	for _, p := range pins {
 		name := p.Server + "__" + p.Tool
 		effect, resource := "write", "-"
+		if m, ok := meta[p.Tool]; ok && m.Name != "" {
+			name = p.Server + "__" + m.Name + " (" + p.Tool + ")"
+		}
 		if m, ok := meta[p.Tool]; ok {
 			if m.Effect != "" {
 				effect = m.Effect

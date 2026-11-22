@@ -260,7 +260,7 @@ func (st *store) accepted(ctx context.Context, server string) (map[string]string
 }
 
 // notifyReview tells each assignment whose policy names one of the tools, once per change set.
-func (st *store) notifyReview(ctx context.Context, server string, review []string, hashes map[string]listed) error {
+func (st *store) notifyReview(ctx context.Context, server string, review, local []string, hashes map[string]listed) error {
 	if len(review) == 0 {
 		return nil
 	}
@@ -268,7 +268,7 @@ func (st *store) notifyReview(ctx context.Context, server string, review []strin
 	for _, name := range review {
 		fmt.Fprintf(h, "%s=%s;", name, hashes[name].hash)
 	}
-	return st.notifyAssignments(ctx, server, review, "mcp-review:"+server+":"+hex.EncodeToString(h.Sum(nil))[:16],
+	return st.notifyAssignments(ctx, server, local, "mcp-review:"+server+":"+hex.EncodeToString(h.Sum(nil))[:16],
 		fmt.Sprintf("Review tools from MCP server %q", server),
 		fmt.Sprintf("New or changed: %s. They will not run until you accept them: agentd mcp review %s", strings.Join(review, ", "), server))
 }

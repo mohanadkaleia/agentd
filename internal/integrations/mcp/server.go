@@ -71,6 +71,8 @@ type Options struct {
 	DB      *sql.DB
 	Vault   Vault
 	Log     *slog.Logger
+	// Dial, when set, replaces how a server is reached; tests use it for in-process fakes.
+	Dial func(ctx context.Context, server string) (mcp.Transport, error)
 }
 
 const (
@@ -95,6 +97,9 @@ func Start(ctx context.Context, c Config, o Options) (*Manager, []tools.Tool) {
 	for _, name := range names {
 		s := newServer(name, c.Servers[name], o.DataDir, st, o.Log)
 		s.vault = o.Vault
+		if o.Dial != nil {
+			s.connect = func(ctx context.Context) (mcp.Transport, error) { return o.Dial(ctx, name) }
+		}
 		if o.LogDir != "" && s.config.URL == "" {
 			s.stderr = &cappedFile{path: filepath.Join(o.LogDir, "mcp-"+name+".log"), limit: 5 << 20}
 		}
@@ -122,6 +127,28 @@ func (m *Manager) Supervise(ctx context.Context) {
 	for _, s := range m.Servers {
 		if !s.config.Disabled {
 			go s.supervise(ctx)
+		}
+	}
+}
+
+// Reconnect makes one attempt to start every enabled server that is down, as the
+// supervisor would, for callers that drive time themselves.
+func (m *Manager) Reconnect(ctx context.Context) {
+	for _, s := range m.Servers {
+		if s.config.Disabled || s.live() != nil || s.gaveUp() || s.waitingForSignIn() {
+			continue
+		}
+		if _, err := s.start(ctx); err != nil {
+			s.failed(ctx, err)
+		}
+	}
+}
+
+// Refresh re-reads every connected server's tool list, as a list_changed notification would.
+func (m *Manager) Refresh(ctx context.Context) {
+	for _, s := range m.Servers {
+		if err := s.refresh(ctx); err != nil {
+			s.log.Warn("mcp tool list refresh", "err", err)
 		}
 	}
 }
@@ -302,13 +329,22 @@ func (s *Server) record(ctx context.Context, instructions string) error {
 	if len(review) > 0 {
 		s.log.Warn("mcp tools await review; they will not run until accepted", "tools", review, "review", "agentd mcp review "+s.Name)
 	}
-	return s.store.notifyReview(ctx, s.Name, review, listed)
+	local := make([]string, len(review))
+	for i, remote := range review {
+		local[i] = s.localName(remote)
+	}
+	return s.store.notifyReview(ctx, s.Name, review, local, listed)
 }
 
 func (s *Server) wrap(remote *mcp.Tool) (*Tool, listed, error) {
-	name := s.Name + "__" + remote.Name
+	local := remote.Name
+	if n := s.config.Tools.Meta[remote.Name].Name; n != "" {
+		local = n
+	}
+	name := s.Name + "__" + local
 	if !toolName.MatchString(name) {
-		return nil, listed{}, fmt.Errorf("name %q cannot be offered to models (letters, digits, _ and -, at most 64)", name)
+		return nil, listed{}, fmt.Errorf("name %q cannot be offered to models (letters, digits, _ and -, at most 64); "+
+			"name it yourself in tools.meta[%q].name", name, remote.Name)
 	}
 	def, hash, err := definitionOf(remote)
 	if err != nil {
@@ -344,6 +380,13 @@ func (s *Server) wrap(remote *mcp.Tool) (*Tool, listed, error) {
 		Description: clean(remote.Description, maxDescription),
 		InputSchema: schema,
 	}}, listed{def: def, hash: hash}, nil
+}
+
+func (s *Server) localName(remote string) string {
+	if n := s.config.Tools.Meta[remote].Name; n != "" {
+		return n
+	}
+	return remote
 }
 
 func (s *Server) definition(remote string, fallback model.ToolDefinition) model.ToolDefinition {

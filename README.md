@@ -134,6 +134,9 @@ are capped at 2 MB and 20,000 characters of text. Policy resources are hostnames
 
 ## MCP servers
 
+[docs/mcp.md](docs/mcp.md) has the five-step setup, a decision table for each tool, and worked
+Slack and Google Workspace examples. In short:
+
 `agentd serve -mcp-config ~/agentd-mcp.json` starts the [MCP](https://modelcontextprotocol.io)
 servers listed in the file and registers each of their tools as `<server>__<tool>`:
 

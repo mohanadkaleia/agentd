@@ -1,0 +1,33 @@
+{
+  "servers": {
+    "slack": {
+      "url": "https://mcp.slack.com/mcp",
+      "auth": {
+        "type": "oauth",
+        "client_id": "1234567890.1234567890",
+        "client_secret": {"keychain": "agentd/slack-client-secret"},
+        "redirect_port": 53682,
+        "scopes": ["channels:history", "chat:write", "search:read.public"]
+      },
+      "call_timeout": "60s",
+      "max_concurrent": 2
+    },
+    "gmail": {
+      "url": "https://gmailmcp.googleapis.com/mcp/v1",
+      "auth": {
+        "type": "oauth",
+        "client_id": "123456789012-abc.apps.googleusercontent.com",
+        "client_secret": {"keychain": "agentd/google-client-secret"},
+        "scopes": ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"]
+      },
+      "tools": {
+        "include": ["gmail.search_threads", "gmail.get_thread", "gmail.create_draft"],
+        "meta": {
+          "gmail.search_threads": {"name": "search_threads", "effect": "read"},
+          "gmail.get_thread": {"name": "get_thread", "effect": "read"},
+          "gmail.create_draft": {"name": "create_draft", "effect": "write"}
+        }
+      }
+    }
+  }
+}
