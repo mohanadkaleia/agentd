@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -75,17 +76,25 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 	if _, unavailable := t.Pin(); unavailable != "" {
 		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrNotExecuted, unavailable)
 	}
-	cs := t.server.live()
+	cs := t.server.ensure(ctx)
 	if cs == nil {
 		return tools.Result{}, fmt.Errorf("%w: mcp server %q is not connected", tools.ErrNotExecuted, t.server.Name)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), t.server.timeout())
 	defer cancel()
+	var denied atomic.Bool
+	ctx = context.WithValue(ctx, deniedKey{}, &denied)
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: t.remote, Arguments: call.Arguments})
+	if err != nil && denied.Load() {
+		return tools.Result{}, fmt.Errorf("%w: the server refused agentd's credentials: %v", tools.ErrNotExecuted, err)
+	}
 	if err != nil {
 		var wire *jsonrpc.Error
 		if errors.As(err, &wire) && (wire.Code == jsonrpc.CodeMethodNotFound || wire.Code == jsonrpc.CodeInvalidParams) {
 			return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrNotExecuted, wire.Message)
+		}
+		if errors.Is(err, errNotSent) || errors.Is(err, errNeedsAuth) {
+			return tools.Result{}, fmt.Errorf("%w: %v", tools.ErrNotExecuted, err)
 		}
 		return tools.Result{}, fmt.Errorf("mcp %s: %w", t.def.Name, err)
 	}

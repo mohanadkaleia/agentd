@@ -328,7 +328,7 @@ func child(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Setenv("ANTHROPIC_API_KEY", "sk-must-not-leak")
-	s := newServer("child", ServerConfig{Command: exe, Dir: t.TempDir(), Env: map[string]string{"AGENTD_FAKE_MCP": "1"}}, t.TempDir(),
+	s := newServer("child", ServerConfig{Command: exe, Dir: t.TempDir(), Env: map[string]Secret{"AGENTD_FAKE_MCP": {Literal: "1"}}}, t.TempDir(),
 		newStore(testutil.Open(t, testutil.DBPath(t)), time.Now), quiet)
 	s.pinTTL = 0
 	return s
@@ -405,22 +405,40 @@ func TestConfigValidation(t *testing.T) {
 		os.Chmod(p, mode)
 		return p
 	}
-	ok := `{"servers":{"slack":{"command":"/opt/slack-mcp","env":{"TOKEN":"x"},"call_timeout":"30s"}}}`
+	ok := `{"servers":{"slack":{"command":"/opt/slack-mcp","env":{"TOKEN":{"keychain":"agentd/slack-token"},"LOG":"debug"},"call_timeout":"30s"}}}`
 	if c, err := Load(write(ok, 0o600)); err != nil || c.Servers["slack"].CallTimeout.Duration != 30*time.Second {
 		t.Fatalf("valid config: %v", err)
+	}
+	for _, remote := range []string{
+		`{"servers":{"r":{"url":"https://example.com/mcp","auth":{"type":"oauth","client_id":"c","client_secret":{"keychain":"agentd/r-secret"},"scopes":["read"]}}}}`,
+		`{"servers":{"r":{"url":"http://127.0.0.1:8080/mcp","auth":{"type":"bearer","token":{"file":"/etc/token"}}}}}`,
+	} {
+		if _, err := Load(write(remote, 0o600)); err != nil {
+			t.Errorf("valid remote config %s: %v", remote, err)
+		}
 	}
 	for body, mode := range map[string]os.FileMode{
 		ok:                                       0o644,
 		`{"servers":{"a__b":{"command":"/x"}}}`:  0o600,
 		`{"servers":{"Slack":{"command":"/x"}}}`: 0o600,
-		`{"servers":{"slack_":{"command":"/x"}}}`:                                                               0o600,
-		`{"servers":{"slack":{"command":"npx"}}}`:                                                               0o600,
-		`{"servers":{"slack":{"command":"/x"}}}`:                                                                0o666,
-		`{"servers":{"slack":{"command":"/x","y":1}}}`:                                                          0o600,
-		`{"servers":{"slack":{"command":"/x","env":{"A B":"1"}}}}`:                                              0o600,
-		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"effect":"readonly"}}}}}}`:                0o600,
-		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"resource":"a..b"}}}}}}`:                  0o600,
-		`{"servers":{"slack":{"command":"/x","tools":{"include":["read"],"meta":{"post":{"effect":"read"}}}}}}`: 0o600,
+		`{"servers":{"slack_":{"command":"/x"}}}`:                                                                               0o600,
+		`{"servers":{"slack":{"command":"npx"}}}`:                                                                               0o600,
+		`{"servers":{"slack":{"command":"/x"}}}`:                                                                                0o666,
+		`{"servers":{"slack":{"command":"/x","y":1}}}`:                                                                          0o600,
+		`{"servers":{"slack":{"command":"/x","env":{"API_KEY":"literal"}}}}`:                                                    0o600,
+		`{"servers":{"slack":{"command":"/x","env":{"T":{"keychain":"Bad Name"}}}}}`:                                            0o600,
+		`{"servers":{"slack":{"command":"/x","env":{"T":{"keychain":"a/b","file":"/c"}}}}}`:                                     0o600,
+		`{"servers":{"r":{"url":"http://example.com/mcp"}}}`:                                                                    0o600,
+		`{"servers":{"r":{"url":"https://u:p@example.com/mcp"}}}`:                                                               0o600,
+		`{"servers":{"r":{"url":"https://example.com/mcp","command":"/x"}}}`:                                                    0o600,
+		`{"servers":{"r":{"url":"https://example.com/mcp","auth":{"type":"bearer","token":"literal"}}}}`:                        0o600,
+		`{"servers":{"r":{"url":"https://example.com/mcp","auth":{"type":"oauth","client_id":"c","client_secret":"literal"}}}}`: 0o600,
+		`{"servers":{"r":{"url":"https://example.com/mcp","auth":{"type":"basic"}}}}`:                                           0o600,
+		`{"servers":{"r":{"command":"/x","auth":{"type":"oauth"}}}}`:                                                            0o600,
+		`{"servers":{"slack":{"command":"/x","env":{"A B":"1"}}}}`:                                                              0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"effect":"readonly"}}}}}}`:                                0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"resource":"a..b"}}}}}}`:                                  0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"include":["read"],"meta":{"post":{"effect":"read"}}}}}}`:                 0o600,
 	} {
 		if _, err := Load(write(body, mode)); err == nil {
 			t.Errorf("Load accepted %s (mode %o)", body, mode)

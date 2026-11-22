@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -18,9 +19,31 @@ import (
 
 func mcpCommand(ctx context.Context, db *sql.DB, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: agentd mcp review [server] | accept <server> (<tool>... | -all)")
+		return fmt.Errorf("usage: agentd mcp auth <server> | review [server] | accept <server> (<tool>... | -all)")
 	}
 	switch args[0] {
+	case "auth":
+		fs := flag.NewFlagSet("auth", flag.ContinueOnError)
+		path := fs.String("config", envOr("AGENTD_MCP_CONFIG", ""), "the MCP config file agentd serve uses")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 || *path == "" {
+			return fmt.Errorf("usage: agentd mcp auth -config FILE <server> (or set AGENTD_MCP_CONFIG)")
+		}
+		cfg, err := mcp.Load(*path)
+		if err != nil {
+			return err
+		}
+		server, ok := cfg.Servers[fs.Arg(0)]
+		if !ok {
+			return fmt.Errorf("no server %q in %s", fs.Arg(0), *path)
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		return mcp.SignIn(ctx, fs.Arg(0), server, mcpVault(), func(url string) error {
+			return exec.Command("/usr/bin/open", url).Run()
+		}, os.Stdout)
 	case "review":
 		server := ""
 		if len(args) > 1 {
@@ -91,6 +114,14 @@ func mcpAccept(ctx context.Context, db *sql.DB, w io.Writer, server string, name
 		return fmt.Errorf("no matching tools to accept on server %q (see: agentd mcp review %s)", server, server)
 	}
 	return nil
+}
+
+func mcpVault() mcp.Vault {
+	return mcp.Vault{
+		Keychain: keychainSecret,
+		Load:     func(account string) ([]byte, bool) { return keychainLoadHex("agentd", account) },
+		Store:    func(account string, value []byte) error { return keychainStoreHex("agentd", account, value) },
+	}
 }
 
 func printPin(w io.Writer, p mcp.Pin) {

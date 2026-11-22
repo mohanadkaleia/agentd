@@ -47,6 +47,7 @@ commands:
   gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
   ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
+  mcp auth [-config FILE] <server>     sign in to a remote MCP server (OAuth) in your browser
   mcp review [server]                  show MCP tools that are new or changed since you accepted them
   mcp accept <server> <tool>... | -all <server>
                                        accept the definitions shown; only accepted tools run
@@ -168,7 +169,7 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), db, log)
+			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), db, mcpVault(), log)
 			defer servers.Close()
 			registered = append(registered, found...)
 		}

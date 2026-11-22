@@ -37,14 +37,18 @@ type Server struct {
 	log     *slog.Logger
 	connect func(context.Context) (mcp.Transport, error)
 	store   *store
+	vault   Vault
 	pinTTL  time.Duration
 
-	mu       sync.Mutex
-	session  *mcp.ClientSession
-	listed   map[string]listed
-	defs     map[string]model.ToolDefinition
-	accepted map[string]string
-	loadedAt time.Time
+	reconnecting sync.Mutex
+	mu           sync.Mutex
+	session      *mcp.ClientSession
+	authProblem  string
+	failedWith   string
+	listed       map[string]listed
+	defs         map[string]model.ToolDefinition
+	accepted     map[string]string
+	loadedAt     time.Time
 }
 
 type Manager struct {
@@ -54,7 +58,7 @@ type Manager struct {
 // Start connects to every configured server and returns the tools they offer. A server
 // that fails to start is logged and skipped; agentd starts without its tools. A tool is
 // registered whatever its review status; it runs only once its definition is accepted.
-func Start(ctx context.Context, c Config, dataDir string, db *sql.DB, log *slog.Logger) (*Manager, []tools.Tool) {
+func Start(ctx context.Context, c Config, dataDir string, db *sql.DB, vault Vault, log *slog.Logger) (*Manager, []tools.Tool) {
 	names := make([]string, 0, len(c.Servers))
 	for name := range c.Servers {
 		names = append(names, name)
@@ -65,6 +69,7 @@ func Start(ctx context.Context, c Config, dataDir string, db *sql.DB, log *slog.
 	var registered []tools.Tool
 	for _, name := range names {
 		s := newServer(name, c.Servers[name], dataDir, st, log)
+		s.vault = vault
 		found, err := s.start(ctx)
 		if err != nil {
 			log.Error("mcp server unavailable", "server", name, "err", err)
@@ -86,6 +91,17 @@ func (m *Manager) Close() {
 func newServer(name string, c ServerConfig, dataDir string, st *store, log *slog.Logger) *Server {
 	s := &Server{Name: name, config: c, log: log.With("mcp_server", name), store: st, pinTTL: 2 * time.Second}
 	s.connect = func(context.Context) (mcp.Transport, error) {
+		if c.URL != "" {
+			return s.remoteTransport()
+		}
+		env := map[string]string{}
+		for k, v := range c.Env {
+			value, err := s.vault.resolve(v)
+			if err != nil {
+				return nil, fmt.Errorf("env %s: %w", k, err)
+			}
+			env[k] = value
+		}
 		dir := c.Dir
 		if dir == "" {
 			dir = filepath.Join(dataDir, "mcp", name)
@@ -95,7 +111,7 @@ func newServer(name string, c ServerConfig, dataDir string, st *store, log *slog
 		}
 		cmd := exec.Command(c.Command, c.Args...)
 		cmd.Dir = dir
-		cmd.Env = childEnv(c.Env, dir)
+		cmd.Env = childEnv(env, dir)
 		cmd.Stderr = &lineLog{log: s.log}
 		return &mcp.CommandTransport{Command: cmd, TerminateDuration: 5 * time.Second}, nil
 	}
@@ -290,11 +306,18 @@ func (s *Server) pin(remote string) (string, string) {
 			return "", "cannot read its review status: " + err.Error()
 		}
 		s.accepted, s.loadedAt = accepted, time.Now()
+		if s.authProblem != "" {
+			if now := s.currentFingerprint(); now != "" && now != s.failedWith {
+				s.authProblem = ""
+			}
+		}
 	}
 	review := "run: agentd mcp review " + s.Name
 	current, offered := s.listed[remote]
 	accepted := s.accepted[remote]
 	switch {
+	case s.authProblem != "":
+		return accepted, s.authProblem
 	case !offered:
 		return accepted, "the server no longer offers it"
 	case accepted == "":
@@ -361,4 +384,53 @@ func truncate(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + " [truncated]"
+}
+
+func (s *Server) needSignIn(reason, fingerprint string) {
+	how := "run: agentd mcp auth " + s.Name
+	if s.config.Auth != nil && s.config.Auth.Type == "bearer" {
+		how = "store a valid token where auth.token points"
+	}
+	s.mu.Lock()
+	first := s.authProblem == ""
+	s.failedWith = fingerprint
+	s.authProblem = fmt.Sprintf("server %q needs sign-in (%s); %s", s.Name, reason, how)
+	problem := s.authProblem
+	s.mu.Unlock()
+	if !first {
+		return
+	}
+	s.log.Error("mcp server needs sign-in", "reason", reason)
+	if err := s.store.notifyAssignments(context.Background(), s.Name, nil, "mcp-auth:"+s.Name,
+		fmt.Sprintf("MCP server %q needs sign-in", s.Name), problem+". Tasks that need its tools wait until then."); err != nil {
+		s.log.Error("mcp sign-in notification", "err", err)
+	}
+}
+
+func (s *Server) signedIn() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authProblem != "" {
+		s.log.Info("mcp server signed in again")
+	}
+	s.authProblem = ""
+}
+
+// ensure reconnects a remote server whose session ended (an expired session, a restart
+// on the server's side). A local server's process is not restarted here.
+func (s *Server) ensure(ctx context.Context) *mcp.ClientSession {
+	if cs := s.live(); cs != nil || s.config.URL == "" {
+		return cs
+	}
+	s.reconnecting.Lock()
+	defer s.reconnecting.Unlock()
+	if cs := s.live(); cs != nil {
+		return cs
+	}
+	if _, err := s.start(ctx); err != nil {
+		s.log.Warn("mcp reconnect failed", "err", err)
+		return nil
+	}
+	s.signedIn()
+	return s.live()
 }

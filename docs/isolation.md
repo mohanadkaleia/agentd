@@ -19,7 +19,12 @@ LaunchDaemon. `deploy/provision-user.sh` does that.
 This matters more once you install MCP servers (`-mcp-config`): a local server is third-party code
 running as agentd's user. Under the default LaunchAgent install that is you, so it can read your
 files and, through `/usr/bin/security`, Keychain items. Under the separate account it can read only
-what that account can. Keep server binaries and the MCP config writable by an admin only.
+what that account can. Keep server binaries and the MCP config writable by an admin only. Every MCP
+token agentd stores (OAuth sign-ins, bearer tokens) is one more Keychain item that anything running
+as you can read under the default install. Under the separate account, sign in to a hosted server as
+that account, so the token lands in its secrets directory:
+`sudo -u agentd env AGENTD_SECRETS_DIR=/Users/agentd/secrets /usr/local/agentd/bin/agentd mcp auth -config /usr/local/agentd/mcp.json <server>`,
+then open the printed URL in your browser.
 
 Secrets move from the login Keychain to owner-only files (`AGENTD_SECRETS_DIR`), because a
 LaunchDaemon's account never logs in and its login Keychain is never unlocked. agentd refuses a

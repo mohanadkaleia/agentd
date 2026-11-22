@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,13 +32,52 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Command     string            `json:"command"`
+	Command     string            `json:"command,omitempty"`
 	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	Env         map[string]Secret `json:"env,omitempty"`
 	Dir         string            `json:"dir,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Auth        *Auth             `json:"auth,omitempty"`
 	CallTimeout policy.Duration   `json:"call_timeout,omitzero"`
 	Tools       ToolFilter        `json:"tools,omitzero"`
 }
+
+// Auth is how agentd authenticates to a remote server: "bearer" with a stored token, or
+// "oauth", signed in once with `agentd mcp auth <server>`.
+type Auth struct {
+	Type         string   `json:"type"`
+	Token        *Secret  `json:"token,omitempty"`
+	ClientID     string   `json:"client_id,omitempty"`
+	ClientSecret *Secret  `json:"client_secret,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+}
+
+// Secret is a literal value or a reference: {"keychain": "service/account"} or {"file": "/abs/path"}.
+type Secret struct {
+	Literal  string
+	Keychain string `json:"keychain,omitempty"`
+	File     string `json:"file,omitempty"`
+}
+
+func (s *Secret) UnmarshalJSON(b []byte) error {
+	if json.Unmarshal(b, &s.Literal) == nil {
+		return nil
+	}
+	type ref Secret
+	var r ref
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return fmt.Errorf(`a secret is a string or {"keychain": "service/account"} or {"file": "/path"}: %w`, err)
+	}
+	*s = Secret(r)
+	if (s.Keychain == "") == (s.File == "") {
+		return errors.New(`a secret reference names exactly one of "keychain" or "file"`)
+	}
+	return nil
+}
+
+func (s Secret) reference() bool { return s.Keychain != "" || s.File != "" }
 
 type ToolFilter struct {
 	Include []string            `json:"include,omitempty"`
@@ -58,7 +99,66 @@ var (
 	serverName = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
 	envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	argPath    = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`)
+	secretish  = regexp.MustCompile(`(?i)token|secret|key|password|passwd|credential|auth|cookie`)
+	keychainID = regexp.MustCompile(`^[a-z0-9.-]+/[a-z0-9-]+$`)
 )
+
+func validateRemote(name string, s ServerConfig) error {
+	u, err := url.Parse(s.URL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("server %q: invalid url %q", name, s.URL)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback(u.Hostname())) {
+		return fmt.Errorf("server %q: url must be https (plain http only for localhost)", name)
+	}
+	if u.User != nil {
+		return fmt.Errorf("server %q: put credentials in auth, not the url", name)
+	}
+	if s.Args != nil || s.Env != nil || s.Dir != "" {
+		return fmt.Errorf("server %q: args, env and dir apply to local servers", name)
+	}
+	a := s.Auth
+	if a == nil {
+		return nil
+	}
+	switch a.Type {
+	case "bearer":
+		if a.Token == nil || !a.Token.reference() {
+			return fmt.Errorf(`server %q: auth.token must reference a stored secret, like {"keychain": "agentd/%s-token"}`, name, name)
+		}
+		return a.Token.validate()
+	case "oauth":
+		if a.ClientSecret == nil {
+			return nil
+		}
+		if !a.ClientSecret.reference() {
+			return fmt.Errorf("server %q: auth.client_secret must reference a stored secret, not a literal", name)
+		}
+		if a.ClientID == "" {
+			return fmt.Errorf("server %q: auth.client_secret needs auth.client_id", name)
+		}
+		return a.ClientSecret.validate()
+	}
+	return fmt.Errorf(`server %q: auth.type must be "bearer" or "oauth"`, name)
+}
+
+func (s Secret) validate() error {
+	switch {
+	case s.Keychain != "" && !keychainID.MatchString(s.Keychain):
+		return fmt.Errorf("keychain reference %q must look like service/account (lowercase letters, digits, - and .)", s.Keychain)
+	case s.File != "" && !filepath.IsAbs(s.File):
+		return fmt.Errorf("file reference %q must be an absolute path", s.File)
+	}
+	return nil
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func Load(path string) (Config, error) {
 	info, err := os.Stat(path)
@@ -89,8 +189,17 @@ func (c Config) validate(mode os.FileMode) error {
 		if !serverName.MatchString(name) || strings.Contains(name, "__") {
 			return fmt.Errorf("server name %q: use lowercase letters, digits, - and single _ (not first or last)", name)
 		}
-		if !filepath.IsAbs(s.Command) {
+		if (s.Command == "") == (s.URL == "") {
+			return fmt.Errorf("server %q: set either command (a local server) or url (a remote one)", name)
+		}
+		if s.URL != "" {
+			if err := validateRemote(name, s); err != nil {
+				return err
+			}
+		} else if !filepath.IsAbs(s.Command) {
 			return fmt.Errorf("server %q: command must be an absolute path, got %q", name, s.Command)
+		} else if s.Auth != nil {
+			return fmt.Errorf("server %q: auth applies to url servers; pass a local server's credentials through env", name)
 		}
 		if s.Dir != "" && !filepath.IsAbs(s.Dir) {
 			return fmt.Errorf("server %q: dir must be an absolute path", name)
@@ -98,9 +207,15 @@ func (c Config) validate(mode os.FileMode) error {
 		if len(s.Env) > 0 && mode&0o044 != 0 {
 			return fmt.Errorf("server %q sets env, which may hold secrets: make the file readable by its owner only (chmod 600)", name)
 		}
-		for k := range s.Env {
+		for k, v := range s.Env {
 			if !envName.MatchString(k) {
 				return fmt.Errorf("server %q: invalid env name %q", name, k)
+			}
+			if !v.reference() && secretish.MatchString(k) {
+				return fmt.Errorf(`server %q: env %s looks like a secret; store it and reference it, like {"keychain": "agentd/%s-%s"}`, name, k, name, strings.ToLower(strings.ReplaceAll(k, "_", "-")))
+			}
+			if err := v.validate(); err != nil {
+				return fmt.Errorf("server %q env %s: %w", name, k, err)
 			}
 		}
 		if s.CallTimeout.Duration < 0 {

@@ -139,7 +139,7 @@ servers listed in the file and registers each of their tools as `<server>__<tool
 
 ```json
 {"servers": {"chat": {"command": "/opt/agentd/mcp/chat-server", "args": ["--stdio"],
-  "env": {"CHAT_TOKEN": "..."}, "call_timeout": "60s",
+  "env": {"CHAT_TOKEN": {"keychain": "agentd/chat-token"}}, "call_timeout": "60s",
   "tools": {"include": ["post_message", "read_channel"],
             "meta": {"read_channel": {"effect": "read", "resource": "channel_id"},
                      "post_message": {"effect": "write", "resource": "channel_id"}}}}}}
@@ -178,6 +178,30 @@ your files. Results are capped at 20,000 characters and marked untrusted. Comman
 paths; pin versions rather than `npx some-server@latest`, which runs new code on every start. The
 file must not be writable by others, and must be `chmod 600` when it sets `env`. A server that fails
 to start is logged and skipped; tasks that need its tools wait for it (see `agentd show`).
+
+Secrets are never written in the file. An `env` value whose name looks secret (`TOKEN`, `KEY`,
+`SECRET`, `PASSWORD`, ...) must reference one: `{"keychain": "agentd/chat-token"}` reads the login
+keychain item with service `agentd` and account `chat-token` (store it with
+`security add-generic-password -s agentd -a chat-token -w`, which prompts for the value), and
+`{"file": "/abs/path"}` reads an owner-only file. Under the separate-account install the keychain
+form reads `$AGENTD_SECRETS_DIR/chat-token` instead.
+
+Hosted servers are reached over HTTPS instead of started (`http` is accepted only for localhost):
+
+```json
+{"servers": {"workspace": {"url": "https://mcp.example.com/mcp", "auth": {"type": "oauth", "scopes": ["read"]}},
+             "notes": {"url": "https://notes.example.net/mcp",
+                       "auth": {"type": "bearer", "token": {"keychain": "agentd/notes-token"}}}}}
+```
+
+For `oauth`, sign in once in your browser with `agentd mcp auth -config ~/agentd-mcp.json workspace`.
+agentd discovers the server's authorization server, registers itself if the server allows that (or
+uses `client_id` and a referenced `client_secret`), asks for only the scopes you list, and stores the
+token in the keychain; `agentd serve` refreshes it, one refresh at a time. If the server later
+rejects agentd, its tools stop being offered, calls to them wait, and you get one notification; sign
+in again and the running agentd picks it up within seconds, no restart. Redirects to another host
+are refused, so a token is only ever sent to the configured server, and a request that never left
+agentd (connection refused, or refused credentials) counts as not executed.
 
 ## Phone notifications
 

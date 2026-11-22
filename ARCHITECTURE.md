@@ -223,8 +223,17 @@ policy can allow-list contacts; anything wider must be a draft. The inbox watche
 history from the moment it is connected (no backfill) and recovers from an expired history id by
 re-scanning the last two days, deduplicated by message id.
 
-**MCP servers** (`internal/integrations/mcp`): the official Go SDK over stdio; the only package
-allowed to import it. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
+**MCP servers** (`internal/integrations/mcp`): the official Go SDK, over stdio for local servers
+and Streamable HTTP for hosted ones; the only package allowed to import it. Remote servers use
+HTTPS only (plain HTTP for loopback), never follow a redirect to another host, and never retry a
+`tools/call` inside the transport. A request whose body was never read (connection refused) or that
+the server answered 401/403 is "not executed"; a timeout, reset or 5xx after sending is ambiguous.
+OAuth sign-in (`agentd mcp auth`, PKCE, protected-resource and authorization-server discovery,
+dynamic registration or a preregistered client) runs in the foreground; the token is bound to the
+server URL, kept in the keychain or the secrets directory, and refreshed one at a time. A server
+that rejects agentd's credentials enters a needs-sign-in state: its tools are not offered, calls
+wait, and one notification goes out; a new sign-in is picked up without a restart. Secrets in the
+config are references, never literals, and never reach the database, logs, prompts or argv. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
 runtime and gateway see nothing new. The client offers servers no sampling, elicitation or roots, so
 a server cannot spend the model budget, prompt the owner, or ask for files. A child process gets
 only `PATH`, `HOME` and its configured env. Server annotations (`readOnlyHint` and the rest) are

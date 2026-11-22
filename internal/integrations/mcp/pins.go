@@ -265,7 +265,14 @@ func (st *store) notifyReview(ctx context.Context, server string, review []strin
 	for _, name := range review {
 		fmt.Fprintf(h, "%s=%s;", name, hashes[name].hash)
 	}
-	key := "mcp-review:" + server + ":" + hex.EncodeToString(h.Sum(nil))[:16]
+	return st.notifyAssignments(ctx, server, review, "mcp-review:"+server+":"+hex.EncodeToString(h.Sum(nil))[:16],
+		fmt.Sprintf("Review tools from MCP server %q", server),
+		fmt.Sprintf("New or changed: %s. They will not run until you accept them: agentd mcp review %s", strings.Join(review, ", "), server))
+}
+
+// notifyAssignments notifies every live assignment whose policy names one of the server's
+// tools (any of them when tools is nil).
+func (st *store) notifyAssignments(ctx context.Context, server string, tools []string, key, title, body string) error {
 	rows, err := st.db.QueryContext(ctx, `SELECT id FROM assignments WHERE status IN ('active', 'paused')`)
 	if err != nil {
 		return err
@@ -283,14 +290,19 @@ func (st *store) notifyReview(ctx context.Context, server string, review []strin
 		if err != nil {
 			return err
 		}
-		uses := slices.ContainsFunc(review, func(tool string) bool { _, ok := a.Policy.Tools[server+"__"+tool]; return ok })
+		uses := false
+		for name := range a.Policy.Tools {
+			tool, ok := strings.CutPrefix(name, server+"__")
+			if ok && (tools == nil || slices.Contains(tools, tool)) {
+				uses = true
+				break
+			}
+		}
 		if !uses {
 			continue
 		}
 		if _, err := st.outbox.Notify(ctx, notify.Notification{AssignmentID: id, DedupKey: key, Severity: assignments.SeverityAction,
-			Title: fmt.Sprintf("Review tools from MCP server %q", server),
-			Body:  fmt.Sprintf("New or changed: %s. They will not run until you accept them: agentd mcp review %s", strings.Join(review, ", "), server),
-		}); err != nil {
+			Title: title, Body: body}); err != nil {
 			return err
 		}
 	}
