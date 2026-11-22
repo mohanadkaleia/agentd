@@ -138,15 +138,30 @@ are capped at 2 MB and 20,000 characters of text. Policy resources are hostnames
 servers listed in the file and registers each of their tools as `<server>__<tool>`:
 
 ```json
-{"servers": {"notes": {"command": "/opt/agentd/mcp/notes-server", "args": ["--stdio"],
-  "env": {"NOTES_DIR": "/Users/agentd/notes"}, "call_timeout": "60s",
-  "tools": {"include": ["search", "append"]}}}}
+{"servers": {"chat": {"command": "/opt/agentd/mcp/chat-server", "args": ["--stdio"],
+  "env": {"CHAT_TOKEN": "..."}, "call_timeout": "60s",
+  "tools": {"include": ["post_message", "read_channel"],
+            "meta": {"read_channel": {"effect": "read", "resource": "channel_id"},
+                     "post_message": {"effect": "write", "resource": "channel_id"}}}}}}
 ```
 
-Installing a server grants nothing. A tool runs only when an assignment's policy has a rule for it
-(`"notes__search": {"mode": "allow"}`), and the model is only shown tools its policy can allow.
-Every MCP tool counts as a write with no policy resource, so an interrupted call or a call the
-server reports as failed blocks its task until you settle it with `agentd resolve`. The server runs
+Installing a server grants nothing. A tool runs only when an assignment's policy has a rule for it,
+and the model is only shown tools its policy can allow:
+
+```json
+"chat__read_channel": {"mode": "allow", "resources": ["C0123ALERTS"], "otherwise": "deny"},
+"chat__post_message": {"mode": "allow", "resources": ["C0123ALERTS"], "otherwise": "approval"}
+```
+
+`meta` is yours to declare; agentd never trusts what a server says about its own tools. A tool is
+a write unless you mark it `"effect": "read"`. Mark only true reads: after a crash mid-call agentd
+runs a read again. An interrupted write, or a write the server reports as failed, blocks its task
+until you settle it with `agentd resolve`. `resource` names the argument policy matches on, exactly
+as the tool takes it (a channel id, not `#alerts`); a call without it, or with a list of more than
+one value, is refused before anything is sent. A `resources` list only gates which value was asked
+for, not what comes back, so a search tool with no resource argument reads the whole account. Rules
+name exact tools; `chat__*` is rejected. `agentd serve` logs rules that can never apply, and the
+command center shows them on the assignment. The server runs
 as agentd's user with only `PATH`, `HOME` (its own directory under the data dir) and the `env` you
 list; it never sees agentd's environment, and it is never offered model access, prompts to you, or
 your files. Results are capped at 20,000 characters and marked untrusted. Commands must be absolute

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,7 +188,19 @@ func (s *Server) wrap(remote *mcp.Tool) (*Tool, error) {
 	if json.Unmarshal(schema, &shape) != nil || shape.Type != "object" {
 		return nil, fmt.Errorf("input schema must be a JSON object schema")
 	}
-	return &Tool{server: s, remote: remote.Name, def: model.ToolDefinition{
+	meta := s.config.Tools.Meta[remote.Name]
+	effect := tools.EffectWrite
+	if meta.Effect == "read" {
+		if a := remote.Annotations; a != nil && a.DestructiveHint != nil && *a.DestructiveHint {
+			return nil, fmt.Errorf("declared a read, but the server marks it destructive")
+		}
+		effect = tools.EffectRead
+	}
+	var resource []string
+	if meta.Resource != "" {
+		resource = strings.Split(meta.Resource, ".")
+	}
+	return &Tool{server: s, remote: remote.Name, effect: effect, resource: resource, def: model.ToolDefinition{
 		Name:        name,
 		Description: truncate(remote.Description, maxDescription),
 		InputSchema: schema,

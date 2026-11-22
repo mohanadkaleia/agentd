@@ -53,6 +53,11 @@ type Tool interface {
 	Reconcile(ctx context.Context, call Invocation) (Result, Finding, error)
 }
 
+type Untargeted interface {
+	Tool
+	NoResource() bool
+}
+
 type Scoped interface {
 	Tool
 	FiltersToScope()

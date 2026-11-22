@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sort"
 	"time"
 
 	"agentd/internal/assignments"
@@ -12,6 +14,7 @@ import (
 	"agentd/internal/model"
 	"agentd/internal/notify"
 	"agentd/internal/outcomes"
+	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
 	"agentd/internal/skills"
@@ -117,4 +120,24 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Skills:      sk,
 		Runtime:     rt,
 	}
+}
+
+func (a *App) PolicyWarnings(p policy.Policy) []string {
+	names := make([]string, 0, len(p.Tools))
+	for name := range p.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []string
+	for _, name := range names {
+		tool, ok := a.Runtime.Tools[name]
+		if !ok {
+			out = append(out, fmt.Sprintf("the rule for %q has no effect: no tool by that name is registered", name))
+			continue
+		}
+		if t, ok := tool.(tools.Untargeted); ok && t.NoResource() && len(p.Tools[name].Resources) > 0 {
+			out = append(out, fmt.Sprintf("the rule for %q lists resources, but the tool declares no resource argument, so its otherwise mode always applies", name))
+		}
+	}
+	return out
 }

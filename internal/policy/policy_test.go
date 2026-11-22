@@ -48,6 +48,17 @@ func TestOffersOnlyToolsThatCanBeAllowed(t *testing.T) {
 	}
 }
 
+func TestWildcardRulesAreRejected(t *testing.T) {
+	for _, name := range []string{"slack__*", "*", "slack post", ""} {
+		if err := (Policy{Tools: map[string]Rule{name: {Mode: Allow}}}).Validate(); err == nil {
+			t.Errorf("rule %q passed validation", name)
+		}
+	}
+	if err := (Policy{Tools: map[string]Rule{"slack__post_message": {Mode: Allow}}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLimitsRoundTripAndValidate(t *testing.T) {
 	var p Policy
 	err := json.Unmarshal([]byte(`{"tools":{},"limits":{"max_llm_spend_usd":3,

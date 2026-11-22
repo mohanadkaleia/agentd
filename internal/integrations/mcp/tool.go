@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -16,20 +17,54 @@ import (
 
 const maxOutput = 20000
 
-// Tool is one remote MCP tool. It is a write with no policy resource: MCP has no
-// authoritative way to say a tool only reads, and no idempotency keys, so an
-// interrupted call has an unknown outcome and blocks its task until a person decides.
+// Tool is one remote MCP tool. Unless the owner declares it a read, it is a write: MCP
+// has no idempotency keys, so an interrupted write has an unknown outcome and blocks its
+// task until a person decides. Its policy resource is the argument the owner names.
 type Tool struct {
-	server *Server
-	remote string
-	def    model.ToolDefinition
+	server   *Server
+	remote   string
+	def      model.ToolDefinition
+	effect   tools.Effect
+	resource []string
 }
 
 func (t *Tool) Definition() model.ToolDefinition { return t.def }
 
-func (*Tool) Effect() tools.Effect { return tools.EffectWrite }
+func (t *Tool) Effect() tools.Effect { return t.effect }
 
-func (*Tool) Resource(json.RawMessage) (string, error) { return "", nil }
+func (t *Tool) NoResource() bool { return len(t.resource) == 0 }
+
+func (t *Tool) Resource(args json.RawMessage) (string, error) {
+	if len(t.resource) == 0 {
+		return "", nil
+	}
+	var v any = map[string]any{}
+	if err := json.Unmarshal(args, &v); err != nil {
+		return "", err
+	}
+	for _, key := range t.resource {
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("%s is required", strings.Join(t.resource, "."))
+		}
+		v = obj[key]
+	}
+	if list, ok := v.([]any); ok {
+		if len(list) != 1 {
+			return "", fmt.Errorf("%s must name exactly one value so policy can allow-list it", strings.Join(t.resource, "."))
+		}
+		v = list[0]
+	}
+	switch v := v.(type) {
+	case string:
+		return v, nil
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), nil
+	case bool:
+		return strconv.FormatBool(v), nil
+	}
+	return "", fmt.Errorf("%s is required and must be a string, number or boolean", strings.Join(t.resource, "."))
+}
 
 func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result, error) {
 	if !isObject(call.Arguments) {
@@ -50,6 +85,9 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 		return tools.Result{}, fmt.Errorf("mcp %s: %w", t.def.Name, err)
 	}
 	content := render(res)
+	if res.IsError && t.effect == tools.EffectRead {
+		return tools.Result{Output: untrusted("The tool reported an error: " + content)}, nil
+	}
 	if res.IsError {
 		return tools.Result{}, fmt.Errorf("mcp %s reported an error: %s", t.def.Name, truncate(content, 2000))
 	}
@@ -59,7 +97,10 @@ func (t *Tool) Execute(ctx context.Context, call tools.Invocation) (tools.Result
 	return tools.Result{Output: untrusted(content)}, nil
 }
 
-func (*Tool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+func (t *Tool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
+	if t.effect == tools.EffectRead {
+		return tools.Result{}, tools.NotHappened, nil
+	}
 	return tools.Result{}, tools.Unknown, nil
 }
 

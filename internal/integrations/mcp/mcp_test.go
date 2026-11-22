@@ -49,7 +49,10 @@ func runChild() {
 	srv.Run(context.Background(), &mcp.StdioTransport{})
 }
 
-var object = map[string]any{"type": "object"}
+var (
+	object = map[string]any{"type": "object"}
+	yes    = true
+)
 
 func noop(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) { return text(""), nil }
 
@@ -79,6 +82,10 @@ func newFake() *fake {
 	f.add("fail", "Always fails.", func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "channel not found"}}}, nil
 	})
+	f.add("crash", "Fails at the protocol level.", func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New("backend exploded")
+	})
+	f.srv.AddTool(&mcp.Tool{Name: "wipe", InputSchema: object, Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes}}, noop)
 	f.add("caps", "Reports what the client offered.", func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		b, err := json.Marshal(req.Session.InitializeParams().Capabilities)
 		return text(string(b)), err
@@ -218,9 +225,9 @@ type world struct {
 	seq  int
 }
 
-func newWorld(t *testing.T, rules map[string]policy.Rule) *world {
+func newWorld(t *testing.T, filter ToolFilter, p policy.Policy) *world {
 	f := newFake()
-	found := f.start(t, ToolFilter{})
+	found := f.start(t, filter)
 	registry := tools.Registry{}
 	for name, tool := range found {
 		registry[name] = tool
@@ -232,7 +239,7 @@ func newWorld(t *testing.T, rules map[string]policy.Rule) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Assignments.SetPolicy(context.Background(), asg, policy.Policy{Tools: rules}, "test"); err != nil {
+	if _, err := a.Assignments.SetPolicy(context.Background(), asg, p, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES ('run_1', ?, 'scripted', 'running', 0)`, task); err != nil {
@@ -256,7 +263,7 @@ func (w *world) handle(tool, args string) (gateway.Outcome, string) {
 }
 
 func TestPolicyGatesMCPTools(t *testing.T) {
-	w := newWorld(t, map[string]policy.Rule{"fake__echo": {Mode: policy.Allow}, "fake__fail": {Mode: policy.Allow}})
+	w := newWorld(t, ToolFilter{}, policy.Policy{Tools: map[string]policy.Rule{"fake__echo": {Mode: policy.Allow}, "fake__fail": {Mode: policy.Allow}}})
 
 	if _, status := w.handle("fake__big", `{}`); status != gateway.Denied {
 		t.Fatalf("call without a rule = %s, want denied", status)
@@ -365,14 +372,128 @@ func TestConfigValidation(t *testing.T) {
 		ok:                                       0o644,
 		`{"servers":{"a__b":{"command":"/x"}}}`:  0o600,
 		`{"servers":{"Slack":{"command":"/x"}}}`: 0o600,
-		`{"servers":{"slack_":{"command":"/x"}}}`:                  0o600,
-		`{"servers":{"slack":{"command":"npx"}}}`:                  0o600,
-		`{"servers":{"slack":{"command":"/x"}}}`:                   0o666,
-		`{"servers":{"slack":{"command":"/x","y":1}}}`:             0o600,
-		`{"servers":{"slack":{"command":"/x","env":{"A B":"1"}}}}`: 0o600,
+		`{"servers":{"slack_":{"command":"/x"}}}`:                                                               0o600,
+		`{"servers":{"slack":{"command":"npx"}}}`:                                                               0o600,
+		`{"servers":{"slack":{"command":"/x"}}}`:                                                                0o666,
+		`{"servers":{"slack":{"command":"/x","y":1}}}`:                                                          0o600,
+		`{"servers":{"slack":{"command":"/x","env":{"A B":"1"}}}}`:                                              0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"effect":"readonly"}}}}}}`:                0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"meta":{"post":{"resource":"a..b"}}}}}}`:                  0o600,
+		`{"servers":{"slack":{"command":"/x","tools":{"include":["read"],"meta":{"post":{"effect":"read"}}}}}}`: 0o600,
 	} {
 		if _, err := Load(write(body, mode)); err == nil {
 			t.Errorf("Load accepted %s (mode %o)", body, mode)
 		}
+	}
+}
+
+func echoAs(effect, resource string) ToolFilter {
+	return ToolFilter{Meta: map[string]ToolMeta{"echo": {Effect: effect, Resource: resource}}}
+}
+
+func TestUndeclaredToolIsAWriteWithoutResource(t *testing.T) {
+	echo := newFake().start(t, ToolFilter{})["fake__echo"]
+	if r, err := echo.Resource(json.RawMessage(`{"channel_id":"C1"}`)); echo.Effect() != tools.EffectWrite || r != "" || err != nil {
+		t.Fatalf("undeclared tool: effect %s, resource %q, %v; want write with no resource", echo.Effect(), r, err)
+	}
+	w := newWorld(t, ToolFilter{}, policy.Policy{Tools: map[string]policy.Rule{
+		"fake__echo": {Mode: policy.Allow, Resources: []string{"C1"}, Otherwise: policy.RequireApproval}}})
+	if out, _ := w.handle("fake__echo", `{"channel_id":"C1"}`); out.Kind != gateway.WaitApproval {
+		t.Fatalf("resources on an undeclared tool: outcome %v, want the otherwise mode (approval)", out.Kind)
+	}
+	warnings := w.app.PolicyWarnings(policy.Policy{Tools: map[string]policy.Rule{
+		"fake__echo": {Mode: policy.Allow, Resources: []string{"C1"}}, "slack__post": {Mode: policy.Allow}}})
+	if len(warnings) != 2 || !strings.Contains(warnings[0], "fake__echo") || !strings.Contains(warnings[1], "no tool by that name") {
+		t.Fatalf("warnings = %q, want one for resources without an argument and one for an unregistered tool", warnings)
+	}
+}
+
+func TestResourceArgumentGatesPolicy(t *testing.T) {
+	w := newWorld(t, echoAs("write", "channel_id"), policy.Policy{Tools: map[string]policy.Rule{
+		"fake__echo": {Mode: policy.Allow, Resources: []string{"C1"}, Otherwise: policy.RequireApproval}}})
+
+	if _, status := w.handle("fake__echo", `{"channel_id":"C1","text":"hi"}`); status != gateway.Succeeded {
+		t.Fatalf("allow-listed channel = %s, want succeeded", status)
+	}
+	if out, _ := w.handle("fake__echo", `{"channel_id":"C2","text":"hi"}`); out.Kind != gateway.WaitApproval {
+		t.Fatalf("other channel = %v, want an approval request", out.Kind)
+	}
+	var hash string
+	w.app.DB.QueryRow(`SELECT arguments_hash FROM approvals`).Scan(&hash)
+	if hash == "" {
+		t.Fatal("approval is not bound to an argument hash")
+	}
+	if _, status := w.handle("fake__echo", `{"text":"no channel"}`); status != gateway.Failed {
+		t.Fatalf("missing resource argument = %s, want failed", status)
+	}
+	if got := w.fake.recorded(); len(got) != 1 {
+		t.Fatalf("server received %v, want only the allow-listed call", got)
+	}
+}
+
+func TestResourcePaths(t *testing.T) {
+	nested := newFake().start(t, echoAs("", "message.channel"))["fake__echo"]
+	cases := map[string]string{
+		`{"message":{"channel":"C1"}}`:        "C1",
+		`{"message":{"channel":["C1"]}}`:      "C1",
+		`{"message":{"channel":12345678901}}`: "12345678901",
+		`{"message":{"channel":true}}`:        "true",
+		`{"message":{"channel":["C1","C2"]}}`: "",
+		`{"message":{"channel":null}}`:        "",
+		`{"message":{"channel":{"id":"C1"}}}`: "",
+		`{"message":"C1"}`:                    "",
+		`{}`:                                  "",
+	}
+	for args, want := range cases {
+		got, err := nested.Resource(json.RawMessage(args))
+		if want == "" && err == nil {
+			t.Errorf("Resource(%s) = %q, want an error", args, got)
+		}
+		if want != "" && (err != nil || got != want) {
+			t.Errorf("Resource(%s) = %q, %v; want %q", args, got, err, want)
+		}
+	}
+}
+
+func TestReadDeclarations(t *testing.T) {
+	filter := ToolFilter{Meta: map[string]ToolMeta{"crash": {Effect: "read"}, "wipe": {Effect: "read"}, "fail": {Effect: "read"}}}
+	all := newFake().start(t, filter)
+	if all["fake__wipe"] != nil {
+		t.Fatal("a tool the server marks destructive was registered as a read")
+	}
+	if all["fake__echo"] == nil || all["fake__crash"].Effect() != tools.EffectRead {
+		t.Fatal("other tools must still register, with their declared effect")
+	}
+	if _, f, _ := all["fake__crash"].Reconcile(context.Background(), tools.Invocation{}); f != tools.NotHappened {
+		t.Fatalf("read reconcile = %v, want not happened (safe to run again)", f)
+	}
+
+	w := newWorld(t, filter, policy.Policy{Tools: map[string]policy.Rule{
+		"fake__crash": {Mode: policy.Allow}, "fake__fail": {Mode: policy.Allow}, "fake__echo": {Mode: policy.Allow}}})
+	if _, status := w.handle("fake__crash", `{}`); status != gateway.Failed {
+		t.Fatalf("read that errors = %s, want failed without reconciliation", status)
+	}
+	out, status := w.handle("fake__fail", `{}`)
+	if status != gateway.Succeeded || !strings.Contains(out.Content, "channel not found") {
+		t.Fatalf("read reporting an error = %s %q, want the error text returned to the model", status, out.Content)
+	}
+	w2 := newWorld(t, ToolFilter{}, policy.Policy{Tools: map[string]policy.Rule{"fake__crash": {Mode: policy.Allow}}})
+	if _, status := w2.handle("fake__crash", `{}`); status != gateway.NeedsReconciliation {
+		t.Fatalf("write that errors = %s, want needs_reconciliation", status)
+	}
+}
+
+func TestRateLimitAppliesToMCPTools(t *testing.T) {
+	w := newWorld(t, ToolFilter{}, policy.Policy{
+		Tools:  map[string]policy.Rule{"fake__echo": {Mode: policy.Allow}},
+		Limits: policy.Limits{ToolRates: map[string]policy.RateLimit{"fake__echo": {Max: 2, Per: policy.Duration{Duration: time.Hour}}}},
+	})
+	var statuses []string
+	for i := range 3 {
+		_, status := w.handle("fake__echo", fmt.Sprintf(`{"n":%d}`, i))
+		statuses = append(statuses, status)
+	}
+	if statuses[2] != gateway.Denied || len(w.fake.recorded()) != 2 {
+		t.Fatalf("statuses %v, server calls %d; want the third denied and two calls", statuses, len(w.fake.recorded()))
 	}
 }

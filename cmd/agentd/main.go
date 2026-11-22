@@ -199,6 +199,7 @@ func run() error {
 			a.Deliverer.Channel = ch
 			log.Info("notifications deliver via ntfy")
 		}
+		logPolicyWarnings(ctx, a, log)
 		watchGmail(ctx, a, account, *gmailPoll, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		stopAPI()
@@ -419,4 +420,29 @@ func uniqueRegistry(registered []tools.Tool) (tools.Registry, error) {
 		r[name] = t
 	}
 	return r, nil
+}
+
+func logPolicyWarnings(ctx context.Context, a *app.App, log *slog.Logger) {
+	rows, err := a.DB.QueryContext(ctx, `SELECT id FROM assignments WHERE status IN ('active', 'paused')`)
+	if err != nil {
+		log.Error("policy warnings", "err", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		asg, err := a.Assignments.Get(ctx, id)
+		if err != nil {
+			continue
+		}
+		for _, w := range a.PolicyWarnings(asg.Policy) {
+			log.Warn("policy", "assignment", id, "warning", w)
+		}
+	}
 }

@@ -226,10 +226,16 @@ re-scanning the last two days, deduplicated by message id.
 allowed to import it. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
 runtime and gateway see nothing new. The client offers servers no sampling, elicitation or roots, so
 a server cannot spend the model budget, prompt the owner, or ask for files. A child process gets
-only `PATH`, `HOME` and its configured env. Every MCP tool is a write with no resource: a request
-that provably never left (not connected, method not found, invalid params) is "not executed";
-anything else that fails, including a result the server flags as an error, has an unknown outcome
-and blocks the task, because the protocol has no idempotency keys to check against.
+only `PATH`, `HOME` and its configured env. Server annotations (`readOnlyHint` and the rest) are
+self-reported and never trusted: a tool is a write unless the owner declares it a read in the
+config, and a declared read the server itself marks destructive is refused. A write that provably
+never left (not connected, method not found, invalid params) is "not executed"; anything else that
+fails, including a result the server flags as an error, has an unknown outcome and blocks the task,
+because the protocol has no idempotency keys. A read that fails is just failed, and an interrupted
+read runs again. The owner may also name the argument (`channel_id`, `message.channel`) whose value
+is the policy resource; a call missing it, or naming several values, is an argument error before
+anything is sent. Policy rules name exact tools; there are no wildcards, because a server update
+could add a tool a pattern would silently allow.
 
 **Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
 each pending notification by pushing its next attempt two minutes out, sends it through the
@@ -256,6 +262,12 @@ the same stores and gateway as the runtime. Provider-native model payloads never
   macOS user can read them without a prompt. The keychain protects against other users, not against
   malware running as you. `deploy/provision-user.sh` moves agentd to a dedicated non-admin account
   with owner-only secret files instead ([docs/isolation.md](docs/isolation.md)); it is opt-in.
+- **MCP read scope is by argument, not content.** A `resources` list on an MCP tool matches the
+  argument the owner named (which channel was asked for), not what comes back. agentd cannot filter
+  results it does not understand, so a search-style MCP read with no resource argument is access to
+  the whole account and should be `deny` or `approval` unless that is intended. `models.local_only`
+  governs which model sees an assignment's data; it does not stop an MCP tool sending data to the
+  service behind it.
 - **Unconfirmed Gmail sends wait.** A send Gmail never shows in Sent (a lost message, or a lag
   that never ends) stays blocked until a person resolves it. Safer than a duplicate, but it needs
   attention: `agentd status` lists it.

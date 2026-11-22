@@ -253,6 +253,7 @@ type assignmentDetail struct {
 	Undelivered   int                             `json:"undelivered_notifications"`
 	Criteria      []criterionRow                  `json:"criteria,omitempty"`
 	Obligations   []obligationRow                 `json:"obligations,omitempty"`
+	Warnings      []string                        `json:"policy_warnings,omitempty"`
 }
 
 type expected struct {
@@ -289,6 +290,7 @@ func (s *Server) getAssignment(w http.ResponseWriter, r *http.Request) error {
 		Next:      expected{At: timePtr(o.Next.At), What: o.Next.What},
 		OpenTasks: []openTask{}, Recent: []activityRow{},
 		Approvals: o.PendingAsk, Undelivered: o.Undelivered,
+		Warnings: s.App.PolicyWarnings(a.Policy),
 	}
 	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
 		d.BudgetPeriod = p.String()

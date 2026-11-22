@@ -39,8 +39,17 @@ type ServerConfig struct {
 }
 
 type ToolFilter struct {
-	Include []string `json:"include,omitempty"`
-	Exclude []string `json:"exclude,omitempty"`
+	Include []string            `json:"include,omitempty"`
+	Exclude []string            `json:"exclude,omitempty"`
+	Meta    map[string]ToolMeta `json:"meta,omitempty"`
+}
+
+// ToolMeta is what the owner declares about a tool, because MCP cannot say it with
+// authority. Declaring a write as a read is unsafe: after a crash mid-call agentd runs a
+// read again.
+type ToolMeta struct {
+	Effect   string `json:"effect,omitempty"`
+	Resource string `json:"resource,omitempty"`
 }
 
 const defaultCallTimeout = 60 * time.Second
@@ -48,6 +57,7 @@ const defaultCallTimeout = 60 * time.Second
 var (
 	serverName = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
 	envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	argPath    = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`)
 )
 
 func Load(path string) (Config, error) {
@@ -95,6 +105,17 @@ func (c Config) validate(mode os.FileMode) error {
 		}
 		if s.CallTimeout.Duration < 0 {
 			return errors.New("call_timeout must be positive")
+		}
+		for tool, m := range s.Tools.Meta {
+			if !s.Tools.allows(tool) {
+				return fmt.Errorf("server %q: meta for %q, which include/exclude leaves out", name, tool)
+			}
+			if m.Effect != "" && m.Effect != "read" && m.Effect != "write" {
+				return fmt.Errorf("server %q tool %q: effect must be \"read\" or \"write\"", name, tool)
+			}
+			if m.Resource != "" && !argPath.MatchString(m.Resource) {
+				return fmt.Errorf("server %q tool %q: resource must name an argument, like \"channel_id\" or \"message.channel\"", name, tool)
+			}
 		}
 	}
 	return nil

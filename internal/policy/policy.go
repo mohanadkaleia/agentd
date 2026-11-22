@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 )
@@ -68,7 +69,14 @@ func (l Limits) MaxLLMSpendMicros() int64 {
 	return int64(l.MaxLLMSpendUSD * 1e6)
 }
 
+var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 func (p Policy) Validate() error {
+	for tool := range p.Tools {
+		if !toolName.MatchString(tool) {
+			return fmt.Errorf("tool rule %q: rules name one tool exactly; there are no wildcards, because a server update could add a tool a pattern would silently allow", tool)
+		}
+	}
 	if p.Limits.MaxLLMSpendUSD < 0 {
 		return fmt.Errorf("max_llm_spend_usd must not be negative")
 	}

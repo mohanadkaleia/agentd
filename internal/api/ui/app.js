@@ -196,6 +196,7 @@ const Assignment = {
           h("div", { class: "row" }, [status(a.status), h("span", { class: "muted" }, a.kind), a.status_reason ? h("span", { class: "muted" }, a.status_reason) : null]),
           h("p", a.objective),
           h("p", ["Next: ", h("strong", a.next.what)]),
+          (a.policy_warnings || []).map((w) => h("p", { class: "status pending", role: "note" }, "Policy: " + w)),
           h("p", { class: "muted" }, ["Spend ", money(a.spent_usd), a.budget_usd ? ` of ${money(a.budget_usd)}${a.budget_period ? " per " + a.budget_period : ""}` : "",
             a.reserved_usd ? ` (+${money(a.reserved_usd)} held)` : ""]),
           h("div", { class: "row" }, actions.map((x) => h("button", { class: x === "pause" || x === "resume" ? "" : "danger", onClick: () => run(x) }, x[0].toUpperCase() + x.slice(1)))),
