@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,9 +31,7 @@ type Provider struct {
 }
 
 func New(cfg Config) *Provider {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = DefaultBaseURL
-	}
+	cfg.BaseURL = baseURL(cfg.BaseURL)
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 10 * time.Minute}
 	}
@@ -234,4 +234,33 @@ func toResponse(r chatResponse) model.Response {
 		StopReason: stop,
 		Usage:      model.Usage{InputTokens: r.PromptEvalCount, OutputTokens: r.EvalCount},
 	}
+}
+
+// baseURL accepts OLLAMA_HOST as Ollama itself does: "0.0.0.0", "host:port" or a full URL.
+func baseURL(host string) string {
+	host = strings.TrimRight(strings.TrimSpace(host), "/")
+	if host == "" {
+		return DefaultBaseURL
+	}
+	bare := !strings.Contains(host, "://")
+	if bare {
+		host = "http://" + host
+	}
+	u, err := url.Parse(host)
+	if err != nil || u.Host == "" {
+		return DefaultBaseURL
+	}
+	hostname, port := u.Hostname(), u.Port()
+	if hostname == "0.0.0.0" || hostname == "::" {
+		hostname = "127.0.0.1"
+	}
+	switch {
+	case port != "":
+		u.Host = net.JoinHostPort(hostname, port)
+	case bare:
+		u.Host = net.JoinHostPort(hostname, "11434")
+	default:
+		u.Host = hostname
+	}
+	return u.String()
 }
