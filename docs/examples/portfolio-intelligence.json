@@ -4,7 +4,6 @@
   "objective": "Continuously monitor my portfolio and relevant market developments. Investigate meaningful events, keep a concise picture of each holding in your state, and tell me when something needs my attention or action. Never trade.",
   "policy": {
     "tools": {
-      "web_search":        {"mode": "allow"},
       "web_read":          {"mode": "allow"},
       "portfolio_positions": {"mode": "allow"},
       "notify":            {"mode": "allow"},
@@ -17,7 +16,7 @@
     "limits": {
       "max_llm_spend_usd": 20,
       "budget_period": "720h",
-      "tool_rate_limits": {"web_search": {"max": 200, "per": "24h"}}
+      "tool_rate_limits": {"web_read": {"max": 200, "per": "24h"}}
     }
   },
   "notifications": {

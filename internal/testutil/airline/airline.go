@@ -1,4 +1,5 @@
-package demo
+// Package airline is the scripted airline-refund project that tests run end to end.
+package airline
 
 import (
 	"context"

@@ -6,11 +6,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"agentd/internal/demo"
 	"agentd/internal/model"
 	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/tasks"
+	"agentd/internal/testutil/airline"
 )
 
 type outage struct {
@@ -31,7 +31,7 @@ func withModels(t *testing.T, h *harness, cloud model.Provider, local model.Prov
 	h.app.Runtime.Model, h.app.Runtime.ModelID, h.app.Runtime.ModelLocal = cloud, "anthropic", false
 	h.app.Runtime.Fallbacks = []runtime.Candidate{{ID: "ollama/qwen", Provider: local, Local: true}}
 	if change != nil {
-		p := demo.Policy
+		p := airline.Policy
 		change(&p)
 		if _, err := h.app.Assignments.SetPolicy(context.Background(), h.assignmentID, p, "test"); err != nil {
 			t.Fatal(err)
@@ -46,7 +46,7 @@ func (h *harness) runModel() string {
 }
 
 func TestOutageBeforeTheFirstReplyFallsBack(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	withModels(t, h, &outage{failAfter: 0}, h.model, nil)
 	h.drain()
 	if got := h.runModel(); got != "ollama/qwen" {
@@ -61,7 +61,7 @@ func TestOutageBeforeTheFirstReplyFallsBack(t *testing.T) {
 }
 
 func TestNoSwitchAfterTheRunHasStarted(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	withModels(t, h, &outage{failAfter: 1, inner: h.model}, h.model, nil)
 	h.app.Runtime.RunOnce(context.Background(), "w")
 	if got := h.runModel(); got != "anthropic" {
@@ -73,7 +73,7 @@ func TestNoSwitchAfterTheRunHasStarted(t *testing.T) {
 }
 
 func TestLocalOnlyAssignmentNeverReachesTheCloud(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	cloud := &outage{failAfter: 1000, inner: h.model}
 	local := &outage{failAfter: 0}
 	withModels(t, h, cloud, local, func(p *policy.Policy) { p.Models.LocalOnly = true })
@@ -87,7 +87,7 @@ func TestLocalOnlyAssignmentNeverReachesTheCloud(t *testing.T) {
 }
 
 func TestRunWithProviderDataStaysPinned(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Runtime.Model = &native{inner: h.model}
 	h.drain()
 	h.expectStatus(tasks.WaitingApproval)
@@ -101,7 +101,7 @@ func TestRunWithProviderDataStaysPinned(t *testing.T) {
 }
 
 func TestNoAllowedModelBlocks(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	withModels(t, h, h.model, h.model, func(p *policy.Policy) { p.Models.Allowed = []string{"anthropic/claude-haiku-5-5"} })
 	h.drain()
 	h.expectStatus(tasks.Blocked)

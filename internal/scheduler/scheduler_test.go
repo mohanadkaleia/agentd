@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"agentd/internal/app"
-	"agentd/internal/demo"
 	"agentd/internal/model/scripted"
 	"agentd/internal/scheduler"
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -27,7 +27,7 @@ func setup(t *testing.T) *fixture {
 	f := &fixture{t: t, path: testutil.DBPath(t), clock: testutil.NewClock()}
 	f.boot()
 	var err error
-	f.project, _, err = demo.Seed(context.Background(), f.app)
+	f.project, _, err = airline.Seed(context.Background(), f.app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func (f *fixture) boot() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.app = app.New(db, scripted.Provider(demo.Script), "scripted", tools.NewRegistry(tools.WebSearch{}, mailbox), f.clock.Now)
+	f.app = app.New(db, scripted.Provider(airline.Script), "scripted", tools.NewRegistry(tools.WebSearch{}, mailbox), f.clock.Now)
 }
 
 func (f *fixture) restart() {
@@ -76,11 +76,11 @@ func reply(externalID, thread string) scheduler.Event {
 func TestDuplicateEventsAreIgnored(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	first, dup, err := f.app.Scheduler.Ingest(ctx, reply("msg-1", demo.AirlineThread))
+	first, dup, err := f.app.Scheduler.Ingest(ctx, reply("msg-1", airline.AirlineThread))
 	if err != nil || dup {
 		t.Fatalf("first ingest: dup=%v err=%v", dup, err)
 	}
-	again, dup, err := f.app.Scheduler.Ingest(ctx, reply("msg-1", demo.AirlineThread))
+	again, dup, err := f.app.Scheduler.Ingest(ctx, reply("msg-1", airline.AirlineThread))
 	if err != nil || !dup || again != first {
 		t.Fatalf("second ingest: id=%s dup=%v err=%v; want same id, dup", again, dup, err)
 	}
@@ -96,8 +96,8 @@ func TestRoutesMatchOnPayloadFields(t *testing.T) {
 	ctx := context.Background()
 	f.app.Scheduler.Ingest(ctx, reply("msg-1", "some-other-thread"))
 	f.app.Scheduler.Ingest(ctx, scheduler.Event{Source: "gmail", ExternalID: "msg-2", Kind: "email.sent",
-		Payload: json.RawMessage(`{"thread_id":"` + demo.AirlineThread + `"}`)})
-	f.app.Scheduler.Ingest(ctx, reply("msg-3", demo.AirlineThread))
+		Payload: json.RawMessage(`{"thread_id":"` + airline.AirlineThread + `"}`)})
+	f.app.Scheduler.Ingest(ctx, reply("msg-3", airline.AirlineThread))
 	f.tick()
 
 	if got := f.tasksTitled("Handle airline reply"); got != 1 {
@@ -115,7 +115,7 @@ func TestRoutesMatchOnPayloadFields(t *testing.T) {
 
 func TestEventsSurviveRestartBeforeRouting(t *testing.T) {
 	f := setup(t)
-	f.app.Scheduler.Ingest(context.Background(), reply("msg-1", demo.AirlineThread))
+	f.app.Scheduler.Ingest(context.Background(), reply("msg-1", airline.AirlineThread))
 	f.restart()
 	f.tick()
 	if got := f.tasksTitled("Handle airline reply"); got != 1 {

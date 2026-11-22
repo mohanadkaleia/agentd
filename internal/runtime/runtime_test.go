@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"agentd/internal/app"
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -42,7 +42,7 @@ func newHarness(t *testing.T, script scripted.Provider) *harness {
 	})
 	h.boot()
 	var err error
-	h.assignmentID, h.taskID, err = demo.Seed(context.Background(), h.app)
+	h.assignmentID, h.taskID, err = airline.Seed(context.Background(), h.app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,23 +142,23 @@ func (h *harness) actionStatuses(tool string) []string {
 }
 
 func TestDemoCompletesWithApproval(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.expectStatus(tasks.WaitingApproval)
-	if h.sent(demo.AirlineRefunds) != 1 || h.sent(demo.AirlineClaims) != 0 {
+	if h.sent(airline.AirlineRefunds) != 1 || h.sent(airline.AirlineClaims) != 0 {
 		t.Fatal("pre-approved email should be sent, unapproved one held")
 	}
 
 	h.decideOnly(true)
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineClaims) != 1 {
+	if h.sent(airline.AirlineClaims) != 1 {
 		t.Fatal("approved email was not sent")
 	}
 }
 
 func TestCrashAfterSendDoesNotDuplicate(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Gateway.AfterExecute = func(a gateway.Action) {
 		if a.ToolName == "send_email" {
 			goruntime.Goexit()
@@ -175,7 +175,7 @@ func TestCrashAfterSendDoesNotDuplicate(t *testing.T) {
 	if got := h.actionStatuses("send_email"); len(got) != 1 || got[0] != gateway.Dispatching {
 		t.Fatalf("after crash actions = %v, want one dispatching", got)
 	}
-	if h.sent(demo.AirlineRefunds) != 1 {
+	if h.sent(airline.AirlineRefunds) != 1 {
 		t.Fatal("simulated provider should have received the email before the crash")
 	}
 
@@ -188,8 +188,8 @@ func TestCrashAfterSendDoesNotDuplicate(t *testing.T) {
 	if got := h.task().AttemptCount; got != 1 {
 		t.Fatalf("attempts = %d, want 1 for the crashed lease", got)
 	}
-	if h.sent(demo.AirlineRefunds) != 1 {
-		t.Fatalf("refunds email sent %d times, want exactly 1", h.sent(demo.AirlineRefunds))
+	if h.sent(airline.AirlineRefunds) != 1 {
+		t.Fatalf("refunds email sent %d times, want exactly 1", h.sent(airline.AirlineRefunds))
 	}
 	if got := h.actionStatuses("send_email"); got[0] != gateway.Succeeded {
 		t.Fatalf("reconciled action status = %s, want succeeded", got[0])
@@ -204,7 +204,7 @@ func TestCrashAfterSendDoesNotDuplicate(t *testing.T) {
 }
 
 func TestRestartWhileWaitingForApproval(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.expectStatus(tasks.WaitingApproval)
 
@@ -216,13 +216,13 @@ func TestRestartWhileWaitingForApproval(t *testing.T) {
 	h.restart()
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineRefunds) != 1 || h.sent(demo.AirlineClaims) != 1 {
+	if h.sent(airline.AirlineRefunds) != 1 || h.sent(airline.AirlineClaims) != 1 {
 		t.Fatal("each email must be sent exactly once across restarts")
 	}
 }
 
 func TestExpiredApprovalNeverExecutes(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.clock.Advance(h.app.Gateway.ApprovalTTL + time.Second)
 
@@ -232,7 +232,7 @@ func TestExpiredApprovalNeverExecutes(t *testing.T) {
 	}
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineClaims) != 0 {
+	if h.sent(airline.AirlineClaims) != 0 {
 		t.Fatal("expired approval still sent the email")
 	}
 	if got := h.actionStatuses("send_email"); got[1] != gateway.Denied {
@@ -241,7 +241,7 @@ func TestExpiredApprovalNeverExecutes(t *testing.T) {
 }
 
 func TestExpirySweepWakesWaitingTask(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.clock.Advance(h.app.Gateway.ApprovalTTL + time.Second)
 	if n, err := h.app.Gateway.ExpireApprovals(context.Background()); err != nil || n != 1 {
@@ -249,24 +249,24 @@ func TestExpirySweepWakesWaitingTask(t *testing.T) {
 	}
 	h.expectStatus(tasks.Ready)
 	h.drain()
-	if h.sent(demo.AirlineClaims) != 0 {
+	if h.sent(airline.AirlineClaims) != 0 {
 		t.Fatal("expired approval still sent the email")
 	}
 }
 
 func TestRejectedApprovalIsDenied(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.decideOnly(false)
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineClaims) != 0 {
+	if h.sent(airline.AirlineClaims) != 0 {
 		t.Fatal("rejected email was sent")
 	}
 }
 
 func TestPausedProjectTakesNoNewActions(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	if err := h.app.Assignments.Pause(context.Background(), h.assignmentID, assignments.PausedByUser, "", "test"); err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestPausedProjectTakesNoNewActions(t *testing.T) {
 	h.decideOnly(true)
 	h.drain()
 	h.expectStatus(tasks.Ready)
-	if h.sent(demo.AirlineClaims) != 0 {
+	if h.sent(airline.AirlineClaims) != 0 {
 		t.Fatal("paused project sent an email")
 	}
 	h.app.Assignments.Resume(context.Background(), h.assignmentID, "test")
@@ -349,7 +349,7 @@ func (flaky) Complete(context.Context, model.Request) (model.Response, error) {
 }
 
 func TestModelFailuresRetryWithBackoffThenBlock(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Runtime.Model = flaky{}
 	h.drain()
 	h.expectStatus(tasks.Retryable)
@@ -374,7 +374,7 @@ func (brokenMailbox) Reconcile(context.Context, tools.Invocation) (tools.Result,
 }
 
 func TestUnknownOutcomeBlocksInsteadOfRetrying(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	mailbox, _ := tools.NewMailbox(context.Background(), h.db, 0)
 	h.app.Gateway.Tools = tools.NewRegistry(tools.WebSearch{}, brokenMailbox{mailbox})
 	h.drain()
@@ -391,7 +391,7 @@ func (refusing) Complete(context.Context, model.Request) (model.Response, error)
 }
 
 func TestRefusalIsRetriedNotTreatedAsCompletion(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Runtime.Model = refusing{}
 	h.drain()
 	h.expectStatus(tasks.Retryable)

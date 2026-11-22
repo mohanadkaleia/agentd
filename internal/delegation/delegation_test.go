@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"agentd/internal/app"
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -37,7 +37,7 @@ func newHarness(t *testing.T, script scripted.Provider) *harness {
 	h := &harness{t: t, path: testutil.DBPath(t), clock: testutil.NewClock(), script: script, toolsSeen: map[string][]string{}}
 	h.boot()
 	var err error
-	h.project, err = h.app.Assignments.CreateProject(context.Background(), assignments.NewProject{Name: "research", Objective: "Compare options.", Policy: demo.Policy})
+	h.project, err = h.app.Assignments.CreateProject(context.Background(), assignments.NewProject{Name: "research", Objective: "Compare options.", Policy: airline.Policy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestWorkerCannotEscalatePermissions(t *testing.T) {
 	h := newHarness(t, func(req model.Request) model.Message {
 		if toolTurns(req) == 0 {
 			return model.Message{ToolCalls: []model.ToolCall{
-				call("x1", "send_email", map[string]string{"to": demo.AirlineRefunds, "subject": "s", "body": "b"}),
+				call("x1", "send_email", map[string]string{"to": airline.AirlineRefunds, "subject": "s", "body": "b"}),
 				call("x2", "delegate", map[string]any{"title": "t", "objective": "o", "allowed_tools": []string{"send_email"}}),
 			}}
 		}
@@ -233,7 +233,7 @@ func TestWorkerCannotEscalatePermissions(t *testing.T) {
 	if got := h.actions("delegate"); len(got) != 1 || got[0] != gateway.Failed {
 		t.Fatalf("delegate actions = %v, want [failed]", got)
 	}
-	if n, _ := tools.SentCount(context.Background(), h.app.DB, demo.AirlineRefunds); n != 0 {
+	if n, _ := tools.SentCount(context.Background(), h.app.DB, airline.AirlineRefunds); n != 0 {
 		t.Fatal("worker sent an email outside its allowlist")
 	}
 	if children, _ := h.app.Tasks.Workers(context.Background(), worker); len(children) != 0 {

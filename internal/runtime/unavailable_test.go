@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/overview"
 	"agentd/internal/tasks"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -41,7 +41,7 @@ func (h *harness) approveWithoutMail() {
 }
 
 func TestApprovedCallWaitsForMissingToolWithoutModelCalls(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.approveWithoutMail()
 	calls, attempts := h.calls.Load(), h.task().AttemptCount
 
@@ -75,13 +75,13 @@ func TestApprovedCallWaitsForMissingToolWithoutModelCalls(t *testing.T) {
 	h.clock.Advance(time.Hour)
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineClaims) != 1 {
-		t.Fatalf("claims email sent %d times, want 1", h.sent(demo.AirlineClaims))
+	if h.sent(airline.AirlineClaims) != 1 {
+		t.Fatalf("claims email sent %d times, want 1", h.sent(airline.AirlineClaims))
 	}
 }
 
 func TestMissingToolBlocksTaskAfterBoundedWait(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.approveWithoutMail()
 	h.drain()
 	h.clock.Advance(h.app.Runtime.ToolWait + time.Minute)
@@ -106,7 +106,7 @@ func TestMissingToolBlocksTaskAfterBoundedWait(t *testing.T) {
 }
 
 func TestCrashedSendWithMissingToolBlocksUntilProviderConfirms(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Gateway.AfterExecute = func(a gateway.Action) {
 		if a.ToolName == "send_email" {
 			goruntime.Goexit()
@@ -138,8 +138,8 @@ func TestCrashedSendWithMissingToolBlocksUntilProviderConfirms(t *testing.T) {
 	if err != nil || len(confirmed) != 1 {
 		t.Fatalf("recheck confirmed %v, err %v; want the task", confirmed, err)
 	}
-	if h.sent(demo.AirlineRefunds) != 1 {
-		t.Fatalf("refunds sent %d times, want 1", h.sent(demo.AirlineRefunds))
+	if h.sent(airline.AirlineRefunds) != 1 {
+		t.Fatalf("refunds sent %d times, want 1", h.sent(airline.AirlineRefunds))
 	}
 }
 
@@ -150,7 +150,7 @@ func (panickingMailbox) Execute(context.Context, tools.Invocation) (tools.Result
 }
 
 func TestPanickingToolFailsOnlyItsAttempt(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.tools = func(mb *tools.Mailbox) tools.Registry { return tools.NewRegistry(panickingMailbox{mb}) }
 	h.restart()
 
@@ -168,13 +168,13 @@ func TestPanickingToolFailsOnlyItsAttempt(t *testing.T) {
 	h.clock.Advance(time.Hour)
 	h.drain()
 	h.expectStatus(tasks.WaitingApproval)
-	if h.sent(demo.AirlineRefunds) != 1 {
-		t.Fatalf("refunds sent %d times, want 1", h.sent(demo.AirlineRefunds))
+	if h.sent(airline.AirlineRefunds) != 1 {
+		t.Fatalf("refunds sent %d times, want 1", h.sent(airline.AirlineRefunds))
 	}
 }
 
 func TestServeSurvivesPanickingHousekeeping(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	var panics atomic.Int32
 	h.app.Runtime.Housekeeping = func(context.Context) error { panics.Add(1); panic("housekeeping bug") }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -209,7 +209,7 @@ func TestModelIsOfferedOnlyToolsThePolicyCanAllow(t *testing.T) {
 				offered = append(offered, d.Name)
 			}
 		}
-		return demo.Script(req)
+		return airline.Script(req)
 	})
 	h.tools = func(mb *tools.Mailbox) tools.Registry { return tools.NewRegistry(tools.WebSearch{}, mb, unruledTool{}) }
 	h.restart()
@@ -231,7 +231,7 @@ func TestUnreviewedPinnedToolsAreNotOffered(t *testing.T) {
 				offered = append(offered, d.Name)
 			}
 		}
-		return demo.Script(req)
+		return airline.Script(req)
 	})
 	h.tools = func(mb *tools.Mailbox) tools.Registry { return tools.NewRegistry(unreviewedSearch{}, mb) }
 	h.restart()

@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"agentd/internal/app"
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/system"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -34,7 +34,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	idle := scripted.Provider(func(model.Request) model.Message { return model.Message{Content: "done"} })
 	a := app.New(db, idle, "scripted", tools.NewRegistry(mailbox), clock.Now)
-	assignmentID, taskID, err := demo.Seed(context.Background(), a)
+	assignmentID, taskID, err := airline.Seed(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func (f *fixture) sent(to string) int {
 func TestPreparedActionWaitsWhileToolIsMissing(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	c := f.call(demo.AirlineRefunds)
+	c := f.call(airline.AirlineRefunds)
 	if err := system.Halt(ctx, f.app.DB, f.clock.Now(), "test", "hold"); err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +103,8 @@ func TestPreparedActionWaitsWhileToolIsMissing(t *testing.T) {
 	if out.Kind != gateway.Unavailable || out.Since.IsZero() {
 		t.Fatalf("missing tool outcome = %+v, want unavailable with a start time", out)
 	}
-	if f.status(c) != gateway.Prepared || f.sent(demo.AirlineRefunds) != 0 {
-		t.Fatalf("action = %s, sent = %d; want prepared and nothing sent", f.status(c), f.sent(demo.AirlineRefunds))
+	if f.status(c) != gateway.Prepared || f.sent(airline.AirlineRefunds) != 0 {
+		t.Fatalf("action = %s, sent = %d; want prepared and nothing sent", f.status(c), f.sent(airline.AirlineRefunds))
 	}
 	f.clock.Advance(time.Minute)
 	if again := f.handle(f.without, c); !again.Since.Equal(out.Since) {
@@ -114,15 +114,15 @@ func TestPreparedActionWaitsWhileToolIsMissing(t *testing.T) {
 	if out := f.handle(f.app.Gateway, c); out.Kind != gateway.Continue || f.status(c) != gateway.Succeeded {
 		t.Fatalf("tool back: outcome %v, action %s; want dispatched", out.Kind, f.status(c))
 	}
-	if f.sent(demo.AirlineRefunds) != 1 {
-		t.Fatalf("sent %d, want exactly 1", f.sent(demo.AirlineRefunds))
+	if f.sent(airline.AirlineRefunds) != 1 {
+		t.Fatalf("sent %d, want exactly 1", f.sent(airline.AirlineRefunds))
 	}
 }
 
 func TestApprovedActionWaitsWhileToolIsMissing(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	c := f.call(demo.AirlineClaims)
+	c := f.call(airline.AirlineClaims)
 	if out := f.handle(f.app.Gateway, c); out.Kind != gateway.WaitApproval {
 		t.Fatalf("outcome = %v, want wait for approval", out.Kind)
 	}
@@ -137,18 +137,18 @@ func TestApprovedActionWaitsWhileToolIsMissing(t *testing.T) {
 	if out := f.handle(f.without, c); out.Kind != gateway.Unavailable {
 		t.Fatalf("outcome = %v, want unavailable", out.Kind)
 	}
-	if f.status(c) != gateway.PendingApproval || f.sent(demo.AirlineClaims) != 0 {
-		t.Fatalf("action = %s, sent = %d; want still approved and unsent", f.status(c), f.sent(demo.AirlineClaims))
+	if f.status(c) != gateway.PendingApproval || f.sent(airline.AirlineClaims) != 0 {
+		t.Fatalf("action = %s, sent = %d; want still approved and unsent", f.status(c), f.sent(airline.AirlineClaims))
 	}
 
-	if out := f.handle(f.app.Gateway, c); out.Kind != gateway.Continue || f.sent(demo.AirlineClaims) != 1 {
-		t.Fatalf("tool back: outcome %v, sent %d; want one dispatch under the existing approval", out.Kind, f.sent(demo.AirlineClaims))
+	if out := f.handle(f.app.Gateway, c); out.Kind != gateway.Continue || f.sent(airline.AirlineClaims) != 1 {
+		t.Fatalf("tool back: outcome %v, sent %d; want one dispatch under the existing approval", out.Kind, f.sent(airline.AirlineClaims))
 	}
 }
 
 func TestInterruptedDispatchWithMissingToolNeedsReconciliation(t *testing.T) {
 	f := newFixture(t)
-	c := f.call(demo.AirlineRefunds)
+	c := f.call(airline.AirlineRefunds)
 	f.handle(f.app.Gateway, c)
 	if _, err := f.app.DB.Exec(`UPDATE actions SET status = 'dispatching' WHERE idempotency_key = ?`, "run_1:1:"+c.Call.ID); err != nil {
 		t.Fatal(err)

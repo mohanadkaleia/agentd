@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentd/internal/demo"
+	"agentd/internal/testutil/airline"
 )
 
 func browser(t *testing.T, e *env) (*http.Client, string) {
@@ -48,7 +48,7 @@ func send(t *testing.T, c *http.Client, method, url string, headers map[string]s
 }
 
 func TestBrowserSessionNeedsCSRFForChanges(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	if res, _ := http.Post(e.srv.URL+"/ui/session", "application/json", strings.NewReader(`{"token":"wrong"}`)); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong token = %d", res.StatusCode)
 	}
@@ -75,7 +75,7 @@ func TestBrowserSessionNeedsCSRFForChanges(t *testing.T) {
 }
 
 func TestUIIsServedWithAStrictPolicy(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	res, err := http.Get(e.srv.URL + "/")
 	if err != nil {
 		t.Fatal(err)

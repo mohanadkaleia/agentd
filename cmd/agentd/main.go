@@ -16,7 +16,6 @@ import (
 
 	"agentd/internal/app"
 	"agentd/internal/assignments"
-	"agentd/internal/demo"
 	"agentd/internal/integrations/gmail"
 	"agentd/internal/integrations/mcp"
 	"agentd/internal/integrations/portfolio"
@@ -24,7 +23,6 @@ import (
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
-	"agentd/internal/model/scripted"
 	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
@@ -37,7 +35,6 @@ import (
 const usage = `usage: agentd [-db path] [-model spec] [-fallback-models specs] [-effort level] <command> [args]
 
 models:
-  scripted                  deterministic demo model (default)
   anthropic[/model-id]      Claude via the Anthropic API (default claude-opus-5-5)
   ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
@@ -57,7 +54,6 @@ commands:
   mcp restart <server>                 ask the running agentd to reconnect a server and forget its failures
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
-  demo                                 seed the airline-refund demo project
   create <assignment.json>             create a project or responsibility, with its routes and schedules
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
   status                               show assignments, tasks, actions, approvals
@@ -93,7 +89,7 @@ func run() error {
 	global := flag.NewFlagSet("agentd", flag.ContinueOnError)
 	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")
-	modelSpec := global.String("model", envOr("AGENTD_MODEL", "scripted"), "model provider and id")
+	modelSpec := global.String("model", envOr("AGENTD_MODEL", ""), "model provider and id, needed by serve")
 	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
 	fallbackSpecs := global.String("fallback-models", envOr("AGENTD_FALLBACK_MODELS", ""), "comma-separated models to try when the main one fails before a run's first reply")
 	skillsDir := global.String("skills", envOr("AGENTD_SKILLS", "skills"), "directory of skill .md files")
@@ -131,8 +127,6 @@ func run() error {
 	holdings := cmd.String("holdings", envOr("AGENTD_HOLDINGS", ""), "JSON holdings snapshot that portfolio_positions reads (off when empty)")
 	mcpConfig := cmd.String("mcp-config", envOr("AGENTD_MCP_CONFIG", ""), "JSON file listing MCP servers whose tools to register (off when empty)")
 	mcpLogs := cmd.String("mcp-log-dir", envOr("AGENTD_MCP_LOG_DIR", ""), "directory for one stderr log per local MCP server (the main log when empty)")
-	demoTools := cmd.Bool("demo-tools", false, "register the simulated web_search and send_email tools used by the demo")
-	toolDelay := cmd.Duration("tool-delay", 0, "pause inside the simulated send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
 	coalesce := cmd.String("coalesce", "", "route: payload field whose value groups events into one open task")
 	source := cmd.String("source", "", "event source, e.g. gmail")
@@ -147,19 +141,14 @@ func run() error {
 		return err
 	}
 
-	provider, err := newProvider(*modelSpec, *effort)
-	if err != nil {
-		return err
+	var provider model.Provider
+	if args[0] == "serve" || *modelSpec != "" {
+		if provider, err = newProvider(*modelSpec, *effort); err != nil {
+			return err
+		}
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	var registered []tools.Tool
-	if *demoTools {
-		mailbox, err := tools.NewMailbox(ctx, db, *toolDelay)
-		if err != nil {
-			return err
-		}
-		registered = append(registered, tools.WebSearch{}, mailbox)
-	}
 	var account *gmail.Account
 	var servers *mcp.Manager
 	if args[0] == "serve" {
@@ -232,13 +221,6 @@ func run() error {
 		return nil
 	case "unhalt":
 		return system.Resume(ctx, db, time.Now(), "cli")
-	case "demo":
-		assignmentID, taskID, err := demo.Seed(ctx, a)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("project %s\ntask    %s\nrun it with: agentd serve -demo-tools\n", assignmentID, taskID)
-		return nil
 	case "status":
 		return status(ctx, a)
 	case "confirm":
@@ -360,14 +342,8 @@ func status(ctx context.Context, a *app.App) error {
 		{"ACTIONS", `SELECT id, tool_name, resource, status FROM actions ORDER BY created_at`},
 		{"MCP SERVERS", `SELECT server, state, transport, last_error FROM mcp_servers ORDER BY server`},
 		{"APPROVALS", `SELECT ap.id, a.tool_name, a.resource, ap.status FROM approvals ap JOIN actions a ON a.id = ap.action_id ORDER BY ap.requested_at`},
-		{"SIMULATED MAILBOX (demo tools)", `SELECT recipient, subject, message_id FROM mock_mailbox ORDER BY sent_at`},
 	}
-	var hasMailbox int
-	a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'mock_mailbox'`).Scan(&hasMailbox)
 	for _, s := range sections {
-		if strings.Contains(s.query, "mock_mailbox") && hasMailbox == 0 {
-			continue
-		}
 		fmt.Fprintf(w, "\n%s\n", s.title)
 		rows, err := a.DB.QueryContext(ctx, s.query)
 		if err != nil {
@@ -399,14 +375,15 @@ func status(ctx context.Context, a *app.App) error {
 
 func isLocal(spec string) bool {
 	name, _, _ := strings.Cut(spec, "/")
-	return name == "ollama" || name == "scripted"
+	return name == "ollama"
 }
 
 func newProvider(spec, effort string) (model.Provider, error) {
+	if spec == "" {
+		return nil, fmt.Errorf("choose a model with -model, e.g. -model ollama/qwen2.5:7b or -model anthropic")
+	}
 	name, id, _ := strings.Cut(spec, "/")
 	switch name {
-	case "scripted":
-		return scripted.Provider(demo.Script), nil
 	case "anthropic":
 		cfg := anthropic.Config{Model: id, Effort: effort}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {

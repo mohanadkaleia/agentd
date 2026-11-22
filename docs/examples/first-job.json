@@ -1,0 +1,16 @@
+{
+  "kind": "responsibility",
+  "name": "daily-go-news",
+  "objective": "Once a day, read https://go.dev/blog and tell me in two sentences what the newest post is about.",
+  "policy": {
+    "tools": {
+      "web_read": {"mode": "allow", "resources": ["go.dev"]},
+      "notify":   {"mode": "allow"}
+    },
+    "limits": {"max_llm_spend_usd": 1, "budget_period": "24h"}
+  },
+  "notifications": {"min_severity": "info", "dedup_window": "24h", "max_per_day": 3},
+  "schedules": [
+    {"every": "24h", "title": "Daily Go blog check", "objective": "Read https://go.dev/blog, find the newest post, and notify me with a two-sentence summary."}
+  ]
+}

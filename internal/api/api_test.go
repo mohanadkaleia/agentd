@@ -16,7 +16,6 @@ import (
 	"agentd/internal/api"
 	"agentd/internal/app"
 	"agentd/internal/assignments"
-	"agentd/internal/demo"
 	"agentd/internal/integrations/mcp"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
@@ -24,6 +23,7 @@ import (
 	"agentd/internal/system"
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -97,7 +97,7 @@ var responsibility = map[string]any{
 }
 
 func TestAuthIsRequired(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	for _, header := range []string{"", "Bearer wrong", "Basic " + token, "Bearer " + token + "x"} {
 		req, _ := http.NewRequest("GET", e.srv.URL+"/api/assignments", nil)
 		if header != "" {
@@ -124,7 +124,7 @@ func TestAuthIsRequired(t *testing.T) {
 }
 
 func TestAssignmentLifecycleOverHTTP(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	var created struct{ ID string }
 	if code := e.do("POST", "/api/assignments", responsibility, &created); code != http.StatusCreated || created.ID == "" {
 		t.Fatalf("create -> %d %+v", code, created)
@@ -163,7 +163,7 @@ func TestAssignmentLifecycleOverHTTP(t *testing.T) {
 }
 
 func TestInputValidation(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	var out map[string]any
 	noBudget := map[string]any{}
 	for k, v := range responsibility {
@@ -191,9 +191,9 @@ func TestInputValidation(t *testing.T) {
 }
 
 func TestEventsApprovalsTasksAndUsage(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	ctx := context.Background()
-	projectID, taskID, err := demo.Seed(ctx, e.app)
+	projectID, taskID, err := airline.Seed(ctx, e.app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestEventsApprovalsTasksAndUsage(t *testing.T) {
 }
 
 func TestNotificationsCanBeAcknowledged(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	ctx := context.Background()
 	id, _ := e.app.Assignments.CreateProject(ctx, assignments.NewProject{Name: "p", Objective: "o"})
 	res, err := e.app.Outbox.Notify(ctx, notify.Notification{AssignmentID: id, DedupKey: "k", Severity: assignments.SeverityAction, Title: "t", Body: "b"})
@@ -289,10 +289,10 @@ func TestEmergencyStopHaltsMidRunAndResumes(t *testing.T) {
 				t.Errorf("emergency stop -> %d %v", code, out)
 			}
 		}
-		return demo.Script(req)
+		return airline.Script(req)
 	})
 	ctx := context.Background()
-	_, taskID, _ := demo.Seed(ctx, e.app)
+	_, taskID, _ := airline.Seed(ctx, e.app)
 
 	e.drain()
 	task, _ := e.app.Tasks.Get(ctx, taskID)
@@ -328,7 +328,7 @@ func TestEmergencyStopHaltsMidRunAndResumes(t *testing.T) {
 }
 
 func TestActivityStreamDeliversNewEntries(t *testing.T) {
-	e := setup(t, demo.Script)
+	e := setup(t, airline.Script)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", e.srv.URL+"/api/events/stream", nil)
@@ -363,8 +363,8 @@ func TestActivityStreamDeliversNewEntries(t *testing.T) {
 }
 
 func TestRetryAndResolveErrors(t *testing.T) {
-	e := setup(t, demo.Script)
-	_, taskID, _ := demo.Seed(context.Background(), e.app)
+	e := setup(t, airline.Script)
+	_, taskID, _ := airline.Seed(context.Background(), e.app)
 	var out map[string]any
 	if code := e.do("POST", "/api/tasks/"+taskID+"/retry", map[string]string{"note": "go"}, &out); code != http.StatusConflict {
 		t.Fatalf("retrying a ready task -> %d %v, want 409", code, out)
@@ -382,8 +382,8 @@ func TestRetryAndResolveErrors(t *testing.T) {
 }
 
 func TestShowReportsHalt(t *testing.T) {
-	e := setup(t, demo.Script)
-	projectID, _, _ := demo.Seed(context.Background(), e.app)
+	e := setup(t, airline.Script)
+	projectID, _, _ := airline.Seed(context.Background(), e.app)
 	var out map[string]any
 	e.do("POST", "/api/system/emergency-stop", map[string]string{"reason": "drill"}, &out)
 	var detail map[string]any

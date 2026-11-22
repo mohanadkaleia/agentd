@@ -5,50 +5,42 @@ for replies, and picks up where it left off after a crash. It asks you before an
 
 One Go program and one SQLite file. Works with a local model (Ollama) or Claude.
 
-## Try it in 2 minutes
+## Try it locally
 
-You need [Go 1.26+](https://go.dev/dl/). No model or API key is needed for the demo.
+You need [Go 1.26+](https://go.dev/dl/) and a model: [Ollama](https://ollama.com) (free, runs on
+your machine) or an Anthropic API key.
 
-```bash
-git clone https://github.com/mohanadkaleia/agentd.git
-cd agentd
-go build -o bin/agentd ./cmd/agentd
+1. Build it:
 
-./bin/agentd demo                                   # create a sample job: get an airline refund
-./bin/agentd serve -demo-tools -listen 127.0.0.1:7777
-```
+   ```bash
+   git clone https://github.com/mohanadkaleia/agentd.git
+   cd agentd
+   go build -o bin/agentd ./cmd/agentd
+   ```
 
-Leave `serve` running and open a second terminal in the same folder:
+2. Give it a job. A job is a JSON file: what to do, which tools it may use, and what needs your
+   approval. Start from [`docs/examples/first-job.json`](docs/examples/first-job.json), which
+   reads the Go blog once a day and summarizes the newest post:
 
-```bash
-./bin/agentd status                     # the agent sent one email and waits for your OK on a second
-./bin/agentd approve <approval-id>      # copy the apr_... id from status
-./bin/agentd status                     # the task is completed and a follow-up is scheduled
-```
+   ```bash
+   ./bin/agentd create docs/examples/first-job.json
+   ```
 
-Or use the web app: open http://127.0.0.1:7777 and paste the token from the `api-token` file.
+3. Start it with a model:
 
-The demo uses a scripted model and a fake mailbox, so nothing leaves your machine. Everything
-lives in `agentd.db` in the current folder; delete it to start over.
+   ```bash
+   ollama pull qwen2.5:7b
+   ./bin/agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777
 
-## Use a real model
+   # or Claude
+   export ANTHROPIC_API_KEY=...
+   ./bin/agentd -model anthropic serve -listen 127.0.0.1:7777
+   ```
 
-```bash
-ollama pull qwen2.5:7b                              # needs https://ollama.com installed
-./bin/agentd -model ollama/qwen2.5:7b serve         # local and free
+4. Watch it work, from a second terminal (`./bin/agentd status`) or in the web app: open
+   http://127.0.0.1:7777 and paste the token from the `api-token` file.
 
-export ANTHROPIC_API_KEY=...
-./bin/agentd -model anthropic serve                 # Claude
-```
-
-## Give it a job
-
-A job is a JSON file: what to do, which tools it may use, and what needs your approval.
-
-```bash
-./bin/agentd -skills docs/examples/skills create docs/examples/portfolio-intelligence.json
-./bin/agentd show <assignment-id>
-```
+Everything lives in `agentd.db` in the current folder; delete it to start over.
 
 ## Run it as a background service (macOS)
 

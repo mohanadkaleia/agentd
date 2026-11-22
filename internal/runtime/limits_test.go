@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/policy"
 	"agentd/internal/tasks"
+	"agentd/internal/testutil/airline"
 )
 
 type priced struct {
@@ -40,7 +40,7 @@ func (h *harness) count(query string, args ...any) int64 {
 }
 
 func TestBudgetPausesProjectAndResumesSameRun(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Runtime.Model = priced{inner: h.model, cost: 1_500_000}
 	ctx := context.Background()
 
@@ -54,7 +54,7 @@ func TestBudgetPausesProjectAndResumesSameRun(t *testing.T) {
 		t.Fatalf("recorded spend = %d micros, want 3000000", got)
 	}
 
-	raised := demo.Policy
+	raised := airline.Policy
 	raised.Limits.MaxLLMSpendUSD = 10
 	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, raised, "test"); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestBudgetPausesProjectAndResumesSameRun(t *testing.T) {
 	if got := h.count(`SELECT COUNT(*) FROM runs`); got != 1 {
 		t.Fatalf("runs = %d, want 1 (pausing must not restart the run)", got)
 	}
-	if h.sent(demo.AirlineRefunds) != 1 {
+	if h.sent(airline.AirlineRefunds) != 1 {
 		t.Fatal("refunds email was resent after the budget pause")
 	}
 	if got := h.count(`SELECT policy_version FROM assignments WHERE id = ?`, h.assignmentID); got != 2 {
@@ -87,7 +87,7 @@ func emailScript(n int) func(model.Request) model.Message {
 			}
 		}
 		if done < n {
-			body, _ := json.Marshal(map[string]string{"to": demo.AirlineRefunds, "subject": fmt.Sprint("note ", done), "body": "b"})
+			body, _ := json.Marshal(map[string]string{"to": airline.AirlineRefunds, "subject": fmt.Sprint("note ", done), "body": "b"})
 			return model.Message{ToolCalls: []model.ToolCall{{ID: fmt.Sprint("e", done), Name: "send_email", Arguments: body}}}
 		}
 		return model.Message{Content: "sent what I could"}
@@ -97,7 +97,7 @@ func emailScript(n int) func(model.Request) model.Message {
 func TestToolRateLimitDeniesThenRecovers(t *testing.T) {
 	h := newHarness(t, emailScript(3))
 	ctx := context.Background()
-	limited := demo.Policy
+	limited := airline.Policy
 	limited.Limits.ToolRates = map[string]policy.RateLimit{"send_email": {Max: 2, Per: policy.Duration{Duration: 24 * time.Hour}}}
 	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, limited, "test"); err != nil {
 		t.Fatal(err)
@@ -105,8 +105,8 @@ func TestToolRateLimitDeniesThenRecovers(t *testing.T) {
 
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineRefunds) != 2 {
-		t.Fatalf("emails sent = %d, want 2", h.sent(demo.AirlineRefunds))
+	if h.sent(airline.AirlineRefunds) != 2 {
+		t.Fatalf("emails sent = %d, want 2", h.sent(airline.AirlineRefunds))
 	}
 	statuses := h.actionStatuses("send_email")
 	if len(statuses) != 3 || statuses[2] != gateway.Denied {
@@ -128,13 +128,13 @@ func TestToolRateLimitDeniesThenRecovers(t *testing.T) {
 	if task, _ := h.app.Tasks.Get(ctx, next); task.Status != tasks.Completed {
 		t.Fatalf("next task = %s", task.Status)
 	}
-	if h.sent(demo.AirlineRefunds) != 3 {
+	if h.sent(airline.AirlineRefunds) != 3 {
 		t.Fatal("sending did not resume after the window passed")
 	}
 }
 
 func TestRefusedResponsesStillCountTowardBudget(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.app.Runtime.Model = priced{inner: refusing{}, cost: 700}
 	h.drain()
 	if got := h.count(`SELECT SUM(cost_micros) FROM model_usage`); got != 700 {
@@ -143,9 +143,9 @@ func TestRefusedResponsesStillCountTowardBudget(t *testing.T) {
 }
 
 func TestPeriodicBudgetPausesThenAutoResumes(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
-	periodic := demo.Policy
+	periodic := airline.Policy
 	periodic.Limits.MaxLLMSpendUSD = 3
 	periodic.Limits.BudgetPeriod = policy.Duration{Duration: 7 * 24 * time.Hour}
 	if _, err := h.app.Assignments.SetPolicy(ctx, h.assignmentID, periodic, "test"); err != nil {
@@ -207,7 +207,7 @@ func (e *estimated) Complete(ctx context.Context, req model.Request) (model.Resp
 
 func budgeted(t *testing.T, h *harness, usd float64) {
 	t.Helper()
-	p := demo.Policy
+	p := airline.Policy
 	p.Limits.MaxLLMSpendUSD = usd
 	if _, err := h.app.Assignments.SetPolicy(context.Background(), h.assignmentID, p, "test"); err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func budgeted(t *testing.T, h *harness, usd float64) {
 }
 
 func TestConcurrentWorkersCannotOvercommitBudget(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	budgeted(t, h, 1)
 	provider := &estimated{estimate: 600_000, cost: 300_000, entered: make(chan struct{}), release: make(chan struct{})}
@@ -257,7 +257,7 @@ func TestConcurrentWorkersCannotOvercommitBudget(t *testing.T) {
 }
 
 func TestFailedModelCallKeepsItsReservation(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	budgeted(t, h, 1)
 	h.app.Runtime.Model = &estimated{estimate: 400_000, fail: true}

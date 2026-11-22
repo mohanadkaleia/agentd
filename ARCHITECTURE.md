@@ -352,5 +352,5 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |
 | `internal/system` | Emergency stop flag. |
 | `internal/overview` | State, spend, recent activity and next expected action for one assignment. |
-| `internal/model/*` | Provider-neutral model interface and adapters (Anthropic, Ollama, scripted). |
+| `internal/model/*` | Provider-neutral model interface and adapters (Anthropic, Ollama, and a scripted model for tests). |
 | `internal/store`, `migrations/` | SQLite open, migrations (including safe table rebuilds). |

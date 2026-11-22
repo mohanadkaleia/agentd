@@ -20,12 +20,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"agentd/internal/app"
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/policy"
 	"agentd/internal/testutil"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -271,7 +271,7 @@ func newWorldWith(t *testing.T, f *fake, filter ToolFilter, p policy.Policy, acc
 	idle := scripted.Provider(func(model.Request) model.Message { return model.Message{Content: "done"} })
 	clock := testutil.NewClock()
 	a := app.New(db, idle, "scripted", registry, clock.Now)
-	asg, task, err := demo.Seed(context.Background(), a)
+	asg, task, err := airline.Seed(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
 	}

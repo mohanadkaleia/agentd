@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/tasks"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
@@ -35,7 +35,7 @@ func withTool(h *harness, name string, tool tools.Tool) {
 }
 
 func TestSlowToolKeepsItsLeaseAndRunsOnce(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	h.app.Runtime.HeartbeatEvery = 5 * time.Millisecond
 	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
@@ -56,8 +56,8 @@ func TestSlowToolKeepsItsLeaseAndRunsOnce(t *testing.T) {
 	if intruder != nil {
 		t.Fatal("another worker claimed the task while its tool was still running")
 	}
-	if h.sent(demo.AirlineRefunds) != 1 {
-		t.Fatalf("refunds email sent %d times", h.sent(demo.AirlineRefunds))
+	if h.sent(airline.AirlineRefunds) != 1 {
+		t.Fatalf("refunds email sent %d times", h.sent(airline.AirlineRefunds))
 	}
 }
 
@@ -72,7 +72,7 @@ func (s stealingTool) Resource(args json.RawMessage) (string, error) {
 }
 
 func TestLostLeaseStopsDispatch(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
 	withTool(h, "send_email", stealingTool{mailbox, func() {
@@ -82,7 +82,7 @@ func TestLostLeaseStopsDispatch(t *testing.T) {
 	if !worked || !errors.Is(err, tasks.ErrLeaseLost) {
 		t.Fatalf("RunOnce = %v, %v; want ErrLeaseLost", worked, err)
 	}
-	if h.sent(demo.AirlineRefunds) != 0 {
+	if h.sent(airline.AirlineRefunds) != 0 {
 		t.Fatal("a worker that lost its lease still dispatched the tool")
 	}
 	if got := h.actionStatuses("send_email"); len(got) != 1 || got[0] != gateway.Prepared {
@@ -91,7 +91,7 @@ func TestLostLeaseStopsDispatch(t *testing.T) {
 }
 
 func TestExpiredLeaseCannotDispatchOrRenew(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	h.app.Runtime.HeartbeatEvery = time.Hour
 	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
@@ -102,7 +102,7 @@ func TestExpiredLeaseCannotDispatchOrRenew(t *testing.T) {
 	if !worked || !errors.Is(err, tasks.ErrLeaseLost) {
 		t.Fatalf("RunOnce = %v, %v; want ErrLeaseLost from the expired lease", worked, err)
 	}
-	if h.sent(demo.AirlineRefunds) != 0 {
+	if h.sent(airline.AirlineRefunds) != 0 {
 		t.Fatal("a worker whose lease expired still dispatched the tool")
 	}
 	if got := h.task(); got.LeaseOwner != "w" || got.Status != tasks.Running {
@@ -115,7 +115,7 @@ func TestExpiredLeaseCannotDispatchOrRenew(t *testing.T) {
 }
 
 func TestHeartbeatStopsWorkOnAnyRenewalError(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	h.app.Runtime.HeartbeatEvery = 5 * time.Millisecond
 	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
@@ -147,11 +147,11 @@ func (b blockingMailbox) Execute(ctx context.Context, call tools.Invocation) (to
 }
 
 func TestLostLeaseStopsModelStepWrite(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	h.app.Runtime.Model = priced{inner: scripted.Provider(func(req model.Request) model.Message {
 		h.db.Exec(`UPDATE tasks SET version = version + 1, lease_owner = 'someone-else' WHERE status = 'running'`)
-		return demo.Script(req)
+		return airline.Script(req)
 	}), cost: 900}
 	if _, err := h.app.Runtime.RunOnce(ctx, "w"); !errors.Is(err, tasks.ErrLeaseLost) {
 		t.Fatalf("err = %v, want ErrLeaseLost", err)
@@ -165,7 +165,7 @@ func TestLostLeaseStopsModelStepWrite(t *testing.T) {
 }
 
 func TestReclaimedTaskResumesItsLatestRunEvenIfMarkedFinished(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	h.drain()
 	h.decideOnly(true)
 	h.db.Exec(`UPDATE runs SET status = 'completed', finished_at = 1`)
@@ -174,17 +174,17 @@ func TestReclaimedTaskResumesItsLatestRunEvenIfMarkedFinished(t *testing.T) {
 	if got := h.count(`SELECT COUNT(*) FROM runs`); got != 1 {
 		t.Fatalf("runs = %d, want the existing run resumed", got)
 	}
-	if h.sent(demo.AirlineRefunds) != 1 || h.sent(demo.AirlineClaims) != 1 {
+	if h.sent(airline.AirlineRefunds) != 1 || h.sent(airline.AirlineClaims) != 1 {
 		t.Fatal("side effects were repeated")
 	}
 }
 
 func TestApprovalDecidedBeforeTheTaskSleepsStillWakesIt(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	lease, _ := h.app.Tasks.ClaimReady(ctx, "w", time.Minute)
 	h.db.Exec(`INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES ('run_x', ?, 'm', 'running', 1)`, h.taskID)
-	args, _ := json.Marshal(map[string]string{"to": demo.AirlineClaims, "subject": "s", "body": "b"})
+	args, _ := json.Marshal(map[string]string{"to": airline.AirlineClaims, "subject": "s", "body": "b"})
 	out, err := h.app.Gateway.Handle(ctx, gateway.Call{RunID: "run_x", TaskID: h.taskID, AssignmentID: h.assignmentID, Seq: 2,
 		Call: model.ToolCall{ID: "c", Name: "send_email", Arguments: args}, Lease: *lease})
 	if err != nil || out.Kind != gateway.WaitApproval {

@@ -7,18 +7,18 @@ import (
 	"strings"
 	"testing"
 
-	"agentd/internal/demo"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/model/scripted"
 	"agentd/internal/overview"
 	"agentd/internal/runtime"
 	"agentd/internal/tasks"
+	"agentd/internal/testutil/airline"
 	"agentd/internal/tools"
 )
 
 func TestUnknownOutcomeCanBeResolvedAndTheSameRunContinues(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	working := h.app.Gateway.Tools
 	mailbox, _ := tools.NewMailbox(ctx, h.db, 0)
@@ -62,7 +62,7 @@ func TestUnknownOutcomeCanBeResolvedAndTheSameRunContinues(t *testing.T) {
 	if got := h.count(`SELECT COUNT(*) FROM runs`); got != 1 {
 		t.Fatalf("runs = %d, want 1 (retry continues the same run)", got)
 	}
-	if h.sent(demo.AirlineRefunds) != 0 {
+	if h.sent(airline.AirlineRefunds) != 0 {
 		t.Fatal("the action resolved as 'happened' was executed again")
 	}
 	if got := h.actionStatuses("send_email"); got[0] != gateway.Succeeded {
@@ -71,12 +71,12 @@ func TestUnknownOutcomeCanBeResolvedAndTheSameRunContinues(t *testing.T) {
 }
 
 func TestRetryAfterFalseCompletionClaimsDeliversTheNote(t *testing.T) {
-	h := newHarness(t, demo.Script)
+	h := newHarness(t, airline.Script)
 	ctx := context.Background()
 	h.app.Runtime.Model = scripted.Provider(func(req model.Request) model.Message {
 		last := req.Messages[len(req.Messages)-1]
 		if last.Role == model.RoleUser && strings.Contains(last.Content, "Their note: use the refunds desk") {
-			body, _ := json.Marshal(map[string]string{"to": demo.AirlineRefunds, "subject": "s", "body": "b"})
+			body, _ := json.Marshal(map[string]string{"to": airline.AirlineRefunds, "subject": "s", "body": "b"})
 			return model.Message{ToolCalls: []model.ToolCall{{ID: "x", Name: "send_email", Arguments: body}}}
 		}
 		return model.Message{Content: "all done"}
@@ -89,7 +89,7 @@ func TestRetryAfterFalseCompletionClaimsDeliversTheNote(t *testing.T) {
 	}
 	h.drain()
 	h.expectStatus(tasks.Completed)
-	if h.sent(demo.AirlineRefunds) != 1 {
+	if h.sent(airline.AirlineRefunds) != 1 {
 		t.Fatal("the retried task did not act on the note")
 	}
 	if err := h.app.Runtime.Retry(ctx, h.taskID, "test", ""); !errors.Is(err, runtime.ErrNotBlocked) {
