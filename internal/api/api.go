@@ -175,6 +175,7 @@ type assignmentSummary struct {
 	Name         string           `json:"name"`
 	Status       string           `json:"status"`
 	StatusReason string           `json:"status_reason,omitempty"`
+	Builtin      string           `json:"builtin,omitempty"`
 }
 
 type assignmentListRow struct {
@@ -189,7 +190,8 @@ type assignmentListRow struct {
 }
 
 func (s *Server) listAssignments(w http.ResponseWriter, r *http.Request) error {
-	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id FROM assignments ORDER BY created_at, id`)
+	rows, err := s.App.DB.QueryContext(r.Context(), `SELECT id FROM assignments WHERE builtin IS NULL OR ? ORDER BY created_at, id`,
+		r.URL.Query().Get("all") == "1")
 	if err != nil {
 		return err
 	}
@@ -214,7 +216,7 @@ func (s *Server) listAssignments(w http.ResponseWriter, r *http.Request) error {
 		}
 		a := o.Assignment
 		row := assignmentListRow{
-			assignmentSummary: assignmentSummary{ID: a.ID, Kind: a.Kind, Name: a.Name, Status: a.Status, StatusReason: a.StatusReason},
+			assignmentSummary: assignmentSummary{ID: a.ID, Kind: a.Kind, Name: a.Name, Status: a.Status, StatusReason: a.StatusReason, Builtin: a.Builtin},
 			Next:              expected{At: timePtr(o.Next.At), What: o.Next.What},
 			SpentUSD:          float64(o.SpentMicros) / 1e6, BudgetUSD: float64(o.LimitMicros) / 1e6,
 			Approvals: o.PendingAsk, Blocked: o.Blocked, Undelivered: o.Undelivered,

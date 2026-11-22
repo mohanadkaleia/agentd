@@ -40,6 +40,7 @@ var (
 	ErrNotPaused  = errors.New("assignment is not paused")
 	ErrTerminated = errors.New("assignment is not in a state that allows this")
 	ErrInvalid    = errors.New("invalid assignment")
+	ErrBuiltin    = errors.New("a built-in assignment cannot be completed, cancelled or revoked")
 )
 
 type Severity string
@@ -141,6 +142,7 @@ type Assignment struct {
 	Completion    *Completion
 	Notifications *NotificationPolicy
 	State         json.RawMessage
+	Builtin       string
 }
 
 type NewProject struct {
@@ -170,7 +172,7 @@ func (s *Store) CreateProject(ctx context.Context, p NewProject) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return s.create(ctx, KindProject, p.Name, p.Objective, p.Policy, string(completion), nil)
+	return s.create(ctx, KindProject, p.Name, p.Objective, p.Policy, string(completion), nil, "")
 }
 
 func (s *Store) CreateResponsibility(ctx context.Context, r NewResponsibility) (string, error) {
@@ -184,7 +186,23 @@ func (s *Store) CreateResponsibility(ctx context.Context, r NewResponsibility) (
 	if err != nil {
 		return "", err
 	}
-	return s.create(ctx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications))
+	return s.create(ctx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), "")
+}
+
+// EnsureBuiltin creates the built-in responsibility with this key once and returns its id.
+// Later calls return the existing assignment unchanged, so the owner's policy edits stay.
+func (s *Store) EnsureBuiltin(ctx context.Context, key string, r NewResponsibility) (string, error) {
+	if err := validateResponsibilityPolicy(r.Policy); err != nil {
+		return "", err
+	}
+	if err := r.Notifications.Validate(); err != nil {
+		return "", err
+	}
+	notifications, err := json.Marshal(r.Notifications)
+	if err != nil {
+		return "", err
+	}
+	return s.create(ctx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), key)
 }
 
 func validateResponsibilityPolicy(p policy.Policy) error {
@@ -194,7 +212,7 @@ func validateResponsibilityPolicy(p policy.Policy) error {
 	return nil
 }
 
-func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p policy.Policy, completion, notifications any) (string, error) {
+func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p policy.Policy, completion, notifications any, builtin string) (string, error) {
 	if err := p.Validate(); err != nil {
 		return "", fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -209,11 +227,16 @@ func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO assignments (id, kind, name, objective, status, policy_json,
-		completion_json, notification_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
-		id, kind, name, objective, string(body), completion, notifications, now.UnixMilli(), now.UnixMilli()); err != nil {
+	res, err := tx.ExecContext(ctx, `INSERT INTO assignments (id, kind, name, objective, status, policy_json,
+		completion_json, notification_json, builtin, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'active', ?, ?, ?, NULLIF(?, ''), ?, ?)
+		ON CONFLICT (builtin) WHERE builtin IS NOT NULL DO NOTHING`,
+		id, kind, name, objective, string(body), completion, notifications, builtin, now.UnixMilli(), now.UnixMilli())
+	if err != nil {
 		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return id, tx.QueryRowContext(ctx, `SELECT id FROM assignments WHERE builtin = ?`, builtin).Scan(&id)
 	}
 	if err := audit.Record(ctx, tx, now, id, "user", string(kind)+".created", id, map[string]string{"name": name}); err != nil {
 		return "", err
@@ -224,19 +247,19 @@ func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p
 func (s *Store) Get(ctx context.Context, id string) (Assignment, error) {
 	var a Assignment
 	var policyJSON, state string
-	var reason, pausedBy, completion, notifications sql.NullString
+	var reason, pausedBy, completion, notifications, builtin sql.NullString
 	err := s.DB.QueryRowContext(ctx, `SELECT id, kind, name, objective, status, status_reason, paused_by,
-		policy_version, policy_json, completion_json, notification_json, state_json
+		policy_version, policy_json, completion_json, notification_json, state_json, builtin
 		FROM assignments WHERE id = ?`, id).
 		Scan(&a.ID, &a.Kind, &a.Name, &a.Objective, &a.Status, &reason, &pausedBy,
-			&a.PolicyVersion, &policyJSON, &completion, &notifications, &state)
+			&a.PolicyVersion, &policyJSON, &completion, &notifications, &state, &builtin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
 	if err != nil {
 		return a, err
 	}
-	a.StatusReason, a.PausedBy, a.State = reason.String, pausedBy.String, json.RawMessage(state)
+	a.StatusReason, a.PausedBy, a.State, a.Builtin = reason.String, pausedBy.String, json.RawMessage(state), builtin.String
 	if completion.Valid {
 		a.Completion = &Completion{}
 		if err := json.Unmarshal([]byte(completion.String), a.Completion); err != nil {
@@ -294,6 +317,9 @@ func (s *Store) end(ctx context.Context, id, actor string, kind Kind, status str
 	a, err := s.Get(ctx, id)
 	if err != nil {
 		return err
+	}
+	if a.Builtin != "" {
+		return ErrBuiltin
 	}
 	if a.Kind != kind {
 		return ErrWrongKind

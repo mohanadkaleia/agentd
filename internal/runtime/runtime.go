@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"agentd/internal/assignments"
@@ -42,6 +43,35 @@ type Runtime struct {
 	MaxRejectedCompletions int
 	Housekeeping           func(context.Context) error
 	HeartbeatEvery         time.Duration
+	// Opener supplies the opening messages of tasks that are not ordinary assignment work,
+	// such as conversation turns.
+	Opener Opener
+
+	wakeOnce sync.Once
+	wake     chan struct{}
+}
+
+// An Opener writes the opening messages for the tasks it recognises, in place of the
+// assignment's system prompt and the task objective. It is called once, when the task's run
+// is created; local says whether the run's model keeps data on this machine.
+type Opener interface {
+	Opening(ctx context.Context, t tasks.Task, a assignments.Assignment, local bool) ([]model.Message, bool, error)
+}
+
+// interactivePoll bounds how long a turn written by another process waits to be claimed.
+const interactivePoll = 200 * time.Millisecond
+
+// Wake makes the interactive worker look for work now instead of at its next poll.
+func (r *Runtime) Wake() {
+	select {
+	case r.wakeup() <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Runtime) wakeup() chan struct{} {
+	r.wakeOnce.Do(func() { r.wake = make(chan struct{}, 1) })
+	return r.wake
 }
 
 const (
@@ -50,7 +80,16 @@ const (
 )
 
 func (r *Runtime) RunOnce(ctx context.Context, owner string) (worked bool, err error) {
-	lease, err := r.Tasks.ClaimReady(ctx, owner, r.LeaseTTL)
+	return r.runOnce(ctx, owner, r.Tasks.ClaimReady)
+}
+
+// RunOnceInteractive runs one task a person is waiting on, if there is one.
+func (r *Runtime) RunOnceInteractive(ctx context.Context, owner string) (worked bool, err error) {
+	return r.runOnce(ctx, owner, r.Tasks.ClaimInteractive)
+}
+
+func (r *Runtime) runOnce(ctx context.Context, owner string, claim func(context.Context, string, time.Duration) (*tasks.Lease, error)) (worked bool, err error) {
+	lease, err := claim(ctx, owner, r.LeaseTTL)
 	if err != nil || lease == nil {
 		return false, err
 	}
@@ -360,8 +399,10 @@ func (r *Runtime) fail(ctx context.Context, lease tasks.Lease, task tasks.Task, 
 	return cause
 }
 
+// Serve runs housekeeping, the given number of workers, and one more worker that only
+// takes interactive tasks so a person is never queued behind long background work.
 func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll time.Duration, log *slog.Logger) {
-	done := make(chan struct{}, workers+1)
+	done := make(chan struct{}, workers+2)
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for ctx.Err() == nil {
@@ -394,7 +435,24 @@ func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll tim
 			}
 		}()
 	}
-	for range workers + 1 {
+	go func() {
+		defer func() { done <- struct{}{} }()
+		id := owner + "-interactive"
+		for ctx.Err() == nil {
+			worked, err := r.RunOnceInteractive(ctx, id)
+			if err != nil && ctx.Err() == nil {
+				log.Error("task attempt failed", "worker", id, "err", err)
+			}
+			if !worked {
+				select {
+				case <-ctx.Done():
+				case <-r.wakeup():
+				case <-time.After(min(poll, interactivePoll)):
+				}
+			}
+		}
+	}()
+	for range workers + 2 {
 		<-done
 	}
 }

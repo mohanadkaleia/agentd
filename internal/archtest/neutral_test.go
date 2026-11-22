@@ -116,3 +116,27 @@ func TestOnlyGatewayRunsTools(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEngineDoesNotDependOnChat(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, dir := range []string{"internal/runtime", "internal/gateway", "internal/scheduler", "internal/policy", "internal/tasks"} {
+		entries, err := filepath.Glob(filepath.Join(root, dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range entries {
+			if strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, imp := range f.Imports {
+				if pkg, _ := strconv.Unquote(imp.Path.Value); pkg == "agentd/internal/chat" {
+					t.Errorf("%s imports internal/chat; the engine must not depend on the conversation layer", path)
+				}
+			}
+		}
+	}
+}

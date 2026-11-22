@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 
 	"agentd/internal/audit"
@@ -21,6 +22,9 @@ const (
 	Completed       = "completed"
 	Cancelled       = "cancelled"
 )
+
+// PriorityInteractive marks tasks a person is waiting on. The interactive worker claims only these.
+const PriorityInteractive = 100
 
 func Terminal(status string) bool {
 	return status == Completed || status == Blocked || status == Cancelled
@@ -102,9 +106,27 @@ type Release struct {
 	RunStatus    string
 }
 
+// Released describes a task leaving a worker's hands, as seen by OnRelease.
+type Released struct {
+	TaskID       string
+	AssignmentID string
+	Status       string
+	Result       json.RawMessage
+}
+
 type Store struct {
 	DB  *sql.DB
 	Now func() time.Time
+	// OnRelease runs inside the transaction that releases, blocks or cancels a task, so
+	// whatever it records commits together with the task's new status.
+	OnRelease func(ctx context.Context, tx *sql.Tx, r Released) error
+}
+
+func (s *Store) released(ctx context.Context, tx *sql.Tx, r Released) error {
+	if s.OnRelease == nil {
+		return nil
+	}
+	return s.OnRelease(ctx, tx, r)
 }
 
 func (s *Store) Create(ctx context.Context, t NewTask) (string, error) {
@@ -268,6 +290,15 @@ func wakeParent(ctx context.Context, tx *sql.Tx, now time.Time, taskID string) e
 }
 
 func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration) (*Lease, error) {
+	return s.claim(ctx, owner, ttl, math.MinInt32)
+}
+
+// ClaimInteractive claims only tasks with at least PriorityInteractive.
+func (s *Store) ClaimInteractive(ctx context.Context, owner string, ttl time.Duration) (*Lease, error) {
+	return s.claim(ctx, owner, ttl, PriorityInteractive)
+}
+
+func (s *Store) claim(ctx context.Context, owner string, ttl time.Duration, minPriority int) (*Lease, error) {
 	now := s.Now()
 	ms := now.UnixMilli()
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -302,6 +333,10 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 		if err := audit.Record(ctx, tx, now, b[1], "scheduler", "task.blocked", b[0], map[string]string{"reason": "lease expired too many times"}); err != nil {
 			return nil, err
 		}
+		if err := s.released(ctx, tx, Released{TaskID: b[0], AssignmentID: b[1], Status: Blocked,
+			Result: json.RawMessage(`{"error":"lease expired too many times"}`)}); err != nil {
+			return nil, err
+		}
 	}
 
 	lease := Lease{Owner: owner, ExpiresAt: time.UnixMilli(ms + ttl.Milliseconds())}
@@ -313,6 +348,7 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 			SELECT t.id FROM tasks t JOIN assignments a ON a.id = t.assignment_id
 						WHERE a.status = 'active'
 			  AND NOT EXISTS (SELECT 1 FROM system_state WHERE key = 'halted')
+			  AND t.priority >= ?
 			  AND ((t.status IN ('ready', 'retryable') AND (t.next_run_at IS NULL OR t.next_run_at <= ?))
 			       OR (t.status = 'running' AND t.lease_until < ?))
 			  AND NOT EXISTS (
@@ -321,7 +357,7 @@ func (s *Store) ClaimReady(ctx context.Context, owner string, ttl time.Duration)
 			ORDER BY t.priority DESC, t.created_at, t.id
 			LIMIT 1)
 		RETURNING id, assignment_id, version`,
-		owner, lease.ExpiresAt.UnixMilli(), ms, ms, ms).Scan(&lease.TaskID, &assignment, &lease.Version)
+		owner, lease.ExpiresAt.UnixMilli(), ms, minPriority, ms, ms).Scan(&lease.TaskID, &assignment, &lease.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, tx.Commit()
 	}
@@ -423,6 +459,59 @@ func (s *Store) Release(ctx context.Context, l Lease, r Release) error {
 		}
 	}
 	if err := audit.Record(ctx, tx, now, assignment, l.Owner, "task."+status, l.TaskID, r.Result); err != nil {
+		return err
+	}
+	var body json.RawMessage
+	if result != nil {
+		body = json.RawMessage(result.(string))
+	}
+	if err := s.released(ctx, tx, Released{TaskID: l.TaskID, AssignmentID: assignment, Status: status, Result: body}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Cancel stops a task that has not finished. A worker holding it loses its lease at the
+// next renewal. Actions that were prepared or waiting for approval are denied; an action
+// already dispatched keeps its own outcome.
+func (s *Store) Cancel(ctx context.Context, id, actor string) error {
+	now := s.Now()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var assignment string
+	err = tx.QueryRowContext(ctx, `UPDATE tasks SET status = 'cancelled', lease_owner = NULL, lease_until = NULL,
+		version = version + 1, updated_at = ?
+		WHERE id = ? AND status NOT IN ('completed', 'blocked', 'cancelled')
+		RETURNING assignment_id`, now.UnixMilli(), id).Scan(&assignment)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET status = 'rejected', decided_at = ?, decided_by = ?
+		WHERE status = 'pending' AND action_id IN (SELECT id FROM actions WHERE task_id = ?)`, now.UnixMilli(), actor, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE actions SET status = 'denied', updated_at = ?
+		WHERE task_id = ? AND status IN ('prepared', 'pending_approval')`, now.UnixMilli(), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'blocked', finished_at = ?, error_json = '{"error":"cancelled"}'
+		WHERE task_id = ? AND status = 'running'`,
+		now.UnixMilli(), id); err != nil {
+		return err
+	}
+	if err := wakeParent(ctx, tx, now, id); err != nil {
+		return err
+	}
+	if err := audit.Record(ctx, tx, now, assignment, actor, "task.cancelled", id, nil); err != nil {
+		return err
+	}
+	if err := s.released(ctx, tx, Released{TaskID: id, AssignmentID: assignment, Status: Cancelled}); err != nil {
 		return err
 	}
 	return tx.Commit()

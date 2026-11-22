@@ -34,6 +34,15 @@ func (r *Runtime) candidates(p policy.Policy) []Candidate {
 	return out
 }
 
+func (r *Runtime) local(id string) bool {
+	for _, c := range r.candidates(policy.Policy{}) {
+		if c.ID == id {
+			return c.Local
+		}
+	}
+	return false
+}
+
 func (r *Runtime) firstModel(p policy.Policy) (string, error) {
 	c := r.candidates(p)
 	if len(c) == 0 {

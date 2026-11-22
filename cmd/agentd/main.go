@@ -203,6 +203,9 @@ func run() error {
 			a.Deliverer.Channel = ch
 			log.Info("notifications deliver via ntfy")
 		}
+		if _, err := a.Chat.FrontDesk(ctx); err != nil {
+			return err
+		}
 		logPolicyWarnings(ctx, a, log)
 		watchGmail(ctx, a, account, *gmailPoll, log)
 		if servers != nil {
@@ -333,8 +336,8 @@ func status(ctx context.Context, a *app.App) error {
 		title string
 		query string
 	}{
-		{"ASSIGNMENTS (spend vs budget: agentd show <id>)", `SELECT p.id, p.kind, p.name, p.status, COALESCE(p.status_reason, '')
-			FROM assignments p ORDER BY p.created_at`},
+		{"ASSIGNMENTS (spend vs budget: agentd show <id>)", `SELECT p.id, p.kind || CASE WHEN p.builtin IS NULL THEN '' ELSE ' (built in)' END, p.name, p.status,
+			COALESCE(p.status_reason, '') FROM assignments p ORDER BY p.created_at`},
 		{"TASKS", `SELECT id, title, status, attempt_count,
 			COALESCE(datetime(next_run_at / 1000, 'unixepoch', 'localtime'), '-'), COALESCE(result_json, '') FROM tasks ORDER BY created_at`},
 		{"EVENTS", `SELECT id, source, kind, COALESCE(external_id, ''), CASE WHEN processed_at IS NULL THEN 'pending' ELSE 'routed:' || routed_count END FROM events ORDER BY received_at`},

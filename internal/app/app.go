@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"agentd/internal/assignments"
+	"agentd/internal/chat"
 	"agentd/internal/delegation"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
 	"agentd/internal/notify"
 	"agentd/internal/outcomes"
+	"agentd/internal/overview"
 	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
@@ -35,6 +37,7 @@ type App struct {
 	Watchdog    *watchdog.Watchdog
 	Skills      skills.Registry
 	Runtime     *runtime.Runtime
+	Chat        *chat.Service
 }
 
 func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Registry, now func() time.Time) *App {
@@ -79,6 +82,13 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 
 		MaxRejectedCompletions: 2,
 	}
+	conversations := &chat.Service{DB: db, Tasks: t, Assignments: a, Now: now, Wake: rt.Wake,
+		Next: func(ctx context.Context, id string) (string, error) {
+			o, err := overview.Get(ctx, rt, id)
+			return o.Next.String(), err
+		}}
+	t.OnRelease = conversations.Released
+	rt.Opener = conversations
 	rt.Housekeeping = func(ctx context.Context) error {
 		if _, err := g.ExpireApprovals(ctx); err != nil {
 			return err
@@ -109,6 +119,9 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		if err := dog.Tick(ctx); err != nil {
 			return err
 		}
+		if err := conversations.Tick(ctx); err != nil {
+			return err
+		}
 		return deliverer.DeliverDue(ctx)
 	}
 	return &App{
@@ -123,6 +136,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Watchdog:    dog,
 		Skills:      sk,
 		Runtime:     rt,
+		Chat:        conversations,
 	}
 }
 

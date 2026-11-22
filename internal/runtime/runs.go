@@ -50,6 +50,13 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	if rn.Model, err = r.firstModel(p.Policy); err != nil {
 		return rn, err
 	}
+	var opening []model.Message
+	opened := false
+	if r.Opener != nil {
+		if opening, opened, err = r.Opener.Opening(ctx, t, p, r.local(rn.Model)); err != nil {
+			return rn, err
+		}
+	}
 	rn.ID = ids.New("run")
 	now := r.Now()
 	tx, err := r.DB.BeginTx(ctx, nil)
@@ -60,6 +67,12 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
 		rn.ID, t.ID, rn.Model, now.UnixMilli()); err != nil {
 		return rn, err
+	}
+	if opened {
+		if err := insertOpening(ctx, tx, rn.ID, opening, now.UnixMilli()); err != nil {
+			return rn, err
+		}
+		return rn, tx.Commit()
 	}
 	initial := []model.Message{{Role: model.RoleSystem, Content: systemPrompt(p) + skills.Prompt(loaded)}}
 	if p.Kind == assignments.KindResponsibility && len(p.State) > 0 && string(p.State) != "{}" {
@@ -73,17 +86,24 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 		initial = append(initial, model.Message{Role: model.RoleUser, Content: fmt.Sprintf(
 			"%d more event(s) for this task arrived before you started:\n%s", n, extra)})
 	}
-	for i, m := range initial {
-		body, err := json.Marshal(m)
-		if err != nil {
-			return rn, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO run_messages (run_id, seq, message_json, created_at) VALUES (?, ?, ?, ?)`,
-			rn.ID, i, string(body), now.UnixMilli()); err != nil {
-			return rn, err
-		}
+	if err := insertOpening(ctx, tx, rn.ID, initial, now.UnixMilli()); err != nil {
+		return rn, err
 	}
 	return rn, tx.Commit()
+}
+
+func insertOpening(ctx context.Context, tx *sql.Tx, runID string, msgs []model.Message, at int64) error {
+	for i, m := range msgs {
+		body, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO run_messages (run_id, seq, message_json, created_at) VALUES (?, ?, ?, ?)`,
+			runID, i, string(body), at); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) loadMessages(ctx context.Context, runID string) ([]model.Message, error) {

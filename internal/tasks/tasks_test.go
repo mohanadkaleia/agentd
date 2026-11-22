@@ -2,6 +2,7 @@ package tasks_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -276,5 +277,65 @@ func TestChildFinishingWakesWaitingParent(t *testing.T) {
 	}
 	if got := f.status(t, parent).Status; got != tasks.Ready {
 		t.Fatalf("parent = %s, want ready after child finished", got)
+	}
+}
+
+func TestInteractiveWorkerTakesOnlyInteractiveTasks(t *testing.T) {
+	f := setup(t)
+	f.newTask(t, tasks.NewTask{Title: "background"})
+	if l, err := f.tasks.ClaimInteractive(context.Background(), "i", ttl); err != nil || l != nil {
+		t.Fatalf("interactive claim of background work = %+v, %v; want nothing", l, err)
+	}
+	turn := f.newTask(t, tasks.NewTask{Title: "turn", Priority: tasks.PriorityInteractive})
+	if l, err := f.tasks.ClaimInteractive(context.Background(), "i", ttl); err != nil || l == nil || l.TaskID != turn {
+		t.Fatalf("interactive claim = %+v, %v; want the turn", l, err)
+	}
+}
+
+func TestCancelDeniesWhatHasNotBeenDispatched(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	id := f.newTask(t, tasks.NewTask{})
+	lease := f.claim(t, "a")
+	db := f.tasks.DB
+	now := f.clock.Now().UnixMilli()
+	db.Exec(`INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES ('run1', ?, 'm', 'running', ?)`, id, now)
+	for _, a := range [][2]string{{"act-prepared", "prepared"}, {"act-asking", "pending_approval"}, {"act-sent", "dispatching"}} {
+		if _, err := db.Exec(`INSERT INTO actions (id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
+			policy_version, status, idempotency_key, created_at, updated_at) VALUES (?, 'run1', ?, ?, 'x', '{}', 'h', 1, ?, ?, ?, ?)`,
+			a[0], id, f.project, a[1], a[0], now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec(`INSERT INTO approvals (id, action_id, arguments_hash, status, requested_at, expires_at) VALUES ('apr1', 'act-asking', 'h', 'pending', ?, ?)`, now, now+1000)
+	var released []tasks.Released
+	f.tasks.OnRelease = func(_ context.Context, _ *sql.Tx, r tasks.Released) error {
+		released = append(released, r)
+		return nil
+	}
+	if err := f.tasks.Cancel(ctx, id, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	rows, _ := db.Query(`SELECT id, status FROM actions`)
+	for rows.Next() {
+		var a, s string
+		rows.Scan(&a, &s)
+		status[a] = s
+	}
+	rows.Close()
+	if status["act-prepared"] != "denied" || status["act-asking"] != "denied" || status["act-sent"] != "dispatching" {
+		t.Fatalf("actions after cancel = %v", status)
+	}
+	var approval string
+	db.QueryRow(`SELECT status FROM approvals WHERE id = 'apr1'`).Scan(&approval)
+	if approval != "rejected" || len(released) != 1 || released[0].Status != tasks.Cancelled {
+		t.Fatalf("approval = %s, released = %+v", approval, released)
+	}
+	if err := f.tasks.Release(ctx, *lease, tasks.Release{Status: tasks.Completed}); !errors.Is(err, tasks.ErrLeaseLost) {
+		t.Fatalf("the worker's release after cancel = %v, want ErrLeaseLost", err)
+	}
+	if err := f.tasks.Cancel(ctx, id, "owner"); !errors.Is(err, tasks.ErrNotFound) {
+		t.Fatalf("second cancel = %v", err)
 	}
 }

@@ -187,6 +187,7 @@ Each layer removes work before the next, more expensive one:
 21. An MCP tool runs only under a definition the owner accepted. Installing or connecting a server grants nothing, and a definition that changed since acceptance cannot dispatch until accepted again.
 22. An MCP tool is a write unless the owner declared it a read; server annotations are never applied. An interrupted MCP write is retried only when the owner declared it idempotent, and is settled without a person only by finding its marker through a declared lookup.
 23. An MCP server never gets model access, the owner's attention or files through the protocol: agentd offers no sampling, elicitation or roots, sends no server instructions to a model, and starts a local server with only `PATH`, `HOME` and its configured environment.
+24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -293,6 +294,33 @@ notification outbox, event intake, the audit log as a live SSE stream, usage, an
 The command center (`internal/api/ui`, served at `/`) is a client of this same API through a browser session (HttpOnly cookie plus a CSRF header); it is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
 the same stores and gateway as the runtime. Provider-native model payloads never leave the process.
 
+## Conversation
+
+`internal/chat` is the owner's conversation with agentd. Each owner message becomes a **turn**: an
+ordinary task of the built-in **front desk** responsibility, so a turn is leased, checkpointed,
+budgeted, fenced and audited like any other work, and the runtime knows nothing about chat beyond
+an `Opener` hook that supplies a turn's opening messages and a release hook that records its reply
+(`internal/archtest` keeps the engine from importing `internal/chat`).
+
+- **What the model sees** is built by code each turn: the front desk prompt, a situation block
+  (live assignments with their next expected step, what waits on the owner, the emergency stop),
+  the rolling summary of older conversation, and the most recent 30 messages capped at 32 KB. Only
+  the owner's own messages are presented as the owner speaking; the rest is labelled data. When
+  enough messages scroll out of that window, a small summary task folds them into the summary. The
+  stored conversation is never trimmed.
+- **The front desk** is created at startup (`front-desk`, 5 USD per 30 days). It cannot be
+  completed or revoked; pausing it stops replies but keeps messages. Its default policy offers no
+  tools that reach outside agentd. The owner may add tools with `agentd policy` like any assignment,
+  but the front desk reads project content that may carry injected text, so a mail, web or MCP tool
+  there is a path from that text to the outside world.
+- **Local-only work** is withheld rather than forcing the front desk local: when the turn's model is
+  not local, an assignment with `models.local_only` appears only by name and status.
+- **Responsiveness.** Turns run at a higher priority, and `serve` runs one extra worker that takes
+  only interactive tasks, so a turn never waits behind long work. A message posted in the same
+  process wakes it at once; one written by another process is picked up within 200 ms.
+- While the emergency stop is on, or the front desk is paused or out of budget, messages are still
+  stored, no model is called, and the conversation gets one notice saying why and what to run.
+
 ## Known limits
 
 - **Keychain scope.** Secrets (Gmail refresh token, optional Anthropic key) are stored with
@@ -352,5 +380,6 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |
 | `internal/system` | Emergency stop flag. |
 | `internal/overview` | State, spend, recent activity and next expected action for one assignment. |
+| `internal/chat` | The owner's conversation: messages, turns as front desk tasks, the model's view, summaries. |
 | `internal/model/*` | Provider-neutral model interface and adapters (Anthropic, Ollama, and a scripted model for tests). |
 | `internal/store`, `migrations/` | SQLite open, migrations (including safe table rebuilds). |
