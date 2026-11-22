@@ -172,7 +172,7 @@ func (c *chatClient) local(ctx context.Context, text string) (bool, error) {
 		if last.Kind != chat.KindProposal {
 			return false, nil
 		}
-		edited, err := editInEditor(last.Card().Arguments)
+		edited, err := editInEditor(last.Card())
 		if err != nil || edited == "" {
 			return true, err
 		}
@@ -278,9 +278,9 @@ func (c *chatClient) goodbye() {
 	}
 }
 
-// editInEditor opens a proposal's arguments in $EDITOR and returns the saved JSON, or ""
-// when the owner saved it unchanged.
-func editInEditor(args json.RawMessage) (string, error) {
+// editInEditor opens a proposal in $EDITOR, as a job file when it has one and as JSON
+// otherwise, and returns what was saved, or "" when it was saved unchanged.
+func editInEditor(card chat.Card) (string, error) {
 	editor := os.Getenv("VISUAL")
 	if editor == "" {
 		editor = os.Getenv("EDITOR")
@@ -288,12 +288,17 @@ func editInEditor(args json.RawMessage) (string, error) {
 	if editor == "" {
 		editor = "vi"
 	}
-	f, err := os.CreateTemp("", "agentd-proposal-*.json")
+	pattern, pretty := "agentd-proposal-*.json", []byte(nil)
+	if card.Spec != "" {
+		pattern, pretty = "agentd-proposal-*.md", []byte(card.Spec)
+	} else {
+		pretty, _ = json.MarshalIndent(card.Arguments, "", "  ")
+	}
+	f, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return "", err
 	}
 	defer os.Remove(f.Name())
-	pretty, _ := json.MarshalIndent(args, "", "  ")
 	if _, err := f.Write(pretty); err != nil {
 		f.Close()
 		return "", err
@@ -310,6 +315,9 @@ func editInEditor(args json.RawMessage) (string, error) {
 	}
 	if strings.TrimSpace(string(saved)) == strings.TrimSpace(string(pretty)) {
 		return "", nil
+	}
+	if card.Spec != "" {
+		return strings.TrimSpace(string(saved)), nil
 	}
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, saved); err != nil {

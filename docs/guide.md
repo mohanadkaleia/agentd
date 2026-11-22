@@ -2,6 +2,48 @@
 
 Everything agentd can do, one feature per section. Start with the [README](../README.md) to install it.
 
+## Job files
+
+A job is a Markdown file: a header between two `---` lines, then the objective in plain words.
+
+```markdown
+---
+kind: project
+name: airline-refund
+policy:
+  tools:
+    gmail_search: allow
+    gmail_send:
+      mode: approval
+      resources: [refunds@airline.example]
+    ask_owner: allow
+  limits:
+    max_llm_spend_usd: 5
+completion:
+  criteria:
+    - id: refund
+      description: Refund posted to my card
+---
+
+Get the airline to refund my cancelled flight LH123. Be polite but firm.
+```
+
+The header uses exactly the keys of the JSON form (`kind`, `name`, `policy`, `completion`,
+`notifications`, `routes`, `schedules`, `obligations`); a tool rule may be just a mode
+(`notify: allow`). It is strict: an unknown or repeated key, an unknown mode, anchors, aliases,
+tags or a second document are errors with the line number. JSON files still work, and now also
+refuse unknown keys.
+
+```bash
+agentd create -dry-run job.md     # check it and print warnings; creates nothing
+agentd create job.md
+agentd export <id> > job.md       # the assignment as it is now (-format json for JSON)
+agentd policy <id> policy.md      # a file whose header holds only policy
+```
+
+Examples: [first-job.md](examples/first-job.md), [airline-refund.md](examples/airline-refund.md),
+[portfolio-intelligence.md](examples/portfolio-intelligence.md) (with its JSON twin).
+
 ## Events, schedules and models
 
 Feed it events and schedules:

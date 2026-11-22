@@ -72,9 +72,15 @@ func (l Limits) MaxLLMSpendMicros() int64 {
 var toolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 func (p Policy) Validate() error {
-	for tool := range p.Tools {
+	for tool, rule := range p.Tools {
 		if !toolName.MatchString(tool) {
 			return fmt.Errorf("tool rule %q: rules name one tool exactly; there are no wildcards, because a server update could add a tool a pattern would silently allow", tool)
+		}
+		if !validMode(rule.Mode) {
+			return fmt.Errorf("tool rule %q: mode %q is not one of allow, approval, deny", tool, rule.Mode)
+		}
+		if rule.Otherwise != "" && !validMode(rule.Otherwise) {
+			return fmt.Errorf("tool rule %q: otherwise %q is not one of allow, approval, deny", tool, rule.Otherwise)
 		}
 	}
 	if p.Limits.MaxLLMSpendUSD < 0 {
@@ -89,6 +95,10 @@ func (p Policy) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validMode(m Mode) bool {
+	return m == Allow || m == RequireApproval || m == Deny
 }
 
 type Decision struct {

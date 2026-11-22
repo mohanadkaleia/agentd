@@ -214,6 +214,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
           if (c.text) parts.push(h("div", { class: "lines" }, c.text.split("\n").map((line) =>
             h("p", { class: /^(WIDENS|Warning)/.test(line) ? "widen" : "" }, line))));
           if (c.expires_at && live) parts.push(h("p", { class: "muted" }, countdown(c.expires_at)));
+          if (c.spec) parts.push(h("details", [h("summary", "As a job file"), h("pre", c.spec)]));
           parts.push(h("details", [h("summary", "Exact arguments"), h("pre", JSON.stringify(c.arguments, null, 2)),
             h("p", { class: "muted" }, "sha256 " + (c.arguments_sha256 || ""))]));
           if (live) {
@@ -221,17 +222,19 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
               h("button", { class: "primary", "aria-label": label(m.kind === "proposal" ? "Approve proposal" : "Approve"), onClick: () => decide(m, true) }, "Approve"),
               h("button", { "aria-label": label("Reject"), onClick: () => decide(m, false) }, "Reject"),
             ];
-            if (m.kind === "proposal") buttons.push(h("button", { "aria-label": label("Edit"), onClick: () => { view.editing[m.id] = JSON.stringify(c.arguments, null, 2); } }, "Edit"));
+            if (m.kind === "proposal") buttons.push(h("button", { "aria-label": label("Edit"), onClick: () => { view.editing[m.id] = c.spec || JSON.stringify(c.arguments, null, 2); } }, "Edit"));
             parts.push(h("div", { class: "row" }, buttons));
             if (view.editing[m.id] !== undefined) {
               parts.push(h("label", { for: "edit-" + m.id }, "Your version (takes effect when saved)"));
               parts.push(h("textarea", { id: "edit-" + m.id, rows: 12, value: view.editing[m.id], onInput: (e) => { view.editing[m.id] = e.target.value; } }));
               parts.push(h("div", { class: "row" }, [
                 h("button", { class: "primary", onClick: () => {
-                  let compact;
-                  try { compact = JSON.stringify(JSON.parse(view.editing[m.id])); } catch { say("That is not valid JSON."); return; }
+                  let edited = view.editing[m.id].trim();
+                  if (!edited.startsWith("---")) {
+                    try { edited = JSON.stringify(JSON.parse(edited)); } catch { say("That is neither a job file nor valid JSON."); return; }
+                  }
                   delete view.editing[m.id];
-                  send(`/edit ${c.n} ${compact}`);
+                  send(`/edit ${c.n} ${edited}`);
                 } }, "Save my version"),
                 h("button", { onClick: () => { delete view.editing[m.id]; } }, "Cancel"),
               ]));

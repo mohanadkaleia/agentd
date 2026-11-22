@@ -45,8 +45,11 @@ type Card struct {
 	ExpiresAt     *time.Time      `json:"expires_at,omitempty"`
 	Severity      string          `json:"severity,omitempty"`
 	Choices       []string        `json:"choices,omitempty"`
-	QuestionID    string          `json:"question_id,omitempty"`
-	Actions       []string        `json:"actions,omitempty"`
+	// Spec is a readable job-file rendering of a proposal. The approval binds the canonical
+	// JSON Arguments; never hash or compare this text.
+	Spec       string   `json:"spec,omitempty"`
+	QuestionID string   `json:"question_id,omitempty"`
+	Actions    []string `json:"actions,omitempty"`
 }
 
 func (m Message) Card() Card {
@@ -252,6 +255,9 @@ func (s *Service) approvalCard(ctx context.Context, id string, a assignments.Ass
 	tool := s.Runtime.Tools[c.Tool]
 	if d, ok := tool.(tools.Describer); ok {
 		c.Title, c.Text = d.Describe(c.Arguments)
+	}
+	if r, ok := tool.(tools.Rendered); ok {
+		c.Spec = r.Render(c.Arguments)
 	}
 	if tools.NeedsOwner(tool) {
 		kind, c.Actions = KindProposal, []string{"approve", "reject", "edit", "details"}

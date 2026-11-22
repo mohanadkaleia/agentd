@@ -11,16 +11,63 @@ import (
 	"agentd/internal/overview"
 )
 
-func createFromFile(ctx context.Context, a *app.App, path string) (string, error) {
+func readJob(path string) (app.Spec, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return app.Spec{}, err
+	}
+	if info.Size() > app.MaxJobFile {
+		return app.Spec{}, fmt.Errorf("%s is larger than %d KB", path, app.MaxJobFile>>10)
+	}
 	body, err := os.ReadFile(path)
+	if err != nil {
+		return app.Spec{}, err
+	}
+	spec, err := app.ParseJob(path, body)
+	if err != nil {
+		return spec, fmt.Errorf("%s: %w", path, err)
+	}
+	return spec, nil
+}
+
+func createFromFile(ctx context.Context, a *app.App, path string, dryRun bool) (string, error) {
+	spec, err := readJob(path)
 	if err != nil {
 		return "", err
 	}
-	var spec app.Spec
-	if err := json.Unmarshal(body, &spec); err != nil {
+	if !dryRun {
+		return a.Create(ctx, spec)
+	}
+	if err := a.Check(spec); err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
-	return a.Create(ctx, spec)
+	for _, w := range a.PolicyWarnings(spec.Policy) {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	normal, _ := json.MarshalIndent(spec, "", "  ")
+	fmt.Println(string(normal))
+	return "", nil
+}
+
+func export(ctx context.Context, a *app.App, id, format string) error {
+	spec, err := a.Export(ctx, id)
+	if err != nil {
+		return err
+	}
+	switch format {
+	case "json":
+		out, _ := json.MarshalIndent(spec, "", "  ")
+		fmt.Println(string(out))
+	case "md":
+		out, err := spec.Markdown()
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+	default:
+		return fmt.Errorf("-format must be md or json")
+	}
+	return nil
 }
 
 func show(ctx context.Context, a *app.App, id string) error {

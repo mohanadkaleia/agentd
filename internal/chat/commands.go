@@ -50,7 +50,7 @@ func init() {
 		"new":     {usage: "/new", help: "start a new conversation", run: (*Service).cmdNew},
 		"answer":  {usage: "/answer <n or id> <text>", help: "answer a question a task asked you", run: (*Service).cmdAnswer},
 		"tell":    {usage: "/tell <task or assignment> <text>", help: "send a note to running work, word for word", run: (*Service).cmdTell},
-		"edit":    {usage: "/edit <n> <json>", help: "replace a proposal with your edited version, which takes effect at once", run: (*Service).cmdEdit},
+		"edit":    {usage: "/edit <n> <job file or json>", help: "replace a proposal with your edited version, which takes effect at once", run: (*Service).cmdEdit},
 	}
 }
 
@@ -382,8 +382,8 @@ func (s *Service) cmdEdit(ctx context.Context, c call) (string, error) {
 		return "", fmt.Errorf("[%d] is not a proposal", card.Card().N)
 	}
 	args := strings.TrimSpace(strings.TrimPrefix(c.rest, c.args[0]))
-	if !json.Valid([]byte(args)) {
-		return "", errors.New("the edited proposal is not valid JSON")
+	if !json.Valid([]byte(args)) && !strings.HasPrefix(args, "---") {
+		return "", errors.New("the edited proposal must be JSON or a job file starting with ---")
 	}
 	return s.Edit(ctx, card.RefID, json.RawMessage(args), "owner:"+c.channel)
 }

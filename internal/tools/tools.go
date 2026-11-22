@@ -111,6 +111,13 @@ type RateLimited interface {
 	DefaultRate() (max int, per time.Duration)
 }
 
+// Rendered tools can show a call's arguments as a readable file for the owner. The
+// rendering is for reading only: approvals bind the canonical JSON arguments.
+type Rendered interface {
+	Tool
+	Render(args json.RawMessage) string
+}
+
 // Permits reports whether a tool may run for an assignment with this built-in key ("" for none).
 func Permits(t Tool, builtin string) bool {
 	r, ok := t.(Restricted)

@@ -358,3 +358,22 @@ func TestADraftWrittenAsTextIsCalledOut(t *testing.T) {
 		t.Fatalf("an ordinary reply got a notice: %d", n)
 	}
 }
+
+func TestProposalCardShowsAJobFileThatCanBeEdited(t *testing.T) {
+	w := newCardWorld(t)
+	w.propose("refund please", "propose_assignment", refundSpec())
+	card := w.by(chat.System, chat.KindProposal)[0].Card()
+	if !strings.HasPrefix(card.Spec, "---\nkind: project\nname: lh123-refund\n") || !strings.Contains(card.Spec, "Get a refund for cancelled flight LH123.") {
+		t.Fatalf("card job file:\n%s", card.Spec)
+	}
+	edited := strings.Replace(card.Spec, "name: lh123-refund", "name: lh123-from-markdown", 1)
+	if r := w.command("/edit 1 " + edited); w.failed(r) {
+		t.Fatalf("/edit with a job file = %s", r.Text())
+	}
+	var tasks int
+	w.app.DB.QueryRow(`SELECT COUNT(*) FROM tasks t JOIN assignments a ON a.id = t.assignment_id
+		WHERE a.name = 'lh123-from-markdown' AND t.title = 'Ask the airline'`).Scan(&tasks)
+	if tasks != 1 {
+		t.Fatalf("the edited job kept %d first tasks, want the draft's first task", tasks)
+	}
+}

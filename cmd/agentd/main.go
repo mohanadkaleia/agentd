@@ -27,7 +27,6 @@ import (
 	"agentd/internal/model"
 	"agentd/internal/model/anthropic"
 	"agentd/internal/model/ollama"
-	"agentd/internal/policy"
 	"agentd/internal/runtime"
 	"agentd/internal/scheduler"
 	"agentd/internal/skills"
@@ -63,7 +62,8 @@ commands:
   mcp restart <server>                 ask the running agentd to reconnect a server and forget its failures
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
   unhalt                               lift the emergency stop
-  create <assignment.json>             create a project or responsibility, with its routes and schedules
+  create [-dry-run] <job.md|job.json>  create a project or responsibility, with its routes and schedules
+  export <assignment-id> [-format md]  write an assignment back as a job file (md or json)
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
   status                               show assignments, tasks, actions, approvals
   retry <task-id> [note]               continue a blocked task in its existing run
@@ -174,6 +174,8 @@ func run() error {
 	title := cmd.String("title", "", "task title")
 	objective := cmd.String("objective", "", "task objective")
 	every := cmd.Duration("every", 0, "schedule interval, e.g. 24h")
+	dryRun := cmd.Bool("dry-run", false, "create: check the job file and print it normalised, creating nothing")
+	format := cmd.String("format", "md", "export: md or json")
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -309,14 +311,19 @@ func run() error {
 		return a.Gateway.Decide(ctx, cmd.Arg(0), args[0] == "approve", "cli")
 	case "create":
 		if cmd.NArg() != 1 {
-			return fmt.Errorf("create needs a JSON file")
+			return fmt.Errorf("create needs a job file (.md or .json)")
 		}
-		id, err := createFromFile(ctx, a, cmd.Arg(0))
-		if err != nil {
+		id, err := createFromFile(ctx, a, cmd.Arg(0), *dryRun)
+		if err != nil || *dryRun {
 			return err
 		}
 		fmt.Println(id)
 		return nil
+	case "export":
+		if cmd.NArg() != 1 {
+			return fmt.Errorf("export needs an assignment id")
+		}
+		return export(ctx, a, cmd.Arg(0), *format)
 	case "show":
 		if cmd.NArg() != 1 {
 			return fmt.Errorf("show needs an assignment id")
@@ -332,8 +339,8 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		var p policy.Policy
-		if err := json.Unmarshal(body, &p); err != nil {
+		p, err := app.ParsePolicy(cmd.Arg(1), body)
+		if err != nil {
 			return fmt.Errorf("%s: %w", cmd.Arg(1), err)
 		}
 		version, err := a.Assignments.SetPolicy(ctx, cmd.Arg(0), p, "cli")

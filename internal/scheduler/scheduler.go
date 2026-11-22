@@ -395,3 +395,48 @@ func (s *Scheduler) fireOne(ctx context.Context, id string, now time.Time) (bool
 	}
 	return true, tx.Commit()
 }
+
+// Routes lists an assignment's event routes, oldest first.
+func (s *Scheduler) Routes(ctx context.Context, assignmentID string) ([]Route, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT source, kind, match_json, COALESCE(coalesce_field, ''), COALESCE(skills_json, '[]'),
+		title, objective FROM event_routes WHERE assignment_id = ? ORDER BY created_at, rowid`, assignmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Route
+	for rows.Next() {
+		r := Route{AssignmentID: assignmentID}
+		var match, skills string
+		if err := rows.Scan(&r.Source, &r.Kind, &match, &r.CoalesceField, &skills, &r.Title, &r.Objective); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(match), &r.Match)
+		json.Unmarshal([]byte(skills), &r.Skills)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Schedules lists an assignment's enabled schedules, oldest first.
+func (s *Scheduler) Schedules(ctx context.Context, assignmentID string) ([]Schedule, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT title, objective, COALESCE(skills_json, '[]'), interval_ms FROM schedules
+		WHERE assignment_id = ? AND enabled = 1 ORDER BY created_at, rowid`, assignmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Schedule
+	for rows.Next() {
+		sc := Schedule{AssignmentID: assignmentID}
+		var skills string
+		var every int64
+		if err := rows.Scan(&sc.Title, &sc.Objective, &skills, &every); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(skills), &sc.Skills)
+		sc.Every = time.Duration(every) * time.Millisecond
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}

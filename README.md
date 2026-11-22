@@ -18,12 +18,13 @@ your machine) or an Anthropic API key.
    go build -o bin/agentd ./cmd/agentd
    ```
 
-2. Give it a job. A job is a JSON file: what to do, which tools it may use, and what needs your
-   approval. Start from [`docs/examples/first-job.json`](docs/examples/first-job.json), which
-   reads the Go blog once a day and summarizes the newest post:
+2. Give it a job. A job is a short Markdown file: a header that says which tools it may use and
+   what needs your approval, then what to do in plain words. Start from
+   [`docs/examples/first-job.md`](docs/examples/first-job.md), which reads the Go blog once a day
+   and summarizes the newest post (or just ask for a job in the chat):
 
    ```bash
-   ./bin/agentd create docs/examples/first-job.json
+   ./bin/agentd create docs/examples/first-job.md
    ```
 
 3. Start it with a model:

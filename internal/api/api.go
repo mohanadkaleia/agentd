@@ -246,7 +246,15 @@ func (s *Server) listAssignments(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) createAssignment(w http.ResponseWriter, r *http.Request) error {
 	var spec app.Spec
-	if err := decode(r, &spec); err != nil {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "text/markdown") {
+		body, err := io.ReadAll(io.LimitReader(r.Body, app.MaxJobFile+1))
+		if err != nil {
+			return badRequest("could not read the job file: %v", err)
+		}
+		if spec, err = app.ParseMarkdown(body); err != nil {
+			return badRequest("%s", err.Error())
+		}
+	} else if err := decode(r, &spec); err != nil {
 		return err
 	}
 	id, err := s.App.Create(r.Context(), spec)

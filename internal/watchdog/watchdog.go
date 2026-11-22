@@ -264,7 +264,7 @@ func health(ctx context.Context, db *sql.DB, o Obligation, now time.Time) (Healt
 
 func load(ctx context.Context, db *sql.DB, where string, args ...any) ([]Obligation, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, assignment_id, description, every_ms, grace_ms, evidence_json, on_miss,
-		COALESCE(skills_json, ''), created_at FROM obligations WHERE `+where+` ORDER BY created_at, id`, args...)
+		COALESCE(skills_json, ''), created_at FROM obligations WHERE `+where+` ORDER BY created_at, rowid`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -289,4 +289,9 @@ func load(ctx context.Context, db *sql.DB, where string, args ...any) ([]Obligat
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// List returns an assignment's obligations, oldest first.
+func List(ctx context.Context, db *sql.DB, assignmentID string) ([]Obligation, error) {
+	return load(ctx, db, `assignment_id = ?`, assignmentID)
 }

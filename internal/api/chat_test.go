@@ -219,3 +219,35 @@ func TestChatResponsesNeverCarryTheToken(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateFromAMarkdownJobFile(t *testing.T) {
+	e := setup(t, replies)
+	job := "---\nkind: project\nname: refund\npolicy:\n  tools:\n    notify: allow\n  limits:\n    max_llm_spend_usd: 1\ncompletion:\n  criteria:\n    - description: done\n---\n\nGet the refund.\n"
+	post := func(body, auth string) (int, string) {
+		req, _ := http.NewRequest("POST", e.srv.URL+"/api/assignments", strings.NewReader(body))
+		req.Header.Set("Content-Type", "text/markdown")
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]string
+		json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out["id"] + out["error"]
+	}
+	if code, _ := post(job, ""); code != http.StatusUnauthorized {
+		t.Fatalf("without a token = %d", code)
+	}
+	if code, got := post(job, token); code != http.StatusCreated || !strings.HasPrefix(got, "prj_") {
+		t.Fatalf("create = %d %s", code, got)
+	}
+	if code, got := post(strings.Replace(job, "notify: allow", "notify: approve", 1), token); code != http.StatusBadRequest || !strings.Contains(got, "line 6") {
+		t.Fatalf("bad mode = %d %s", code, got)
+	}
+	if code, _ := post(job+strings.Repeat("x", 2<<20), token); code < 400 {
+		t.Fatalf("oversized job file = %d", code)
+	}
+}

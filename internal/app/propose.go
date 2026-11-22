@@ -34,6 +34,7 @@ type proposal struct {
 	schema   string
 	check    func(ctx context.Context, args json.RawMessage) (resource string, err error)
 	describe func(args json.RawMessage) (title, text string)
+	render   func(args json.RawMessage) string
 	apply    func(ctx context.Context, tx *sql.Tx, args json.RawMessage, origin string) (string, error)
 }
 
@@ -50,6 +51,13 @@ func (p *proposal) Resource(args json.RawMessage) (string, error) {
 
 func (p *proposal) Describe(args json.RawMessage) (string, string) {
 	return p.describe(args)
+}
+
+func (p *proposal) Render(args json.RawMessage) string {
+	if p.render == nil {
+		return ""
+	}
+	return p.render(args)
 }
 
 func (p *proposal) Execute(ctx context.Context, call tools.Invocation) (tools.Result, error) {
@@ -250,6 +258,14 @@ func (a *App) proposals() []tools.Tool {
 				return in.Spec.Name, a.checkSpec(in.Spec)
 			},
 			describe: a.describeAssignment,
+			render: func(args json.RawMessage) string {
+				in, err := decodeAssignment(args)
+				if err != nil {
+					return ""
+				}
+				md, _ := in.Spec.Markdown()
+				return md
+			},
 			apply: func(ctx context.Context, tx *sql.Tx, args json.RawMessage, origin string) (string, error) {
 				in, err := decodeAssignment(args)
 				if err != nil {
@@ -696,6 +712,19 @@ func (a *App) EditProposal(ctx context.Context, approvalID string, args json.Raw
 	}
 	if status != "pending" {
 		return "", fmt.Errorf("proposal %s is %s", approvalID, status)
+	}
+	if !json.Valid(args) && p.name == "propose_assignment" {
+		spec, err := ParseMarkdown(args)
+		if err != nil {
+			return "", err
+		}
+		var old assignmentProposal
+		var current string
+		if err := a.DB.QueryRowContext(ctx, `SELECT arguments_json FROM actions WHERE id = ?`, actionID).Scan(&current); err != nil {
+			return "", err
+		}
+		old, _ = decodeAssignment(json.RawMessage(current))
+		args, _ = json.Marshal(assignmentProposal{Spec: spec, FirstTask: old.FirstTask})
 	}
 	if _, err := p.check(ctx, args); err != nil {
 		return "", err
