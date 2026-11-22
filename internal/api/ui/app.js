@@ -218,7 +218,7 @@ const Assignment = {
         ]) : null,
         h("section", { class: "card" }, [
           h("h3", "Open tasks"),
-          a.open_tasks.length ? h("table", h("tbody", a.open_tasks.map((t) => h("tr", [h("td", link("/t/" + t.id, t.title)), h("td", status(t.status)), h("td", { class: "muted" }, fmtTime(t.next_run_at))])))) : h("p", { class: "muted" }, "None."),
+          a.open_tasks.length ? h("table", h("tbody", a.open_tasks.map((t) => h("tr", [h("td", link("/t/" + t.id, t.title)), h("td", [status(t.status), t.waiting ? h("div", { class: "muted" }, t.waiting) : null]), h("td", { class: "muted" }, fmtTime(t.next_run_at))])))) : h("p", { class: "muted" }, "None."),
         ]),
         h("section", { class: "card" }, [
           h("h3", "Recent activity"),

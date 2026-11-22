@@ -31,6 +31,7 @@ type harness struct {
 	calls        *atomic.Int32
 	taskID       string
 	assignmentID string
+	tools        func(*tools.Mailbox) tools.Registry
 }
 
 func newHarness(t *testing.T, script scripted.Provider) *harness {
@@ -56,7 +57,11 @@ func (h *harness) boot() {
 		h.t.Fatal(err)
 	}
 	h.db = db
-	h.app = app.New(db, h.model, "scripted", tools.NewRegistry(tools.WebSearch{}, mailbox), h.clock.Now)
+	registry := tools.NewRegistry(tools.WebSearch{}, mailbox)
+	if h.tools != nil {
+		registry = h.tools(mailbox)
+	}
+	h.app = app.New(db, h.model, "scripted", registry, h.clock.Now)
 }
 
 func (h *harness) restart() {

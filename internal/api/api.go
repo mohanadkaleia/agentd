@@ -265,6 +265,7 @@ type openTask struct {
 	Title     string     `json:"title"`
 	Status    string     `json:"status"`
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	Waiting   string     `json:"waiting,omitempty"`
 }
 
 func timePtr(t time.Time) *time.Time {
@@ -309,7 +310,7 @@ func (s *Server) getAssignment(w http.ResponseWriter, r *http.Request) error {
 		d.Obligations = append(d.Obligations, row)
 	}
 	for _, t := range o.OpenTasks {
-		d.OpenTasks = append(d.OpenTasks, openTask{ID: t.ID, Title: t.Title, Status: t.Status, NextRunAt: timePtr(t.NextRunAt)})
+		d.OpenTasks = append(d.OpenTasks, openTask{ID: t.ID, Title: t.Title, Status: t.Status, NextRunAt: timePtr(t.NextRunAt), Waiting: t.Waiting})
 	}
 	for _, act := range o.Recent {
 		d.Recent = append(d.Recent, activityRow{At: act.At, Actor: act.Actor, Operation: act.Operation, ObjectID: act.ObjectID})

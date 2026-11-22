@@ -75,7 +75,11 @@ func show(ctx context.Context, a *app.App, id string) error {
 	}
 	fmt.Fprintf(w, "\nOPEN TASKS\n")
 	for _, t := range o.OpenTasks {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, t.Status, t.Title)
+		status := t.Status
+		if t.Waiting != "" {
+			status += " (" + t.Waiting + ")"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", t.ID, status, t.Title)
 	}
 	fmt.Fprintf(w, "\nRECENT ACTIVITY\n")
 	for _, r := range o.Recent {

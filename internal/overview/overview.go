@@ -35,6 +35,7 @@ type Task struct {
 	Title     string
 	Status    string
 	NextRunAt time.Time
+	Waiting   string
 }
 
 type Activity struct {
@@ -151,7 +152,11 @@ func next(a assignments.Assignment, halted system.Status, unresolved string, blo
 			if at.Before(now) {
 				at = now
 			}
-			timed = append(timed, Expected{At: at, What: "run task: " + t.Title})
+			what := "run task: " + t.Title
+			if t.Waiting != "" {
+				what = "waiting (" + t.Waiting + "): " + t.Title
+			}
+			timed = append(timed, Expected{At: at, What: what})
 		}
 	}
 	if !fire.IsZero() {
@@ -170,7 +175,8 @@ func next(a assignments.Assignment, halted system.Status, unresolved string, blo
 }
 
 func openTasks(ctx context.Context, db *sql.DB, id string) ([]Task, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, title, status, COALESCE(next_run_at, 0) FROM tasks
+	rows, err := db.QueryContext(ctx, `SELECT id, title, status, COALESCE(next_run_at, 0),
+		COALESCE(CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.waiting') END, '') FROM tasks
 		WHERE assignment_id = ? AND status NOT IN ('completed', 'blocked', 'cancelled') ORDER BY created_at, id`, id)
 	if err != nil {
 		return nil, err
@@ -180,7 +186,7 @@ func openTasks(ctx context.Context, db *sql.DB, id string) ([]Task, error) {
 	for rows.Next() {
 		var t Task
 		var next int64
-		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &next); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &next, &t.Waiting); err != nil {
 			return nil, err
 		}
 		if next > 0 {

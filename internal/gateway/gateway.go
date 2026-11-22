@@ -40,11 +40,13 @@ const (
 	WaitEvent
 	Paused
 	Blocked
+	Unavailable
 )
 
 type Outcome struct {
 	Kind    Kind
 	Content string
+	Since   time.Time
 }
 
 type Call struct {
@@ -91,8 +93,12 @@ func (g *Gateway) Handle(ctx context.Context, c Call) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	tool, _ := g.Tools.Lookup(a.ToolName)
+	tool, ok := g.Tools.Lookup(a.ToolName)
 
+	if a.Status == Dispatching && !ok {
+		return g.finish(ctx, &a, Dispatching, NeedsReconciliation,
+			errorJSON(fmt.Sprintf("outcome unknown after an interruption; tool %q is unavailable to check", a.ToolName)), "")
+	}
 	if a.Status == Dispatching {
 		if err := g.recover(ctx, &a, tool); err != nil {
 			return Outcome{}, err
@@ -171,6 +177,9 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 	if s, err := system.Get(ctx, g.DB); err != nil || s.Halted {
 		return Outcome{Kind: Paused}, err
 	}
+	if tool == nil {
+		return g.unavailable(ctx, a)
+	}
 	task, err := g.Tasks.Get(ctx, a.TaskID)
 	if err != nil {
 		return Outcome{}, err
@@ -242,6 +251,24 @@ func (g *Gateway) dispatch(ctx context.Context, a *Action, tool tools.Tool, limi
 }
 
 var errHalted = errors.New("system is halted")
+
+func (g *Gateway) unavailable(ctx context.Context, a *Action) (Outcome, error) {
+	out := Outcome{Kind: Unavailable, Content: fmt.Sprintf("tool %q is unavailable", a.ToolName)}
+	var since sql.NullInt64
+	if err := g.DB.QueryRowContext(ctx, `SELECT MIN(created_at) FROM audit_log
+		WHERE object_id = ? AND operation = 'action.tool_unavailable' AND created_at >= COALESCE(
+			(SELECT MAX(created_at) FROM audit_log WHERE object_id = ? AND operation = 'task.retried'), 0)`,
+		a.ID, a.TaskID).Scan(&since); err != nil {
+		return Outcome{}, err
+	}
+	if since.Valid {
+		out.Since = time.UnixMilli(since.Int64)
+		return out, nil
+	}
+	out.Since = g.Now().Truncate(time.Millisecond)
+	return out, audit.Record(ctx, g.DB, out.Since, a.AssignmentID, "gateway", "action.tool_unavailable", a.ID,
+		map[string]string{"tool": a.ToolName})
+}
 
 func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.RateLimit, lease tasks.Lease) (string, error) {
 	now := g.Now()

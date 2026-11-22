@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"agentd/internal/assignments"
 	"agentd/internal/gateway"
 	"agentd/internal/model"
+	"agentd/internal/notify"
 	"agentd/internal/skills"
 	"agentd/internal/system"
 	"agentd/internal/tasks"
@@ -30,24 +32,44 @@ type Runtime struct {
 	ModelID     string
 	ModelLocal  bool
 	Fallbacks   []Candidate
+	Outbox      *notify.Outbox
 	Now         func() time.Time
 	LeaseTTL    time.Duration
 	MaxSteps    int
 	BaseBackoff time.Duration
+	ToolWait    time.Duration
 
 	MaxRejectedCompletions int
 	Housekeeping           func(context.Context) error
 	HeartbeatEvery         time.Duration
 }
 
-const rejectedCompletionPrefix = "Completion rejected:"
+const (
+	rejectedCompletionPrefix = "Completion rejected:"
+	maxToolBackoff           = 15 * time.Minute
+)
 
-func (r *Runtime) RunOnce(ctx context.Context, owner string) (bool, error) {
+func (r *Runtime) RunOnce(ctx context.Context, owner string) (worked bool, err error) {
 	lease, err := r.Tasks.ClaimReady(ctx, owner, r.LeaseTTL)
 	if err != nil || lease == nil {
 		return false, err
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			worked, err = true, r.contain(ctx, *lease, p)
+		}
+	}()
 	return true, r.execute(ctx, *lease)
+}
+
+func (r *Runtime) contain(ctx context.Context, lease tasks.Lease, p any) error {
+	cause := fmt.Errorf("panic: %v", p)
+	stack := debug.Stack()
+	task, err := r.Tasks.Get(ctx, lease.TaskID)
+	if err != nil {
+		return fmt.Errorf("%w\n%s", errors.Join(cause, err), stack)
+	}
+	return fmt.Errorf("%w\n%s", r.fail(ctx, lease, task, cause), stack)
 }
 
 func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
@@ -101,6 +123,8 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 				case gateway.Blocked:
 					return r.block(ctx, lease, rn.ID, map[string]string{"error": "action outcome needs manual reconciliation", "detail": out.Content})
+				case gateway.Unavailable:
+					return r.waitForTool(ctx, lease, task, rn.ID, out)
 				}
 				reply := model.Message{Role: model.RoleTool, ToolCallID: call.ID, Content: out.Content}
 				if err := r.appendMessage(ctx, rn.ID, len(msgs)+i, reply); err != nil {
@@ -248,6 +272,25 @@ func pendingCalls(msgs []model.Message) (int, []model.ToolCall) {
 	return -1, nil
 }
 
+func (r *Runtime) waitForTool(ctx context.Context, lease tasks.Lease, task tasks.Task, runID string, out gateway.Outcome) error {
+	waited := r.Now().Sub(out.Since)
+	if waited < r.ToolWait {
+		delay := min(max(waited, r.BaseBackoff), maxToolBackoff)
+		return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready, NextRunAt: r.Now().Add(delay),
+			Result: map[string]string{"waiting": out.Content}})
+	}
+	if r.Outbox != nil {
+		if _, err := r.Outbox.Notify(ctx, notify.Notification{AssignmentID: task.AssignmentID, TaskID: task.ID,
+			DedupKey: "tool-unavailable:" + task.ID, Severity: assignments.SeverityAction,
+			Title: "Task blocked: " + out.Content,
+			Body:  fmt.Sprintf("%q waited %s for the tool to come back. Reconnect it, then run: agentd retry %s", task.Title, r.ToolWait, task.ID),
+		}); err != nil {
+			return r.fail(ctx, lease, task, err)
+		}
+	}
+	return r.block(ctx, lease, runID, map[string]string{"error": fmt.Sprintf("%s; waited %s", out.Content, r.ToolWait)})
+}
+
 func (r *Runtime) block(ctx context.Context, lease tasks.Lease, runID string, cause map[string]string) error {
 	return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Blocked, Result: cause, FinishRun: runID, RunStatus: "blocked"})
 }
@@ -310,7 +353,7 @@ func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll tim
 		defer func() { done <- struct{}{} }()
 		for ctx.Err() == nil {
 			if r.Housekeeping != nil {
-				if err := r.Housekeeping(ctx); err != nil && ctx.Err() == nil {
+				if err := r.housekeep(ctx); err != nil && ctx.Err() == nil {
 					log.Error("housekeeping", "err", err)
 				}
 			}
@@ -341,4 +384,13 @@ func (r *Runtime) Serve(ctx context.Context, owner string, workers int, poll tim
 	for range workers + 1 {
 		<-done
 	}
+}
+
+func (r *Runtime) housekeep(ctx context.Context) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v\n%s", p, debug.Stack())
+		}
+	}()
+	return r.Housekeeping(ctx)
 }
