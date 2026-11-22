@@ -106,6 +106,19 @@ func insertOpening(ctx context.Context, tx *sql.Tx, runID string, msgs []model.M
 	return nil
 }
 
+// Transcript returns the messages of a task's latest run, or none if it has not started.
+func (r *Runtime) Transcript(ctx context.Context, taskID string) ([]model.Message, error) {
+	var runID string
+	err := r.DB.QueryRowContext(ctx, `SELECT id FROM runs WHERE task_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`, taskID).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.loadMessages(ctx, runID)
+}
+
 func (r *Runtime) loadMessages(ctx context.Context, runID string) ([]model.Message, error) {
 	rows, err := r.DB.QueryContext(ctx, `SELECT message_json FROM run_messages WHERE run_id = ? ORDER BY seq`, runID)
 	if err != nil {

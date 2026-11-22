@@ -313,8 +313,17 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
   tools that reach outside agentd. The owner may add tools with `agentd policy` like any assignment,
   but the front desk reads project content that may carry injected text, so a mail, web or MCP tool
   there is a path from that text to the outside world.
+- **Read tools** let the front desk answer "what is going on?": `list_assignments`,
+  `get_assignment`, `get_task`, `list_waiting_on_owner`, `recent_activity`, `get_usage` and
+  `list_tools`. They see every assignment, so they are `tools.Restricted` to the front desk: the
+  runtime never offers them elsewhere and the gateway denies them elsewhere whatever a policy says.
+  `get_task` returns a digest (tools called and their status, the last agent message) and shows one
+  action's raw result only when asked, wrapped as untrusted data. Values under secret-looking keys
+  and keychain references are redacted, results are paged at about 12 KB, every result carries the
+  time it was read, and a turn may make at most 20 read calls.
 - **Local-only work** is withheld rather than forcing the front desk local: when the turn's model is
-  not local, an assignment with `models.local_only` appears only by name and status.
+  not local, an assignment with `models.local_only` appears only by name and status, in the
+  situation block and in every read tool.
 - **Responsiveness.** Turns run at a higher priority, and `serve` runs one extra worker that takes
   only interactive tasks, so a turn never waits behind long work. A message posted in the same
   process wakes it at once; one written by another process is picked up within 200 ms.

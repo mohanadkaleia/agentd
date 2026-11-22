@@ -81,6 +81,18 @@ type Scoped interface {
 	FiltersToScope()
 }
 
+// Restricted tools run only for the built-in assignment they name, whatever any policy says.
+type Restricted interface {
+	Tool
+	OnlyFor() string
+}
+
+// Permits reports whether a tool may run for an assignment with this built-in key ("" for none).
+func Permits(t Tool, builtin string) bool {
+	r, ok := t.(Restricted)
+	return !ok || r.OnlyFor() == builtin
+}
+
 type Registry map[string]Tool
 
 func NewRegistry(ts ...Tool) Registry {

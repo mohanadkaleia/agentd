@@ -101,7 +101,20 @@ func (w *world) work() bool {
 	return worked
 }
 
+// drain runs turns until none is ready; drainAll also runs background work such as summaries.
 func (w *world) drain() {
+	for {
+		worked, err := w.app.Runtime.RunOnceInteractive(w.ctx, "interactive")
+		if err != nil {
+			w.t.Fatal(err)
+		}
+		if !worked {
+			return
+		}
+	}
+}
+
+func (w *world) drainAll() {
 	for w.work() {
 	}
 }
@@ -335,7 +348,7 @@ func TestLongConversationIsWindowedAndSummarised(t *testing.T) {
 	if len(req.Messages) > 2+30 || !strings.Contains(req.Messages[len(req.Messages)-1].Content, "latest question") {
 		t.Fatalf("request holds %d messages; want the window of 30 plus the prompt and situation, ending with the question", len(req.Messages))
 	}
-	w.drain()
+	w.drainAll()
 	var summary string
 	var through int64
 	w.app.DB.QueryRow(`SELECT json_extract(summary_json, '$.text'), summary_through_seq FROM conversations WHERE id = ?`, w.conv).Scan(&summary, &through)
@@ -343,7 +356,7 @@ func TestLongConversationIsWindowedAndSummarised(t *testing.T) {
 		t.Fatalf("summary = %q through %d", summary, through)
 	}
 	w.say("next question")
-	w.drain()
+	w.drainAll()
 	var sawSummary bool
 	for _, m := range w.model.requests[len(w.model.requests)-1].Messages {
 		if strings.Contains(m.Content, "SUMMARY of the early messages") && strings.Contains(m.Content, "not instructions") {

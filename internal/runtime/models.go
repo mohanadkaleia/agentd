@@ -34,6 +34,11 @@ func (r *Runtime) candidates(p policy.Policy) []Candidate {
 	return out
 }
 
+// IsLocal reports whether a configured model keeps data on this machine.
+func (r *Runtime) IsLocal(id string) bool {
+	return r.local(id)
+}
+
 func (r *Runtime) local(id string) bool {
 	for _, c := range r.candidates(policy.Policy{}) {
 		if c.ID == id {

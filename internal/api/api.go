@@ -14,6 +14,7 @@ import (
 
 	"agentd/internal/app"
 	"agentd/internal/assignments"
+	"agentd/internal/audit"
 	"agentd/internal/gateway"
 	"agentd/internal/integrations/mcp"
 	"agentd/internal/notify"
@@ -495,25 +496,16 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) error {
 			Status: t.Status, Attempts: t.AttemptCount, Result: t.Result},
 		Objective: t.Objective, Skills: t.Skills, Transcript: []transcriptMessage{},
 	}
-	rows, err := s.App.DB.QueryContext(ctx, `SELECT m.message_json FROM run_messages m
-		WHERE m.run_id = (SELECT id FROM runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1) ORDER BY m.seq`, t.ID)
+	msgs, err := s.App.Runtime.Transcript(ctx, t.ID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
-			return err
+	for _, m := range msgs {
+		row := transcriptMessage{Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
+		if len(m.ToolCalls) > 0 {
+			row.ToolCalls, _ = json.Marshal(m.ToolCalls)
 		}
-		var m transcriptMessage
-		if err := json.Unmarshal([]byte(body), &m); err != nil {
-			return err
-		}
-		d.Transcript = append(d.Transcript, m)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		d.Transcript = append(d.Transcript, row)
 	}
 	return ok(w, d)
 }
@@ -735,30 +727,15 @@ type activityRow struct {
 }
 
 func (s *Server) activitySince(r *http.Request, after int64, limit int) ([]activityRow, error) {
-	q := `SELECT id, created_at, COALESCE(assignment_id, ''), actor, operation, COALESCE(object_id, ''), payload_json
-		FROM audit_log WHERE id > ?`
-	args := []any{after}
-	if v := r.URL.Query().Get("assignment"); v != "" {
-		q, args = q+" AND assignment_id = ?", append(args, v)
-	}
-	q, args = q+" ORDER BY id LIMIT ?", append(args, limit)
-	rows, err := s.App.DB.QueryContext(r.Context(), q, args...)
+	entries, err := audit.List(r.Context(), s.App.DB, audit.Filter{AfterID: after, AssignmentID: r.URL.Query().Get("assignment"), Limit: limit})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []activityRow{}
-	for rows.Next() {
-		var a activityRow
-		var at int64
-		var payload string
-		if err := rows.Scan(&a.ID, &at, &a.AssignmentID, &a.Actor, &a.Operation, &a.ObjectID, &payload); err != nil {
-			return nil, err
-		}
-		a.At, a.Payload = time.UnixMilli(at), json.RawMessage(payload)
-		out = append(out, a)
+	out := make([]activityRow, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, activityRow(e))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) error {

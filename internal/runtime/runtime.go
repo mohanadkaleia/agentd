@@ -235,7 +235,7 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": err.Error()})
 		}
 		offered := func(name string) bool {
-			return task.Allows(name) && a.Policy.Offers(name) && tools.Ready(r.Tools[name])
+			return task.Allows(name) && a.Policy.Offers(name) && tools.Ready(r.Tools[name]) && tools.Permits(r.Tools[name], a.Builtin)
 		}
 		req := model.Request{Messages: msgs, Tools: r.Tools.Definitions(offered)}
 		res, err := r.reserve(ctx, task, rn.ID, provider, req)

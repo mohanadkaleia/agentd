@@ -85,7 +85,11 @@ func (m Message) Text() string {
 }
 
 func FrontDeskPolicy() policy.Policy {
-	return policy.Policy{Tools: map[string]policy.Rule{},
+	rules := map[string]policy.Rule{}
+	for _, name := range ReadTools {
+		rules[name] = policy.Rule{Mode: policy.Allow}
+	}
+	return policy.Policy{Tools: rules,
 		Limits: policy.Limits{MaxLLMSpendUSD: 5, BudgetPeriod: policy.Duration{Duration: 720 * time.Hour}}}
 }
 

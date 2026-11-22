@@ -87,6 +87,10 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 			o, err := overview.Get(ctx, rt, id)
 			return o.Next.String(), err
 		}}
+	reads := &chat.Reads{DB: db, Runtime: rt, Now: now}
+	for _, tool := range reads.Tools() {
+		all[tool.Definition().Name] = tool
+	}
 	t.OnRelease = conversations.Released
 	rt.Opener = conversations
 	rt.Housekeeping = func(ctx context.Context) error {
