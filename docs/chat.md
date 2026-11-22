@@ -54,6 +54,33 @@ plain text with light formatting; nothing in a reply can load an image or open a
 The web app shows replies as they are written. The terminal shows each reply whole, when it is
 finished.
 
+## On your phone (Telegram)
+
+agentd can talk to you through a Telegram bot. It only reaches out to Telegram (long polling), so
+your agentd stays private. Telegram can read what is sent, so choose how much goes there.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Store the token on the Mac: `security add-generic-password -s agentd -a telegram-bot-token -w`
+3. Restart agentd (`agentd serve`, or reinstall the service).
+4. Run `agentd channel pair telegram` and send the printed code to your bot within 10 minutes.
+
+Only that Telegram account, in a direct chat with the bot, is heard. Everyone else gets a fixed
+refusal; group messages, forwarded messages and edits are ignored. `agentd channel revoke telegram`
+unpairs at once (for a lost phone).
+
+| Setting | Default | |
+|---|---|---|
+| `-level minimal` | | only "something is waiting, open the command center" |
+| `-level summary` | yes | titles, the tool and recipient, questions; approvals say "open to review" |
+| `-level full` | | bodies and exact arguments, and Approve / Reject buttons |
+| `-no-decide` | | no approving, rejecting or answering from the phone |
+| `-widen` | off | allow approving proposals, `/resume` and `/unhalt` from the phone |
+
+`agentd channel set telegram -level full` changes it. Deciding needs the exact arguments, so
+approve-in-place needs `full`. Anything about a project with `models.local_only` is only ever
+sent at `minimal`. `/halt` always works from a paired phone. While the bot runs, notifications
+reach the phone through it, so ntfy does not push them a second time.
+
 ## Exit codes
 
 | Code | Meaning |

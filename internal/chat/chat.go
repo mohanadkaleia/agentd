@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"agentd/internal/assignments"
@@ -56,6 +57,10 @@ type Service struct {
 
 	hub    hub
 	deltas deltas
+	// running holds the channel adapters running in this process; ignored rate-limits audit
+	// entries for updates a channel refuses.
+	running sync.Map
+	ignored sync.Map
 
 	Window         int
 	WindowBytes    int

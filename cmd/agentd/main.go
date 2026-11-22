@@ -69,6 +69,7 @@ commands:
   retry <task-id> [note]               continue a blocked task in its existing run
   resolve <action-id> happened|not-happened [note]
                                        settle an action whose outcome could not be determined
+  channel pair|list|set|revoke telegram talk to agentd from a Telegram bot on your phone (docs/chat.md)
   tell <task|assignment> "text"        send the owner's note to running work, word for word
   answer <question-id> "text"          answer a question a task asked
   approve <approval-id>                approve a pending action
@@ -155,6 +156,9 @@ func run() error {
 
 	if args[0] == "mcp" {
 		return mcpCommand(ctx, db, filepath.Dir(*dbPath), args[1:])
+	}
+	if args[0] == "channel" {
+		return channelCommand(ctx, db, args[1:])
 	}
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
@@ -250,6 +254,7 @@ func run() error {
 		if servers != nil {
 			servers.Poll(ctx, a.Scheduler)
 		}
+		startTelegram(ctx, a, log)
 		go beat(ctx, db, *listen, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		if err := system.Stopped(context.WithoutCancel(ctx), db); err != nil {
@@ -412,6 +417,8 @@ func status(ctx context.Context, a *app.App) error {
 		{"SCHEDULES", `SELECT id, title, interval_ms / 1000 || 's', datetime(next_fire_at / 1000, 'unixepoch', 'localtime') FROM schedules ORDER BY created_at`},
 		{"ACTIONS", `SELECT id, tool_name, resource, status FROM actions ORDER BY created_at`},
 		{"MCP SERVERS", `SELECT server, state, transport, last_error FROM mcp_servers ORDER BY server`},
+		{"CHANNELS", `SELECT name, CASE WHEN sender_id IS NULL THEN 'not paired' ELSE 'paired' END, level,
+			CASE WHEN widen = 1 THEN 'widen on' ELSE 'widen off' END FROM channels ORDER BY name`},
 		{"APPROVALS", `SELECT ap.id, a.tool_name, a.resource, ap.status FROM approvals ap JOIN actions a ON a.id = ap.action_id ORDER BY ap.requested_at`},
 	}
 	for _, s := range sections {

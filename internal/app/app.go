@@ -90,6 +90,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		all[tool.Definition().Name] = tool
 	}
 	t.OnRelease = conversations.Released
+	deliverer.Covered = conversations.Covered
 	rt.Opener = conversations
 	rt.Deltas = conversations
 	recheck := func(ctx context.Context) error {

@@ -26,8 +26,11 @@ type Channel interface {
 }
 
 type Deliverer struct {
-	DB          *sql.DB
-	Channel     Channel
+	DB      *sql.DB
+	Channel Channel
+	// Covered reports that another path (a paired chat channel) already brings every
+	// notification to the owner's phone; then a push would only repeat it.
+	Covered     func(context.Context) (bool, error)
 	Now         func() time.Time
 	MaxAttempts int
 	Claim       time.Duration
@@ -47,6 +50,18 @@ func (d *Deliverer) DeliverDue(ctx context.Context) error {
 		m, attempts, ok, err := d.claim(ctx)
 		if err != nil || !ok {
 			return err
+		}
+		if d.Covered != nil {
+			covered, err := d.Covered(ctx)
+			if err != nil {
+				return err
+			}
+			if covered {
+				if err := d.settle(ctx, m, attempts, "sent through a paired chat channel", nil); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 		ref, err := d.Channel.Send(ctx, m)
 		if ctx.Err() != nil {
