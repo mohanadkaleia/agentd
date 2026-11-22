@@ -87,6 +87,24 @@ type Restricted interface {
 	OnlyFor() string
 }
 
+// OwnerConfirmed tools always need the owner's approval: the gateway asks for it whatever the
+// policy says, and a policy that allows one outright is refused.
+type OwnerConfirmed interface {
+	Tool
+	NeedsOwner()
+}
+
+func NeedsOwner(t Tool) bool {
+	_, ok := t.(OwnerConfirmed)
+	return ok
+}
+
+// Describer tools explain a call in plain words for the owner deciding on it, with warnings.
+type Describer interface {
+	Tool
+	Describe(args json.RawMessage) (title, text string)
+}
+
 // Permits reports whether a tool may run for an assignment with this built-in key ("" for none).
 func Permits(t Tool, builtin string) bool {
 	r, ok := t.(Restricted)

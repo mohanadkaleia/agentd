@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -162,6 +165,20 @@ func (c *chatClient) local(ctx context.Context, text string) (bool, error) {
 	case "d":
 		c.print(c.details(*last))
 		return true, nil
+	case "e":
+		if last.Kind != chat.KindProposal {
+			return false, nil
+		}
+		edited, err := editInEditor(last.Card().Arguments)
+		if err != nil || edited == "" {
+			return true, err
+		}
+		m, err := c.post(ctx, chat.Post{Text: fmt.Sprintf("/edit %d %s", n, edited)})
+		if err != nil {
+			return true, err
+		}
+		_, err = c.follow(ctx, m, 0)
+		return true, err
 	case "a", "r":
 		command := map[string]string{"a": "/approve", "r": "/reject"}[text]
 		m, err := c.post(ctx, chat.Post{Text: fmt.Sprintf("%s %d", command, n)})
@@ -256,4 +273,44 @@ func (c *chatClient) goodbye() {
 	if os.MkdirAll(stateDir(), 0o700) == nil {
 		os.WriteFile(marker, nil, 0o600)
 	}
+}
+
+// editInEditor opens a proposal's arguments in $EDITOR and returns the saved JSON, or ""
+// when the owner saved it unchanged.
+func editInEditor(args json.RawMessage) (string, error) {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	f, err := os.CreateTemp("", "agentd-proposal-*.json")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	pretty, _ := json.MarshalIndent(args, "", "  ")
+	if _, err := f.Write(pretty); err != nil {
+		f.Close()
+		return "", err
+	}
+	f.Close()
+	cmd := exec.Command("sh", "-c", editor+` "$1"`, "editor", f.Name())
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("editor: %w", err)
+	}
+	saved, err := os.ReadFile(f.Name())
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(string(saved)) == strings.TrimSpace(string(pretty)) {
+		return "", nil
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, saved); err != nil {
+		return "", fmt.Errorf("the edited proposal is not valid JSON: %w", err)
+	}
+	return compact.String(), nil
 }

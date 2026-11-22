@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"agentd/internal/assignments"
@@ -80,6 +81,21 @@ func (s Spec) validate() error {
 }
 
 func (a *App) Create(ctx context.Context, s Spec) (string, error) {
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := a.CreateTx(ctx, tx, s)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+// CreateTx creates an assignment with its routes, schedules and obligations in the caller's
+// transaction, so either all of it exists or none of it does.
+func (a *App) CreateTx(ctx context.Context, tx *sql.Tx, s Spec) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
 	}
@@ -92,14 +108,14 @@ func (a *App) Create(ctx context.Context, s Spec) (string, error) {
 	var err error
 	switch s.Kind {
 	case assignments.KindProject:
-		id, err = a.Assignments.CreateProject(ctx, assignments.NewProject{
+		id, err = a.Assignments.CreateProjectTx(ctx, tx, assignments.NewProject{
 			Name: s.Name, Objective: s.Objective, Policy: s.Policy, Completion: s.Completion,
 		})
 	case assignments.KindResponsibility:
 		if s.Notifications == nil {
 			return "", fmt.Errorf("%w: a responsibility needs a notifications policy", assignments.ErrInvalid)
 		}
-		id, err = a.Assignments.CreateResponsibility(ctx, assignments.NewResponsibility{
+		id, err = a.Assignments.CreateResponsibilityTx(ctx, tx, assignments.NewResponsibility{
 			Name: s.Name, Objective: s.Objective, Policy: s.Policy, Notifications: *s.Notifications,
 		})
 	default:
@@ -109,26 +125,26 @@ func (a *App) Create(ctx context.Context, s Spec) (string, error) {
 		return "", err
 	}
 	for _, r := range s.Routes {
-		if _, err := a.Scheduler.AddRoute(ctx, scheduler.Route{
+		if _, err := a.Scheduler.AddRouteTx(ctx, tx, scheduler.Route{
 			AssignmentID: id, Source: r.Source, Kind: r.Kind, Match: r.Match, CoalesceField: r.CoalesceField,
 			Skills: r.Skills, Title: r.Title, Objective: r.Objective,
 		}); err != nil {
-			return id, err
+			return "", err
 		}
 	}
 	for _, sc := range s.Schedules {
-		if _, err := a.Scheduler.AddSchedule(ctx, scheduler.Schedule{
+		if _, err := a.Scheduler.AddScheduleTx(ctx, tx, scheduler.Schedule{
 			AssignmentID: id, Every: sc.Every.Duration, Skills: sc.Skills, Title: sc.Title, Objective: sc.Objective,
 		}); err != nil {
-			return id, err
+			return "", err
 		}
 	}
 	for _, o := range s.Obligations {
-		if _, err := a.Watchdog.Add(ctx, watchdog.Obligation{
+		if _, err := a.Watchdog.AddTx(ctx, tx, watchdog.Obligation{
 			AssignmentID: id, Description: o.Description, Every: o.Every.Duration, Grace: o.Grace.Duration,
 			Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills,
 		}); err != nil {
-			return id, err
+			return "", err
 		}
 	}
 	return id, nil

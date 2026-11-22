@@ -132,7 +132,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		}
 		return errors.Join(errs...)
 	}
-	return &App{
+	app := &App{
 		DB:          db,
 		Assignments: a,
 		Tasks:       t,
@@ -146,6 +146,12 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		Runtime:     rt,
 		Chat:        conversations,
 	}
+	for _, tool := range app.proposals() {
+		all[tool.Definition().Name] = tool
+	}
+	a.Check = app.ownerOnly
+	conversations.Edit = app.EditProposal
+	return app
 }
 
 func (a *App) PolicyWarnings(p policy.Policy) []string {

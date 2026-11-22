@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -46,6 +47,7 @@ func init() {
 		"retry":   {usage: "/retry <task> [note]", help: "continue a blocked task", starts: true, run: (*Service).cmdRetry},
 		"usage":   {usage: "/usage", help: "spend per assignment", run: (*Service).cmdUsage},
 		"new":     {usage: "/new", help: "start a new conversation", run: (*Service).cmdNew},
+		"edit":    {usage: "/edit <n> <json>", help: "replace a proposal with your edited version, which takes effect at once", run: (*Service).cmdEdit},
 	}
 }
 
@@ -352,6 +354,24 @@ func (s *Service) cmdUsage(ctx context.Context, _ call) (string, error) {
 		fmt.Fprintf(&b, "%-32s $%.4f of %s\n", name, float64(budget.SpentMicros)/1e6, limit)
 	}
 	return b.String(), nil
+}
+
+func (s *Service) cmdEdit(ctx context.Context, c call) (string, error) {
+	if len(c.args) < 2 || s.Edit == nil {
+		return "", errors.New("usage: /edit <n> <the edited proposal arguments as JSON>")
+	}
+	card, err := s.findCard(ctx, c.conv, c.args[0])
+	if err != nil {
+		return "", err
+	}
+	if card.Kind != KindProposal {
+		return "", fmt.Errorf("[%d] is not a proposal", card.Card().N)
+	}
+	args := strings.TrimSpace(strings.TrimPrefix(c.rest, c.args[0]))
+	if !json.Valid([]byte(args)) {
+		return "", errors.New("the edited proposal is not valid JSON")
+	}
+	return s.Edit(ctx, card.RefID, json.RawMessage(args), "owner:"+c.channel)
 }
 
 func (s *Service) cmdNew(ctx context.Context, _ call) (string, error) {

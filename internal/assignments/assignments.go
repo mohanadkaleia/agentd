@@ -162,9 +162,28 @@ type NewResponsibility struct {
 type Store struct {
 	DB  *sql.DB
 	Now func() time.Time
+	// Check, when set, vets every policy an assignment is created with or given, for rules
+	// the policy package cannot judge alone (such as tools whose decision is fixed in code).
+	Check func(policy.Policy) error
+}
+
+func (s *Store) validate(p policy.Policy) error {
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	if s.Check != nil {
+		if err := s.Check(p); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateProject(ctx context.Context, p NewProject) (string, error) {
+	return s.inTx(ctx, func(tx *sql.Tx) (string, error) { return s.CreateProjectTx(ctx, tx, p) })
+}
+
+func (s *Store) CreateProjectTx(ctx context.Context, tx *sql.Tx, p NewProject) (string, error) {
 	if err := p.Completion.normalize(); err != nil {
 		return "", err
 	}
@@ -172,10 +191,14 @@ func (s *Store) CreateProject(ctx context.Context, p NewProject) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return s.create(ctx, KindProject, p.Name, p.Objective, p.Policy, string(completion), nil, "")
+	return s.createTx(ctx, tx, KindProject, p.Name, p.Objective, p.Policy, string(completion), nil, "")
 }
 
 func (s *Store) CreateResponsibility(ctx context.Context, r NewResponsibility) (string, error) {
+	return s.inTx(ctx, func(tx *sql.Tx) (string, error) { return s.CreateResponsibilityTx(ctx, tx, r) })
+}
+
+func (s *Store) CreateResponsibilityTx(ctx context.Context, tx *sql.Tx, r NewResponsibility) (string, error) {
 	if err := validateResponsibilityPolicy(r.Policy); err != nil {
 		return "", err
 	}
@@ -186,7 +209,20 @@ func (s *Store) CreateResponsibility(ctx context.Context, r NewResponsibility) (
 	if err != nil {
 		return "", err
 	}
-	return s.create(ctx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), "")
+	return s.createTx(ctx, tx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), "")
+}
+
+func (s *Store) inTx(ctx context.Context, f func(*sql.Tx) (string, error)) (string, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := f(tx)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
 }
 
 // EnsureBuiltin creates the built-in responsibility with this key once and returns its id.
@@ -202,7 +238,9 @@ func (s *Store) EnsureBuiltin(ctx context.Context, key string, r NewResponsibili
 	if err != nil {
 		return "", err
 	}
-	return s.create(ctx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), key)
+	return s.inTx(ctx, func(tx *sql.Tx) (string, error) {
+		return s.createTx(ctx, tx, KindResponsibility, r.Name, r.Objective, r.Policy, nil, string(notifications), key)
+	})
 }
 
 func validateResponsibilityPolicy(p policy.Policy) error {
@@ -212,9 +250,9 @@ func validateResponsibilityPolicy(p policy.Policy) error {
 	return nil
 }
 
-func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p policy.Policy, completion, notifications any, builtin string) (string, error) {
-	if err := p.Validate(); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalid, err)
+func (s *Store) createTx(ctx context.Context, tx *sql.Tx, kind Kind, name, objective string, p policy.Policy, completion, notifications any, builtin string) (string, error) {
+	if err := s.validate(p); err != nil {
+		return "", err
 	}
 	body, err := json.Marshal(p)
 	if err != nil {
@@ -222,11 +260,6 @@ func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p
 	}
 	id := ids.New(map[Kind]string{KindProject: "prj", KindResponsibility: "rsp"}[kind])
 	now := s.Now()
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `INSERT INTO assignments (id, kind, name, objective, status, policy_json,
 		completion_json, notification_json, builtin, created_at, updated_at)
 		VALUES (?, ?, ?, ?, 'active', ?, ?, ?, NULLIF(?, ''), ?, ?)
@@ -241,7 +274,7 @@ func (s *Store) create(ctx context.Context, kind Kind, name, objective string, p
 	if err := audit.Record(ctx, tx, now, id, "user", string(kind)+".created", id, map[string]string{"name": name}); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	return id, nil
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Assignment, error) {
@@ -293,12 +326,28 @@ func (s *Store) ResumeBudgetPause(ctx context.Context, id, actor string) error {
 }
 
 func (s *Store) Resume(ctx context.Context, id, actor string) error {
-	err := s.transition(ctx, id, actor, "resumed", `status = 'paused'`,
+	return s.withTx(ctx, func(tx *sql.Tx) error { return s.ResumeTx(ctx, tx, id, actor) })
+}
+
+func (s *Store) ResumeTx(ctx context.Context, tx *sql.Tx, id, actor string) error {
+	err := s.transitionTx(ctx, tx, id, actor, "resumed", `status = 'paused'`,
 		`status = 'active', paused_by = NULL, status_reason = NULL`)
 	if errors.Is(err, ErrTerminated) {
 		return ErrNotPaused
 	}
 	return err
+}
+
+func (s *Store) withTx(ctx context.Context, f func(*sql.Tx) error) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := f(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Complete(ctx context.Context, id, actor string) error {
@@ -329,12 +378,11 @@ func (s *Store) end(ctx context.Context, id, actor string, kind Kind, status str
 }
 
 func (s *Store) transition(ctx context.Context, id, actor, operation, guard, set string, args ...any) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error { return s.transitionTx(ctx, tx, id, actor, operation, guard, set, args...) })
+}
+
+func (s *Store) transitionTx(ctx context.Context, tx *sql.Tx, id, actor, operation, guard, set string, args ...any) error {
 	now := s.Now()
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	var kind string
 	if err := tx.QueryRowContext(ctx, `SELECT kind FROM assignments WHERE id = ?`, id).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -349,44 +397,47 @@ func (s *Store) transition(ctx context.Context, id, actor, operation, guard, set
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrTerminated
 	}
-	if err := audit.Record(ctx, tx, now, id, actor, kind+"."+operation, id, nil); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return audit.Record(ctx, tx, now, id, actor, kind+"."+operation, id, nil)
 }
 
 func (s *Store) SetPolicy(ctx context.Context, id string, p policy.Policy, actor string) (int64, error) {
-	a, err := s.Get(ctx, id)
-	if err != nil {
+	var version int64
+	err := s.withTx(ctx, func(tx *sql.Tx) (err error) {
+		version, err = s.SetPolicyTx(ctx, tx, id, p, actor)
+		return err
+	})
+	return version, err
+}
+
+func (s *Store) SetPolicyTx(ctx context.Context, tx *sql.Tx, id string, p policy.Policy, actor string) (int64, error) {
+	var kind Kind
+	if err := tx.QueryRowContext(ctx, `SELECT kind FROM assignments WHERE id = ?`, id).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	} else if err != nil {
 		return 0, err
 	}
-	if a.Kind == KindResponsibility {
+	if kind == KindResponsibility {
 		if err := validateResponsibilityPolicy(p); err != nil {
 			return 0, err
 		}
 	}
-	if err := p.Validate(); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+	if err := s.validate(p); err != nil {
+		return 0, err
 	}
 	body, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
 	}
 	now := s.Now()
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	var version int64
 	if err := tx.QueryRowContext(ctx, `UPDATE assignments SET policy_json = ?, policy_version = policy_version + 1, updated_at = ?
 		WHERE id = ? RETURNING policy_version`, string(body), now.UnixMilli(), id).Scan(&version); err != nil {
 		return 0, err
 	}
-	if err := audit.Record(ctx, tx, now, id, actor, string(a.Kind)+".policy_updated", id, map[string]int64{"policy_version": version}); err != nil {
+	if err := audit.Record(ctx, tx, now, id, actor, string(kind)+".policy_updated", id, map[string]int64{"policy_version": version}); err != nil {
 		return 0, err
 	}
-	return version, tx.Commit()
+	return version, nil
 }
 
 func (s *Store) SetState(ctx context.Context, id string, state json.RawMessage, actor string) error {

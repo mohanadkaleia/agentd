@@ -93,6 +93,19 @@ type Watchdog struct {
 }
 
 func (w *Watchdog) Add(ctx context.Context, o Obligation) (string, error) {
+	tx, err := w.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := w.AddTx(ctx, tx, o)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+func (w *Watchdog) AddTx(ctx context.Context, tx *sql.Tx, o Obligation) (string, error) {
 	if o.Description == "" || o.Every <= 0 || o.Grace < 0 {
 		return "", fmt.Errorf("%w: an obligation needs a description and a positive interval", assignments.ErrInvalid)
 	}
@@ -116,11 +129,6 @@ func (w *Watchdog) Add(ctx context.Context, o Obligation) (string, error) {
 	}
 	id := ids.New("obl")
 	now := w.Now()
-	tx, err := w.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO obligations (id, assignment_id, description, every_ms, grace_ms, evidence_json, on_miss, skills_json, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, o.AssignmentID, o.Description, o.Every.Milliseconds(), o.Grace.Milliseconds(),
 		string(evidence), o.OnMiss, skills, now.UnixMilli()); err != nil {
@@ -129,7 +137,7 @@ func (w *Watchdog) Add(ctx context.Context, o Obligation) (string, error) {
 	if err := audit.Record(ctx, tx, now, o.AssignmentID, "user", "obligation.created", id, map[string]string{"description": o.Description}); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	return id, nil
 }
 
 func Status(ctx context.Context, db *sql.DB, assignmentID string, now time.Time) ([]Health, error) {

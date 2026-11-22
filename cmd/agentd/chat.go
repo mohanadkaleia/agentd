@@ -215,23 +215,30 @@ func (c *chatClient) follow(ctx context.Context, m chat.Message, timeout time.Du
 		if err != nil {
 			return failed, err
 		}
+		done, result := false, answered
 		for _, msg := range msgs {
 			c.show(msg)
+			if done {
+				continue
+			}
 			switch {
 			case direct && msg.Kind == chat.KindCommandResult:
+				done, result = true, answered
 				if failedText(msg) {
-					return refused, nil
+					result = refused
 				}
-				return answered, nil
 			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Author == chat.Agent:
-				return answered, nil
+				done, result = true, answered
 			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindError:
-				return failed, nil
-			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindNotice:
-				return cancelled, nil
+				done, result = true, failed
+			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindNotice && msg.RefKind == "":
+				done, result = true, cancelled
 			case msg.Kind == chat.KindNotice && msg.RefKind == "wait":
-				return waiting, nil
+				done, result = true, waiting
 			}
+		}
+		if done {
+			return result, nil
 		}
 		if !direct {
 			if err := c.activity(ctx, m.TurnTaskID, seen); err != nil {
@@ -317,7 +324,7 @@ func (c *chatClient) history(ctx context.Context, n int) error {
 func (c *chatClient) show(m chat.Message) {
 	c.mu.Lock()
 	c.after = max(c.after, m.Seq)
-	if m.Kind == chat.KindApproval && m.Status == "pending" {
+	if (m.Kind == chat.KindApproval || m.Kind == chat.KindProposal) && m.Status == "pending" {
 		shown := m
 		c.last = &shown
 	} else if m.Author != chat.Owner {
@@ -329,7 +336,7 @@ func (c *chatClient) show(m chat.Message) {
 		return
 	}
 	switch m.Kind {
-	case chat.KindApproval, chat.KindNotification, chat.KindReport:
+	case chat.KindApproval, chat.KindProposal, chat.KindNotification, chat.KindReport:
 		c.print(c.card(m))
 	case chat.KindError:
 		c.print(c.bold("! ") + c.wrap(sanitize(m.Text()), 2))
@@ -364,6 +371,13 @@ func (c *chatClient) card(m chat.Message) string {
 		} else {
 			fmt.Fprintf(&b, "    %s", m.Status)
 		}
+	case chat.KindProposal:
+		fmt.Fprintf(&b, "[%d] %s  %s\n    %s\n", card.N, c.bold("PROPOSAL"), sanitize(card.Title), c.wrap(sanitize(card.Text), 4))
+		if m.Status == "pending" {
+			fmt.Fprintf(&b, "    (d)etails  (a)pprove  (r)eject  (e)dit   or  /approve %d", card.N)
+		} else {
+			fmt.Fprintf(&b, "    %s", m.Status)
+		}
 	case chat.KindNotification:
 		fmt.Fprintf(&b, "%s  %s: %s\n    %s", c.bold("NOTIFICATION"), sanitize(card.Assignment), sanitize(card.Title),
 			c.wrap(sanitize(card.Text), 4))
@@ -386,7 +400,7 @@ func (c *chatClient) details(m chat.Message) string {
 // emit writes one message as a JSON line, with text fields made safe to print.
 func (c *chatClient) emit(m chat.Message) {
 	kind := "message"
-	if m.Kind == chat.KindApproval || m.Kind == chat.KindNotification || m.Kind == chat.KindReport {
+	if m.Kind == chat.KindApproval || m.Kind == chat.KindProposal || m.Kind == chat.KindNotification || m.Kind == chat.KindReport {
 		kind = "card"
 	}
 	var body map[string]any

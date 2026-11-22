@@ -187,8 +187,9 @@ Each layer removes work before the next, more expensive one:
 21. An MCP tool runs only under a definition the owner accepted. Installing or connecting a server grants nothing, and a definition that changed since acceptance cannot dispatch until accepted again.
 22. An MCP tool is a write unless the owner declared it a read; server annotations are never applied. An interrupted MCP write is retried only when the owner declared it idempotent, and is settled without a person only by finding its marker through a declared lookup.
 23. An MCP server never gets model access, the owner's attention or files through the protocol: agentd offers no sampling, elicitation or roots, sends no server instructions to a model, and starts a local server with only `PATH`, `HOME` and its configured environment.
-24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
+24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn waiting for the owner's decision on a card does not hold up the next one. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
 25. Only the owner decides an approval, through code: a button, the CLI, the API, a slash command, or a direct reply to an approval card that is exactly `approve`, `yes`, `reject` or `no`. No tool approves, and only the owner's own messages are parsed for commands, never text from a model, a tool or an email. A decision from a card is refused unless the approval is still pending and its argument hash still matches the card.
+26. Chat grants nothing by itself. The front desk can draft a new assignment, a policy, a schedule, a route, a task or a resume, but each draft is an action whose decision is fixed in code to the owner's approval: a policy that allows a propose tool is refused when it is set, and ignored at dispatch. A draft takes effect only through the same code `agentd create` and `agentd policy` use, in one transaction that records which action applied it, so a crash is reconciled without guessing. Lifting the emergency stop, revoking, cancelling, completing, confirming a criterion, resolving an outcome and accepting an MCP tool have no tool at all. Only pausing, which narrows what runs, takes effect without approval.
 
 ## Example: Portfolio Intelligence is configuration
 
@@ -343,6 +344,17 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
   model is down or the front desk is out of budget; during an emergency stop only `/retry` (which
   would start work) is refused. Numbers in `/approve 2` are the card's fixed number in that
   conversation, so a number never shifts to a different item.
+- **Proposals.** `propose_assignment`, `propose_policy`, `propose_schedule`, `propose_route`,
+  `propose_task` and `propose_resume` draft changes; `pause_assignment` acts at once. A draft is
+  checked when it is made (valid spec and policy, real tool and skill names, a budget, completion
+  criteria for a project), so a bad one comes back to the model as a tool error and never reaches
+  the owner. The card says in plain words what the work may do without asking, what needs approval,
+  the budget, when it is done and when it runs, with warnings (writes without approval, a budget
+  above $20, nothing to start it, criteria only the owner can confirm), and for a policy change marks
+  every rule it widens. `/edit <n> <json>` (or `e` in the terminal) replaces a draft with the owner's
+  own version, which takes effect at once, as `agentd create` would. A turn that waits for a
+  decision does not hold up the conversation, and when every draft in a turn failed, or a reply
+  talks about approving something that does not exist, the thread says so.
 - Housekeeping runs every step even when an earlier one fails, and reports all failures together.
 
 ## Known limits

@@ -74,6 +74,10 @@ func (s *Scheduler) Ingest(ctx context.Context, e Event) (string, bool, error) {
 }
 
 func (s *Scheduler) AddRoute(ctx context.Context, r Route) (string, error) {
+	return s.AddRouteTx(ctx, s.DB, r)
+}
+
+func (s *Scheduler) AddRouteTx(ctx context.Context, ex audit.Execer, r Route) (string, error) {
 	match, err := json.Marshal(r.Match)
 	if err != nil {
 		return "", err
@@ -86,7 +90,7 @@ func (s *Scheduler) AddRoute(ctx context.Context, r Route) (string, error) {
 		return "", err
 	}
 	id := ids.New("rte")
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO event_routes (id, assignment_id, source, kind, match_json, coalesce_field, skills_json,
+	_, err = ex.ExecContext(ctx, `INSERT INTO event_routes (id, assignment_id, source, kind, match_json, coalesce_field, skills_json,
 		title, objective, success_json, created_at)
 		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)`,
 		id, r.AssignmentID, r.Source, r.Kind, string(match), r.CoalesceField, skillsJSON(r.Skills),
@@ -95,6 +99,10 @@ func (s *Scheduler) AddRoute(ctx context.Context, r Route) (string, error) {
 }
 
 func (s *Scheduler) AddSchedule(ctx context.Context, sc Schedule) (string, error) {
+	return s.AddScheduleTx(ctx, s.DB, sc)
+}
+
+func (s *Scheduler) AddScheduleTx(ctx context.Context, ex audit.Execer, sc Schedule) (string, error) {
 	if sc.Every <= 0 {
 		return "", fmt.Errorf("schedule interval must be positive")
 	}
@@ -107,7 +115,7 @@ func (s *Scheduler) AddSchedule(ctx context.Context, sc Schedule) (string, error
 		first = s.Now()
 	}
 	id := ids.New("sch")
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO schedules (id, assignment_id, title, objective, success_json, skills_json,
+	_, err = ex.ExecContext(ctx, `INSERT INTO schedules (id, assignment_id, title, objective, success_json, skills_json,
 		interval_ms, next_fire_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sc.AssignmentID, sc.Title, sc.Objective, string(success), skillsJSON(sc.Skills),

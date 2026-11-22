@@ -51,6 +51,8 @@ type Service struct {
 	Now         func() time.Time
 	// Wake tells the interactive worker in this process that a turn is ready.
 	Wake func()
+	// Edit applies an owner-edited version of a pending proposal (approval id, new arguments).
+	Edit func(ctx context.Context, approvalID string, args json.RawMessage, by string) (string, error)
 
 	Window         int
 	WindowBytes    int
@@ -88,10 +90,18 @@ func (m Message) Text() string {
 	return t.Text
 }
 
+// ProposeTools draft changes the owner must approve; PauseTool narrows and runs at once.
+var ProposeTools = []string{"propose_assignment", "propose_policy", "propose_schedule", "propose_route", "propose_task", "propose_resume"}
+
+const PauseTool = "pause_assignment"
+
 func FrontDeskPolicy() policy.Policy {
-	rules := map[string]policy.Rule{}
+	rules := map[string]policy.Rule{PauseTool: {Mode: policy.Allow}}
 	for _, name := range ReadTools {
 		rules[name] = policy.Rule{Mode: policy.Allow}
+	}
+	for _, name := range ProposeTools {
+		rules[name] = policy.Rule{Mode: policy.RequireApproval}
 	}
 	return policy.Policy{Tools: rules,
 		Limits: policy.Limits{MaxLLMSpendUSD: 5, BudgetPeriod: policy.Duration{Duration: 720 * time.Hour}}}
@@ -276,12 +286,13 @@ func reply(text, to string) json.RawMessage {
 }
 
 // turnFor picks the turn a new owner message belongs to: a turn that has not started yet,
-// or a new one, parked when another turn of this conversation is still open.
+// or a new one, parked when another turn of this conversation is still open. A turn waiting
+// for the owner's decision on a card does not hold up the conversation.
 func (s *Service) turnFor(ctx context.Context, tx *sql.Tx, desk string, m Message) (string, bool, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, EXISTS (SELECT 1 FROM runs r WHERE r.task_id = t.id)
 		FROM tasks t WHERE t.id IN (SELECT DISTINCT turn_task_id FROM conversation_messages
 			WHERE conversation_id = ? AND author = 'owner')
-		AND t.status NOT IN ('completed', 'blocked', 'cancelled') ORDER BY t.created_at, t.rowid`, m.ConversationID)
+		AND t.status NOT IN ('completed', 'blocked', 'cancelled', 'waiting_approval') ORDER BY t.created_at, t.rowid`, m.ConversationID)
 	if err != nil {
 		return "", false, err
 	}

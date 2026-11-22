@@ -377,3 +377,20 @@ func TestUsageListsChat(t *testing.T) {
 }
 
 var _ = chat.Agent
+
+func TestEditingAProposalReturnsTheSavedJSON(t *testing.T) {
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", `f() { printf '{"spec": {"name": "edited"}}' > "$1"; }; f`)
+	got, err := editInEditor(json.RawMessage(`{"spec":{"name":"draft"}}`))
+	if err != nil || got != `{"spec":{"name":"edited"}}` {
+		t.Fatalf("edited = %q, %v", got, err)
+	}
+	t.Setenv("EDITOR", "true")
+	if got, err := editInEditor(json.RawMessage(`{"a":1}`)); err != nil || got != "" {
+		t.Fatalf("unchanged = %q, %v; want nothing to send", got, err)
+	}
+	t.Setenv("EDITOR", `f() { printf 'not json' > "$1"; }; f`)
+	if _, err := editInEditor(json.RawMessage(`{"a":1}`)); err == nil {
+		t.Fatal("invalid JSON was accepted")
+	}
+}

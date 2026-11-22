@@ -13,9 +13,12 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/audit"
 	"agentd/internal/gateway"
+	"agentd/internal/overview"
+	"agentd/internal/tools"
 )
 
 const (
+	KindProposal      = "proposal"
 	KindApproval      = "approval"
 	KindNotification  = "notification"
 	KindReport        = "report"
@@ -48,7 +51,7 @@ func (m Message) Card() Card {
 	return c
 }
 
-func decision(kind string) bool { return kind == KindApproval }
+func decision(kind string) bool { return kind == KindApproval || kind == KindProposal }
 
 var (
 	ErrStale      = errors.New("this card no longer matches the action waiting for approval")
@@ -117,9 +120,16 @@ func (s *Service) addCard(ctx context.Context, ok bool, conv, kind, ref string, 
 		if err != nil {
 			return err
 		}
-		if _, err := insert(ctx, tx, Message{ID: newID(), ConversationID: conv, Author: System, Kind: kind, Body: b,
-			RefKind: kind, RefID: ref, CreatedAt: s.Now()}); err != nil {
+		seq, err := insert(ctx, tx, Message{ID: newID(), ConversationID: conv, Author: System, Kind: kind, Body: b,
+			RefKind: kind, RefID: ref, CreatedAt: s.Now()})
+		if err != nil {
 			return err
+		}
+		if kind == KindProposal && seq > 0 {
+			if err := audit.Record(ctx, tx, s.Now(), c.AssignmentID, "chat", "chat.proposal_created", ref,
+				map[string]any{"action_id": c.ActionID, "conversation": conv, "n": c.N}); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE system_state SET value = ?, updated_at = ? WHERE key = ?`,
@@ -149,6 +159,8 @@ func (s *Service) cardFor(ctx context.Context, e audit.Entry) (string, Card, str
 	switch {
 	case e.Operation == "approval.requested":
 		return s.approvalCard(ctx, e.ObjectID, a)
+	case e.Operation == "action.succeeded":
+		return s.appliedCard(ctx, e.ObjectID, a)
 	case e.Operation == "notification.pending":
 		var title, text, severity, task string
 		if err := s.DB.QueryRowContext(ctx, `SELECT title, body, severity, COALESCE(task_id, '') FROM notifications WHERE id = ?`,
@@ -213,8 +225,47 @@ func (s *Service) approvalCard(ctx context.Context, id string, a assignments.Ass
 	c.Title, c.Arguments, c.ExpiresAt = strings.TrimSpace(c.Tool+" "+c.Resource), json.RawMessage(args), &at
 	c.AssignmentID, c.Assignment, c.Source = a.ID, a.Name, "agent"
 	c.Actions = []string{"approve", "reject", "details"}
+	kind := KindApproval
+	tool := s.Runtime.Tools[c.Tool]
+	if d, ok := tool.(tools.Describer); ok {
+		c.Title, c.Text = d.Describe(c.Arguments)
+	}
+	if tools.NeedsOwner(tool) {
+		kind, c.Actions = KindProposal, []string{"approve", "reject", "edit", "details"}
+	}
 	conv, err := s.conversationFor(ctx, a, c.TaskID)
-	return KindApproval, c, conv, err == nil, err
+	return kind, c, conv, err == nil, err
+}
+
+// appliedCard reports a confirmed proposal taking effect, with what it created.
+func (s *Service) appliedCard(ctx context.Context, actionID string, a assignments.Assignment) (string, Card, string, bool, error) {
+	var tool, task, external string
+	var args string
+	if err := s.DB.QueryRowContext(ctx, `SELECT tool_name, task_id, COALESCE(external_id, ''), arguments_json FROM actions WHERE id = ?`,
+		actionID).Scan(&tool, &task, &external, &args); err != nil {
+		return "", Card{}, "", false, err
+	}
+	t := s.Runtime.Tools[tool]
+	if !tools.NeedsOwner(t) {
+		return "", Card{}, "", false, nil
+	}
+	c := Card{Title: "Done: " + tool, Source: "agentd", ActionID: actionID, TaskID: task, Actions: []string{"open"}}
+	if d, ok := t.(tools.Describer); ok {
+		title, _ := d.Describe(json.RawMessage(args))
+		c.Title = "Done: " + title
+	}
+	if created, err := s.Assignments.Get(ctx, external); err == nil {
+		c.AssignmentID, c.Assignment = created.ID, created.Name
+		next := ""
+		if o, err := overview.Get(ctx, s.Runtime, created.ID); err == nil {
+			next = o.Next.String()
+		}
+		c.Text = fmt.Sprintf("%s %s is %s. Next: %s", created.Kind, created.ID, created.Status, next)
+	} else if external != "" {
+		c.Text = "Created " + external + "."
+	}
+	conv, err := s.conversationFor(ctx, a, task)
+	return KindReport, c, conv, err == nil, err
 }
 
 // conversationFor is the conversation of the turn that caused something, or the default one.
@@ -240,7 +291,7 @@ func (s *Service) live(ctx context.Context, msgs []Message) error {
 			continue
 		}
 		switch m.Kind {
-		case KindApproval:
+		case KindApproval, KindProposal:
 			var status string
 			var expires int64
 			if err := s.DB.QueryRowContext(ctx, `SELECT status, expires_at FROM approvals WHERE id = ?`, m.RefID).Scan(&status, &expires); err != nil {
@@ -304,9 +355,9 @@ func (s *Service) findCard(ctx context.Context, conv, ref string) (Message, erro
 	var m Message
 	var err error
 	if n, nerr := strconv.Atoi(ref); nerr == nil {
-		m, err = messageBy(ctx, s.DB, `conversation_id = ? AND kind = 'approval' AND json_extract(body_json, '$.n') = ?`, conv, n)
+		m, err = messageBy(ctx, s.DB, `conversation_id = ? AND kind IN ('approval', 'proposal') AND json_extract(body_json, '$.n') = ?`, conv, n)
 	} else {
-		m, err = messageBy(ctx, s.DB, `kind = 'approval' AND ref_id = ? ORDER BY conversation_id = ? DESC LIMIT 1`, ref, conv)
+		m, err = messageBy(ctx, s.DB, `kind IN ('approval', 'proposal') AND ref_id = ? ORDER BY conversation_id = ? DESC LIMIT 1`, ref, conv)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, fmt.Errorf("%w: %s", ErrNoSuchCard, ref)

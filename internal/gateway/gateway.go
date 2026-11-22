@@ -206,6 +206,9 @@ func (g *Gateway) authorizeAndDispatch(ctx context.Context, a *Action, tool tool
 	if !task.Allows(a.ToolName) {
 		d = policy.Decision{Mode: policy.Deny, Reason: fmt.Sprintf("tool %q is not in this task's allowlist", a.ToolName)}
 	}
+	if tools.NeedsOwner(tool) && d.Mode == policy.Allow {
+		d = policy.Decision{Mode: policy.RequireApproval, Reason: fmt.Sprintf("tool %q always needs the owner's approval", a.ToolName)}
+	}
 	if !tools.Permits(tool, p.Builtin) {
 		d = policy.Decision{Mode: policy.Deny, Reason: fmt.Sprintf("tool %q is reserved for a built-in assignment", a.ToolName)}
 	}

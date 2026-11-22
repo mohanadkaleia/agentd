@@ -30,6 +30,10 @@ email or a web page and expect it to be treated as data.
   leaves. Leaving stops nothing: your projects keep running.
 - An approval card shows `(d)etails (a)pprove (r)eject`. Typing just `d`, `a` or `r` acts on it
   only when that card is the last thing shown; otherwise use `/approve <n>` or `/reject <n>`.
+- Ask for new work in plain words ("get me a refund for flight LH123"). agentd drafts it and shows a
+  proposal card: what it may do without asking, what needs your approval, its budget, and when it is
+  done. Nothing exists until you approve that exact draft. `e` opens the draft in `$EDITOR`; saving
+  replaces the draft with your version, which takes effect at once.
 - `/quit` and `/clear` are handled by the terminal; every other `/command` (see `/help`) is run by
   agentd itself, never by a model, so it works when the model is down or the chat budget is used up.
 - Input history is kept in `~/.local/state/agentd/chat_history` (or `$XDG_STATE_HOME/agentd`),
