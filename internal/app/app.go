@@ -87,8 +87,12 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 		if err != nil {
 			return err
 		}
-		for _, taskID := range confirmed {
-			err := rt.Retry(ctx, taskID, "gateway", "the provider confirmed the action took effect")
+		for _, settled := range confirmed {
+			note := "the provider confirmed the action took effect"
+			if !settled.Happened {
+				note = "the provider confirmed the action did not take effect; decide whether to try again"
+			}
+			err := rt.Retry(ctx, settled.TaskID, "gateway", note)
 			if err != nil && !errors.Is(err, runtime.ErrNotBlocked) && !errors.Is(err, runtime.ErrUnresolvedWork) {
 				return err
 			}

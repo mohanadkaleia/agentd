@@ -251,6 +251,7 @@ type world struct {
 	app    *app.App
 	fake   *fake
 	server *Server
+	clock  *testutil.Clock
 	task   string
 	asg    string
 	seq    int
@@ -268,7 +269,8 @@ func newWorldWith(t *testing.T, f *fake, filter ToolFilter, p policy.Policy, acc
 		registry[name] = tool
 	}
 	idle := scripted.Provider(func(model.Request) model.Message { return model.Message{Content: "done"} })
-	a := app.New(db, idle, "scripted", registry, testutil.NewClock().Now)
+	clock := testutil.NewClock()
+	a := app.New(db, idle, "scripted", registry, clock.Now)
 	asg, task, err := demo.Seed(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -279,7 +281,7 @@ func newWorldWith(t *testing.T, f *fake, filter ToolFilter, p policy.Policy, acc
 	if _, err := db.Exec(`INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES ('run_1', ?, 'scripted', 'running', 0)`, task); err != nil {
 		t.Fatal(err)
 	}
-	return &world{t: t, app: a, fake: f, server: s, task: task, asg: asg}
+	return &world{t: t, app: a, fake: f, server: s, clock: clock, task: task, asg: asg}
 }
 
 func (w *world) handle(tool, args string) (gateway.Outcome, string) {

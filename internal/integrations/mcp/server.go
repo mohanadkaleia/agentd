@@ -339,7 +339,7 @@ func (s *Server) wrap(remote *mcp.Tool) (*Tool, listed, error) {
 	if meta.Resource != "" {
 		resource = strings.Split(meta.Resource, ".")
 	}
-	return &Tool{server: s, remote: remote.Name, effect: effect, resource: resource, def: model.ToolDefinition{
+	return &Tool{server: s, remote: remote.Name, effect: effect, resource: resource, idempotent: meta.Idempotent, rule: meta.Reconcile, def: model.ToolDefinition{
 		Name:        name,
 		Description: clean(remote.Description, maxDescription),
 		InputSchema: schema,

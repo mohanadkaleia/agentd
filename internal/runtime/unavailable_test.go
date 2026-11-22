@@ -126,6 +126,9 @@ func TestCrashedSendWithMissingToolBlocksUntilProviderConfirms(t *testing.T) {
 	if got := h.actionStatuses("send_email"); got[0] != gateway.NeedsReconciliation {
 		t.Fatalf("action = %s, want needs_reconciliation", got[0])
 	}
+	if n := h.count(`SELECT COUNT(*) FROM notifications WHERE dedup_key = ?`, "unknown-outcome:"+h.taskID); n != 1 {
+		t.Fatalf("unknown-outcome notifications = %d, want 1", n)
+	}
 
 	h.tools = nil
 	h.restart()

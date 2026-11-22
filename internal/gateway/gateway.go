@@ -71,6 +71,7 @@ type Action struct {
 	IdempotencyKey string
 	Result         json.RawMessage
 	DefinitionHash string
+	DispatchedAt   time.Time
 	scope          []string
 }
 
@@ -329,7 +330,7 @@ func (g *Gateway) beginDispatch(ctx context.Context, a *Action, limit policy.Rat
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
-	a.Status = Dispatching
+	a.Status, a.DispatchedAt = Dispatching, now
 	return "", nil
 }
 
@@ -403,7 +404,7 @@ func (g *Gateway) setStatus(ctx context.Context, a *Action, from, to string) err
 }
 
 const actionColumns = `id, run_id, task_id, assignment_id, tool_name, arguments_json, arguments_hash,
-	resource, status, idempotency_key, result_json, COALESCE(definition_hash, '')`
+	resource, status, idempotency_key, result_json, COALESCE(definition_hash, ''), COALESCE(dispatched_at, 0)`
 
 func (g *Gateway) loadByKey(ctx context.Context, key string) (Action, error) {
 	return scanAction(g.DB.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM actions WHERE idempotency_key = ?`, key))
@@ -413,9 +414,13 @@ func scanAction(row interface{ Scan(...any) error }) (Action, error) {
 	var a Action
 	var args string
 	var result sql.NullString
+	var dispatched int64
 	err := row.
 		Scan(&a.ID, &a.RunID, &a.TaskID, &a.AssignmentID, &a.ToolName, &args, &a.ArgumentsHash,
-			&a.Resource, &a.Status, &a.IdempotencyKey, &result, &a.DefinitionHash)
+			&a.Resource, &a.Status, &a.IdempotencyKey, &result, &a.DefinitionHash, &dispatched)
+	if dispatched > 0 {
+		a.DispatchedAt = time.UnixMilli(dispatched)
+	}
 	a.Arguments = json.RawMessage(args)
 	if result.Valid {
 		a.Result = json.RawMessage(result.String)
@@ -433,6 +438,8 @@ func (g *Gateway) invocation(a Action) tools.Invocation {
 		Name:           a.ToolName,
 		Arguments:      a.Arguments,
 		Scope:          a.scope,
+		DispatchedAt:   a.DispatchedAt,
+		Now:            g.Now(),
 	}
 }
 

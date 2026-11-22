@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"agentd/internal/audit"
+	"agentd/internal/system"
 	"agentd/internal/tools"
 )
 
@@ -81,7 +82,18 @@ func (u Unresolved) String() string {
 	return fmt.Sprintf("%s %s", u.ToolName, u.Resource)
 }
 
-func (g *Gateway) Recheck(ctx context.Context) ([]string, error) {
+// Settled is a task whose unresolved action the provider has now settled.
+type Settled struct {
+	TaskID   string
+	Happened bool
+}
+
+// Recheck asks each tool again about actions whose outcome is unknown. Nothing is asked
+// while the emergency stop is set.
+func (g *Gateway) Recheck(ctx context.Context) ([]Settled, error) {
+	if s, err := system.Get(ctx, g.DB); err != nil || s.Halted {
+		return nil, err
+	}
 	rows, err := g.DB.QueryContext(ctx, `SELECT `+actionColumns+` FROM actions
 		WHERE status = 'needs_reconciliation' AND updated_at <= ? ORDER BY updated_at, id LIMIT 10`,
 		g.Now().Add(-g.RecheckEvery).UnixMilli())
@@ -101,7 +113,7 @@ func (g *Gateway) Recheck(ctx context.Context) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	var confirmed []string
+	var confirmed []Settled
 	for _, a := range due {
 		finding, res := tools.Unknown, tools.Result{}
 		if tool, ok := g.Tools.Lookup(a.ToolName); ok {
@@ -113,10 +125,15 @@ func (g *Gateway) Recheck(ctx context.Context) ([]string, error) {
 				finding = tools.Unknown
 			}
 		}
-		if finding == tools.Happened {
-			_, err := g.finish(ctx, &a, NeedsReconciliation, Succeeded, res.Output, res.ExternalID)
+		if finding == tools.Happened || finding == tools.NotHappened {
+			var err error
+			if finding == tools.Happened {
+				_, err = g.finish(ctx, &a, NeedsReconciliation, Succeeded, res.Output, res.ExternalID)
+			} else {
+				_, err = g.finish(ctx, &a, NeedsReconciliation, Failed, errorJSON("the provider confirmed this did not happen"), "")
+			}
 			if err == nil {
-				confirmed = append(confirmed, a.TaskID)
+				confirmed = append(confirmed, Settled{TaskID: a.TaskID, Happened: finding == tools.Happened})
 				continue
 			}
 			if !errors.Is(err, ErrConflict) {

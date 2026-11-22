@@ -168,7 +168,26 @@ a write unless you mark it `"effect": "read"`. Mark only true reads: after a cra
 runs a read again. An interrupted write, or a write the server reports as failed, blocks its task
 until you settle it with `agentd resolve`. `resource` names the argument policy matches on, exactly
 as the tool takes it (a channel id, not `#alerts`); a call without it, or with a list of more than
-one value, is refused before anything is sent. A `resources` list only gates which value was asked
+one value, is refused before anything is sent.
+
+A write that is interrupted blocks until you settle it with `agentd resolve`, unless you give agentd
+a way to know. `"idempotent": true` says running it twice is harmless (setting a status, adding a
+label), so after an unclear outcome the model may simply try again; a wrong declaration means a
+duplicate. `"reconcile"` lets agentd check: it puts a marker derived from the action in one argument
+and, after a crash or an unclear error, looks the marker up with a read tool of the same server:
+
+```json
+"post_message": {"effect": "write", "resource": "channel_id", "reconcile": {
+  "marker": {"arg": "metadata.client_ref"},
+  "lookup": {"tool": "find_message", "args": {"client_ref": "{{marker}}"}, "found_when": "matches.0", "external_id": "matches.0.id"}}}
+```
+
+A hit settles the action as done; a miss is not proof (indexes lag), so the task stays blocked and
+agentd keeps checking every minute, unless you add `"miss_is_authoritative_after": "10m"` for a
+lookup you know is consistent. The model cannot set the marker argument itself, and lookups are not
+agent actions: they need no policy rule, count against no rate limit, and stop during an emergency
+stop. `agentd mcp tools <server>` counts how often you resolved each tool by hand, to show which
+tools deserve one of these. A `resources` list only gates which value was asked
 for, not what comes back, so a search tool with no resource argument reads the whole account. Rules
 name exact tools; `chat__*` is rejected. `agentd serve` logs rules that can never apply, and the
 command center shows them on the assignment. The server runs

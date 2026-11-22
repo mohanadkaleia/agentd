@@ -122,6 +122,16 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 				case gateway.Paused:
 					return r.Tasks.Release(ctx, lease, tasks.Release{Status: tasks.Ready})
 				case gateway.Blocked:
+					if r.Outbox != nil {
+						if _, err := r.Outbox.Notify(ctx, notify.Notification{AssignmentID: task.AssignmentID, TaskID: task.ID,
+							DedupKey: "unknown-outcome:" + task.ID, Severity: assignments.SeverityAction,
+							Title: "Did it happen? A task is waiting for you",
+							Body: fmt.Sprintf("%q could not tell whether %s took effect, so it will not retry it. Check, then: agentd resolve <action-id> happened|not-happened",
+								task.Title, call.Name),
+						}); err != nil {
+							return r.fail(ctx, lease, task, err)
+						}
+					}
 					return r.block(ctx, lease, rn.ID, map[string]string{"error": "action outcome needs manual reconciliation", "detail": out.Content})
 				case gateway.Unavailable:
 					return r.waitForTool(ctx, lease, task, rn.ID, out)

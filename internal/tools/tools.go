@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"agentd/internal/model"
 )
@@ -38,6 +39,8 @@ type Invocation struct {
 	Name           string
 	Arguments      json.RawMessage
 	Scope          []string
+	DispatchedAt   time.Time
+	Now            time.Time
 }
 
 type Result struct {

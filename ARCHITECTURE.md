@@ -241,7 +241,12 @@ until `agentd mcp restart`, which reaches the running process through the databa
 registry never changes after startup: every tool known from the pinned table is registered even if
 its server is down, and a tool whose server is not connected reports itself unavailable, so its
 calls wait. Calls per server are capped, and a local server whose call exceeds its time limit is
-restarted. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
+restarted. A write's recovery is opt-in and owner-declared: `idempotent` lets an unclear outcome
+count as "did not happen" (audited as `action.assumed_idempotent`), and `reconcile` injects a marker
+derived from the idempotency key at dispatch, without changing the persisted arguments or their
+approval hash, then looks it up through a declared, accepted read tool. A hit is "happened", a miss
+stays unknown unless the owner declared the lookup authoritative after an age, and a lookup error is
+unknown. Recheck settles both ways and makes no lookups while halted. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
 runtime and gateway see nothing new. The client offers servers no sampling, elicitation or roots, so
 a server cannot spend the model budget, prompt the owner, or ask for files. A child process gets
 only `PATH`, `HOME` and its configured env. Server annotations (`readOnlyHint` and the rest) are

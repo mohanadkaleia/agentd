@@ -92,8 +92,27 @@ type ToolFilter struct {
 // authority. Declaring a write as a read is unsafe: after a crash mid-call agentd runs a
 // read again.
 type ToolMeta struct {
-	Effect   string `json:"effect,omitempty"`
-	Resource string `json:"resource,omitempty"`
+	Effect     string         `json:"effect,omitempty"`
+	Resource   string         `json:"resource,omitempty"`
+	Idempotent bool           `json:"idempotent,omitempty"`
+	Reconcile  *ReconcileRule `json:"reconcile,omitempty"`
+}
+
+// ReconcileRule lets agentd find out whether an interrupted write happened. agentd puts a
+// marker derived from the action into one argument, and after a crash or an ambiguous
+// error calls a read tool on the same server to look for it. A miss is not proof; only
+// MissIsAuthoritativeAfter, when the owner knows the lookup is consistent, makes it one.
+type ReconcileRule struct {
+	Marker struct {
+		Arg string `json:"arg"`
+	} `json:"marker"`
+	Lookup struct {
+		Tool       string         `json:"tool"`
+		Args       map[string]any `json:"args"`
+		FoundWhen  string         `json:"found_when"`
+		ExternalID string         `json:"external_id,omitempty"`
+	} `json:"lookup"`
+	MissIsAuthoritativeAfter policy.Duration `json:"miss_is_authoritative_after,omitzero"`
 }
 
 const defaultCallTimeout = 60 * time.Second
@@ -105,6 +124,58 @@ var (
 	secretish  = regexp.MustCompile(`(?i)token|secret|key|password|passwd|credential|auth|cookie`)
 	keychainID = regexp.MustCompile(`^[a-z0-9.-]+/[a-z0-9-]+$`)
 )
+
+func validateRecovery(s ServerConfig, tool string, m ToolMeta) error {
+	if (m.Idempotent || m.Reconcile != nil) && m.Effect == "read" {
+		return errors.New("idempotent and reconcile apply to writes; a read is always safe to run again")
+	}
+	if m.Idempotent && m.Reconcile != nil {
+		return errors.New("choose idempotent or reconcile, not both")
+	}
+	r := m.Reconcile
+	if r == nil {
+		return nil
+	}
+	if !argPath.MatchString(r.Marker.Arg) {
+		return errors.New(`reconcile.marker.arg must name an argument, like "metadata.client_ref"`)
+	}
+	if r.Marker.Arg == m.Resource {
+		return errors.New("reconcile.marker.arg cannot be the policy resource argument")
+	}
+	if r.Lookup.Tool == tool || s.Tools.Meta[r.Lookup.Tool].Effect != "read" || !s.Tools.allows(r.Lookup.Tool) {
+		return fmt.Errorf("reconcile.lookup.tool %q must be another tool of this server, included and declared \"effect\": \"read\"", r.Lookup.Tool)
+	}
+	if !argPath.MatchString(r.Lookup.FoundWhen) || (r.Lookup.ExternalID != "" && !argPath.MatchString(r.Lookup.ExternalID)) {
+		return errors.New(`reconcile.lookup.found_when and external_id are paths into the lookup result, like "matches.0.id"`)
+	}
+	if !mentionsMarker(r.Lookup.Args) {
+		return errors.New(`reconcile.lookup.args must pass "{{marker}}" somewhere`)
+	}
+	if r.MissIsAuthoritativeAfter.Duration < 0 {
+		return errors.New("miss_is_authoritative_after must be positive")
+	}
+	return nil
+}
+
+func mentionsMarker(v any) bool {
+	switch v := v.(type) {
+	case string:
+		return v == "{{marker}}"
+	case map[string]any:
+		for _, inner := range v {
+			if mentionsMarker(inner) {
+				return true
+			}
+		}
+	case []any:
+		for _, inner := range v {
+			if mentionsMarker(inner) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func validateRemote(name string, s ServerConfig) error {
 	u, err := url.Parse(s.URL)
@@ -233,6 +304,9 @@ func (c Config) validate(mode os.FileMode) error {
 			}
 			if m.Resource != "" && !argPath.MatchString(m.Resource) {
 				return fmt.Errorf("server %q tool %q: resource must name an argument, like \"channel_id\" or \"message.channel\"", name, tool)
+			}
+			if err := validateRecovery(s, tool, m); err != nil {
+				return fmt.Errorf("server %q tool %q: %w", name, tool, err)
 			}
 		}
 	}
