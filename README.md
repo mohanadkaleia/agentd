@@ -24,6 +24,9 @@ your machine) or an Anthropic API key.
    ollama pull qwen2.5:7b
    ./bin/agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777
 
+   # or several models, with small work on the fast one
+   ./bin/agentd -models small=ollama/qwen2.5:7b,big=ollama/qwen3.5:27b -tier fast=small -tier default=big serve -listen 127.0.0.1:7777
+
    # or Claude
    export ANTHROPIC_API_KEY=...
    ./bin/agentd -model anthropic serve -listen 127.0.0.1:7777

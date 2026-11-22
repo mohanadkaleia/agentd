@@ -343,7 +343,7 @@ func (s *Service) turnFor(ctx context.Context, tx *sql.Tx, desk string, m Messag
 	}
 	id, err := s.Tasks.CreateTx(ctx, tx, tasks.NewTask{AssignmentID: desk, OriginKey: "chat:" + m.ID,
 		Title: "Reply in conversation", Objective: "Reply to the owner's latest message.",
-		Priority: tasks.PriorityInteractive, MaxSteps: steps})
+		Priority: tasks.PriorityInteractive, MaxSteps: steps, ModelTier: "fast"})
 	return id, open > 0, err
 }
 

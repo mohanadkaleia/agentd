@@ -318,7 +318,7 @@ func prune(v any) bool {
 // keyOrder is the reading order for keys at any level; others follow alphabetically.
 var keyOrder = []string{"kind", "name", "policy", "tools", "mode", "resources", "otherwise", "limits", "max_llm_spend_usd",
 	"budget_period", "tool_rate_limits", "models", "completion", "criteria", "id", "title", "description", "every", "grace",
-	"source", "match", "coalesce_field", "evidence", "on_miss", "skills", "objective", "notifications", "min_severity",
+	"source", "match", "coalesce_field", "evidence", "on_miss", "skills", "tier", "prefer", "objective", "notifications", "min_severity",
 	"dedup_window", "max_per_day", "schedules", "routes", "obligations"}
 
 var longDuration = regexp.MustCompile(`^(\d+h)?(\d+m)?(\d+s)$`)
@@ -393,7 +393,7 @@ func (a *App) Export(ctx context.Context, id string) (Spec, error) {
 	}
 	for _, r := range routes {
 		s.Routes = append(s.Routes, RouteSpec{Source: r.Source, Kind: r.Kind, Match: r.Match, CoalesceField: r.CoalesceField,
-			Skills: r.Skills, Title: r.Title, Objective: r.Objective})
+			Skills: r.Skills, Title: r.Title, Objective: r.Objective, Tier: r.Tier})
 	}
 	schedules, err := a.Scheduler.Schedules(ctx, id)
 	if err != nil {
@@ -401,7 +401,7 @@ func (a *App) Export(ctx context.Context, id string) (Spec, error) {
 	}
 	for _, sc := range schedules {
 		s.Schedules = append(s.Schedules, ScheduleSpec{Every: policy.Duration{Duration: sc.Every}, Skills: sc.Skills,
-			Title: sc.Title, Objective: sc.Objective})
+			Title: sc.Title, Objective: sc.Objective, Tier: sc.Tier})
 	}
 	obligations, err := watchdog.List(ctx, a.DB, id)
 	if err != nil {
@@ -409,7 +409,7 @@ func (a *App) Export(ctx context.Context, id string) (Spec, error) {
 	}
 	for _, o := range obligations {
 		s.Obligations = append(s.Obligations, ObligationSpec{Description: o.Description, Every: policy.Duration{Duration: o.Every},
-			Grace: policy.Duration{Duration: o.Grace}, Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills})
+			Grace: policy.Duration{Duration: o.Grace}, Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills, Tier: o.Tier})
 	}
 	return s, nil
 }

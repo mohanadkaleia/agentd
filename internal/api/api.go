@@ -53,6 +53,9 @@ func (s *Server) Handler() http.Handler {
 		"GET /api/tasks/{id}":                                     s.getTask,
 		"POST /api/tasks/{id}/retry":                              s.retryTask,
 		"POST /api/tasks/{id}/notes":                              s.tellTask,
+		"GET /api/models":                                         s.listModels,
+		"PUT /api/tasks/{id}/model":                               s.setTaskModel,
+		"PUT /api/conversations/{id}/model":                       s.setConversationModel,
 		"GET /api/conversations":                                  s.listConversations,
 		"POST /api/conversations":                                 s.newConversation,
 		"GET /api/conversations/{id}/messages":                    s.conversationMessages,
@@ -500,9 +503,19 @@ type transcriptMessage struct {
 
 type taskDetail struct {
 	taskRow
-	Objective  string              `json:"objective"`
-	Skills     []string            `json:"skills,omitempty"`
-	Transcript []transcriptMessage `json:"transcript"`
+	Objective     string              `json:"objective"`
+	Skills        []string            `json:"skills,omitempty"`
+	ModelTier     string              `json:"model_tier,omitempty"`
+	ModelOverride string              `json:"model_override,omitempty"`
+	Runs          []runRow            `json:"runs"`
+	Transcript    []transcriptMessage `json:"transcript"`
+}
+
+type runRow struct {
+	ID     string          `json:"id"`
+	Model  string          `json:"model"`
+	Status string          `json:"status"`
+	Chosen json.RawMessage `json:"chosen,omitempty"`
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) error {
@@ -514,8 +527,27 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) error {
 	d := taskDetail{
 		taskRow: taskRow{ID: t.ID, AssignmentID: t.AssignmentID, ParentTaskID: t.ParentTaskID, Title: t.Title,
 			Status: t.Status, Attempts: t.AttemptCount, Result: t.Result},
-		Objective: t.Objective, Skills: t.Skills, Transcript: []transcriptMessage{},
+		Objective: t.Objective, Skills: t.Skills, Transcript: []transcriptMessage{}, Runs: []runRow{},
+		ModelTier: t.ModelTier, ModelOverride: t.ModelOverride,
 	}
+	runs, err := s.App.DB.QueryContext(ctx, `SELECT r.id, r.model_id, r.status, COALESCE((SELECT payload_json FROM audit_log
+		WHERE operation = 'run.model_selected' AND object_id = r.id LIMIT 1), '') FROM runs r WHERE r.task_id = ? ORDER BY r.started_at`, t.ID)
+	if err != nil {
+		return err
+	}
+	for runs.Next() {
+		var row runRow
+		var chosen string
+		if err := runs.Scan(&row.ID, &row.Model, &row.Status, &chosen); err != nil {
+			runs.Close()
+			return err
+		}
+		if chosen != "" {
+			row.Chosen = json.RawMessage(chosen)
+		}
+		d.Runs = append(d.Runs, row)
+	}
+	runs.Close()
 	msgs, err := s.App.Runtime.Transcript(ctx, t.ID)
 	if err != nil {
 		return err
@@ -885,14 +917,15 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) error {
 }
 
 type usageRow struct {
-	AssignmentID string  `json:"assignment_id"`
-	Name         string  `json:"name"`
-	SpentUSD     float64 `json:"spent_usd"`
-	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
-	BudgetUSD    float64 `json:"budget_usd,omitempty"`
-	BudgetPeriod string  `json:"budget_period,omitempty"`
-	LifetimeUSD  float64 `json:"lifetime_usd"`
-	ModelCalls   int     `json:"model_calls"`
+	AssignmentID string             `json:"assignment_id"`
+	Name         string             `json:"name"`
+	SpentUSD     float64            `json:"spent_usd"`
+	ReservedUSD  float64            `json:"reserved_usd,omitempty"`
+	BudgetUSD    float64            `json:"budget_usd,omitempty"`
+	BudgetPeriod string             `json:"budget_period,omitempty"`
+	LifetimeUSD  float64            `json:"lifetime_usd"`
+	ModelCalls   int                `json:"model_calls"`
+	ByModel      map[string]float64 `json:"by_model"`
 }
 
 func (s *Server) usage(w http.ResponseWriter, r *http.Request) error {
@@ -932,6 +965,14 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) error {
 			LifetimeUSD: float64(t.micro) / 1e6, ModelCalls: t.calls}
 		if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
 			u.BudgetPeriod = p.String()
+		}
+		byModel, err := s.App.Runtime.SpendByModel(ctx, a)
+		if err != nil {
+			return err
+		}
+		u.ByModel = map[string]float64{}
+		for m, micros := range byModel {
+			u.ByModel[m] = float64(micros) / 1e6
 		}
 		out = append(out, u)
 	}

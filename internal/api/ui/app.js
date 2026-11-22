@@ -255,6 +255,15 @@ const Task = {
       if (note !== null && await act("Retry", "POST", `/api/tasks/${props.id}/retry`, { note })) load();
     };
     const note = reactive({ text: "" });
+    const models = reactive({ list: [], tiers: {} });
+    onMounted(async () => { try { const m = await api("GET", "/api/models"); models.list = m.models; models.tiers = m.tiers; } catch { /* optional */ } });
+    const choose = async (value) => {
+      try {
+        const res = await api("PUT", `/api/tasks/${props.id}/model`, { model: value });
+        say(res.message);
+        load();
+      } catch (e) { say("Model not changed: " + e.message); load(); }
+    };
     const tell = async (e) => {
       e.preventDefault();
       if (note.text.trim() && await act("Note", "POST", `/api/tasks/${props.id}/notes`, { text: note.text })) { note.text = ""; load(); }
@@ -270,6 +279,22 @@ const Task = {
           h("pre", t.objective),
           t.result ? h("pre", pretty(t.result)) : null,
           t.status === "blocked" ? h("button", { onClick: retry }, "Retry") : null,
+        ]),
+        h("section", { class: "card" }, [
+          h("h3", "Model"),
+          h("div", { class: "row" }, [
+            h("label", { for: "task-model" }, "Use"),
+            h("select", { id: "task-model", value: t.model_override || "auto", onChange: (e) => choose(e.target.value) }, [
+              h("option", { value: "auto" }, "automatic" + (t.model_tier ? ` (tier ${t.model_tier})` : "")),
+              ...["fast", "default", "strong"].map((tier) => h("option", { value: tier }, `tier ${tier}` + (models.tiers[tier] ? ` (${models.tiers[tier]})` : ""))),
+              ...models.list.map((m) => h("option", { value: m.id }, `${m.id} (${m.local ? "local" : "cloud"})`)),
+            ]),
+          ]),
+          t.runs.map((r) => {
+            let why = "";
+            try { const c = r.chosen; why = c ? ` · chosen by ${c.source}${c.skipped && c.skipped.length ? "; skipped " + c.skipped.join("; ") : ""}` : ""; } catch { /* old run */ }
+            return h("p", { class: "muted small" }, `run ${r.id}: ${r.model} (${r.status})${why}`);
+          }),
         ]),
         t.status === "completed" || t.status === "cancelled" ? null : h("form", { class: "card", onSubmit: tell }, [
           h("label", { for: "note" }, "Message this task"),

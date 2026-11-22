@@ -33,7 +33,12 @@ type Runtime struct {
 	Model       model.Provider
 	ModelID     string
 	ModelLocal  bool
+	ModelAlias  string
 	Fallbacks   []Candidate
+	// Tiers maps fast, default and strong to configured models (ids or aliases).
+	Tiers map[string]string
+	// Chooser supplies owner choices of model kept by the conversation layer.
+	Chooser     ModelChooser
 	Outbox      *notify.Outbox
 	Now         func() time.Time
 	LeaseTTL    time.Duration
@@ -252,6 +257,9 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 		if err != nil {
 			return r.fail(ctx, lease, task, err)
 		}
+		if err := r.rechoose(ctx, lease, task.ID, &rn, a.Policy, msgs); err != nil {
+			return r.fail(ctx, lease, task, err)
+		}
 		provider, err := r.pinned(ctx, &rn, task.AssignmentID, a.Policy, msgs)
 		if err != nil {
 			return r.block(ctx, lease, rn.ID, map[string]string{"error": err.Error()})
@@ -287,10 +295,16 @@ func (r *Runtime) execute(parent context.Context, lease tasks.Lease) error {
 					continue
 				}
 			}
+			if eerr := r.escalate(ctx, task.ID, a.Policy); eerr != nil {
+				err = errors.Join(err, eerr)
+			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model: %w", err))
 		}
 		if resp.StopReason == model.StopRefusal || resp.StopReason == model.StopMaxTokens {
 			if err := r.recordUsage(ctx, r.DB, task, rn, res.id, resp); err != nil {
+				return r.fail(ctx, lease, task, err)
+			}
+			if err := r.escalate(ctx, task.ID, a.Policy); err != nil {
 				return r.fail(ctx, lease, task, err)
 			}
 			return r.fail(ctx, lease, task, fmt.Errorf("model stopped with %s", resp.StopReason))

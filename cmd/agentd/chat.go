@@ -72,6 +72,7 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 	asJSON := f.Bool("json", false, "one JSON object per message or event per line")
 	noWait := f.Bool("no-wait", false, "store the message and exit without waiting for the reply")
 	timeout := f.Duration("timeout", 0, "give up waiting after this long (default: none interactive, 5m one-shot)")
+	modelChoice := f.String("model", "", "choose the model for this conversation: a model, alias, tier, or auto")
 	if err := f.Parse(args); err != nil {
 		return &exitError{code: 1, msg: err.Error()}
 	}
@@ -89,6 +90,14 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 	}
 	if err != nil {
 		return err
+	}
+	if *modelChoice != "" {
+		adoptCatalogue(ctx, a, db)
+		msg, err := a.Chat.SetConversationModel(ctx, c.conv, *modelChoice, "owner:"+chatChannel)
+		if err != nil {
+			return &exitError{code: 1, msg: err.Error()}
+		}
+		fmt.Fprintln(stdout, sanitize(msg))
 	}
 	if *history {
 		return c.history(ctx, *n)
@@ -108,6 +117,9 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 		if strings.TrimSpace(body) != "" {
 			message += "\n\nAttached (from my standard input):\n```\n" + strings.TrimRight(body, "\n") + "\n```"
 		}
+	}
+	if message == "" && *modelChoice != "" && !tty {
+		return nil
 	}
 	if message == "" {
 		if !tty || *asJSON {

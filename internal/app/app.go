@@ -92,6 +92,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	t.OnRelease = conversations.Released
 	deliverer.Covered = conversations.Covered
 	rt.Opener = conversations
+	rt.Chooser = conversations
 	rt.Deltas = conversations
 	recheck := func(ctx context.Context) error {
 		if _, err := g.ExpireApprovals(ctx); err != nil {
@@ -155,7 +156,7 @@ func New(db *sql.DB, provider model.Provider, modelID string, registry tools.Reg
 	for _, tool := range app.proposals() {
 		all[tool.Definition().Name] = tool
 	}
-	a.Check = app.ownerOnly
+	a.Check = app.checkStored
 	conversations.Edit = app.EditProposal
 	return app
 }

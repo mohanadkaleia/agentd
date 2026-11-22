@@ -5,7 +5,9 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -200,6 +202,37 @@ func TestNoToolDecidesApprovals(t *testing.T) {
 				}
 				return true
 			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOnlyOwnerPathsWriteModelChoices keeps model choices out of tools: only the runtime's
+// owner setters, escalation, the conversation layer and migrations write them.
+func TestOnlyOwnerPathsWriteModelChoices(t *testing.T) {
+	root := filepath.Join("..", "..")
+	allowed := map[string]bool{"internal/runtime/models.go": true, "internal/chat/model.go": true, "internal/tasks/tasks.go": true}
+	writes := regexp.MustCompile(`(?i)(SET|,)\s*(model_override|model_tier)\s*=|UPDATE conversations SET model\b`)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "bin") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if writes.Match(body) && !allowed[filepath.ToSlash(rel)] {
+			t.Errorf("%s writes a model choice; only the owner's setters and escalation may", rel)
 		}
 		return nil
 	})

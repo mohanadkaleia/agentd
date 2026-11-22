@@ -21,6 +21,7 @@ the chat budget is used up:
 | `/edit <n> <job file or JSON>` | replace a proposal with your own version, which takes effect at once |
 | `/pause <job>`, `/resume <job>`, `/retry <task> [note]` | as the CLI commands |
 | `/halt [reason]`, `/unhalt` | emergency stop |
+| `/model [task] [model or tier or auto]` | see or choose the model for this conversation or a task |
 | `/new`, `/help` | new conversation, this list |
 
 The conversation is answered by a built-in assignment, the **front desk** (`agentd status` shows it

@@ -56,6 +56,8 @@ type NewTask struct {
 	AllowedTools []string
 	MaxSteps     int
 	DeadlineAt   time.Time
+	// ModelTier asks for a tier of model (fast, default, strong); "" has no opinion.
+	ModelTier string
 }
 
 type Task struct {
@@ -77,6 +79,10 @@ type Task struct {
 	Skills       []string
 	Result       json.RawMessage
 	Priority     int
+	// ModelTier and ModelOverride are the tier the task asked for and the owner's choice of
+	// model for it; "" has no opinion.
+	ModelTier     string
+	ModelOverride string
 }
 
 func (t Task) Allows(tool string) bool {
@@ -179,11 +185,11 @@ func (s *Store) CreateTx(ctx context.Context, tx *sql.Tx, t NewTask) (string, er
 	now := s.Now()
 	res, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, assignment_id, parent_task_id, origin_key, coalesce_key, skills_json,
 		title, objective, success_json, status, priority, max_attempts, next_run_at, depth, allowed_tools_json, max_steps,
-		deadline_at, created_at, updated_at)
-		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		deadline_at, model_tier, created_at, updated_at)
+		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)
 		ON CONFLICT (origin_key) WHERE origin_key IS NOT NULL DO NOTHING`,
 		id, t.AssignmentID, t.ParentTaskID, t.OriginKey, t.CoalesceKey, skills, t.Title, t.Objective, string(success),
-		t.Priority, t.MaxAttempts, next, t.Depth, allowed, maxSteps, deadline, now.UnixMilli(), now.UnixMilli())
+		t.Priority, t.MaxAttempts, next, t.Depth, allowed, maxSteps, deadline, t.ModelTier, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return "", err
 	}
@@ -215,13 +221,15 @@ func (s *Store) FindByOrigin(ctx context.Context, originKey string) (string, boo
 func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 	var t Task
 	var success string
-	var owner, parent, allowed, result, skills sql.NullString
+	var owner, parent, allowed, result, skills, tier, override sql.NullString
 	var maxSteps, deadline sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `SELECT id, assignment_id, parent_task_id, title, objective, status, success_json,
-		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json, skills_json, priority
+		attempt_count, max_attempts, version, lease_owner, depth, allowed_tools_json, max_steps, deadline_at, result_json, skills_json, priority,
+		model_tier, model_override
 		FROM tasks WHERE id = ?`, id).
 		Scan(&t.ID, &t.AssignmentID, &parent, &t.Title, &t.Objective, &t.Status, &success,
-			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result, &skills, &t.Priority)
+			&t.AttemptCount, &t.MaxAttempts, &t.Version, &owner, &t.Depth, &allowed, &maxSteps, &deadline, &result, &skills, &t.Priority,
+			&tier, &override)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -229,6 +237,7 @@ func (s *Store) Get(ctx context.Context, id string) (Task, error) {
 		return t, err
 	}
 	t.LeaseOwner, t.ParentTaskID = owner.String, parent.String
+	t.ModelTier, t.ModelOverride = tier.String, override.String
 	t.MaxSteps = int(maxSteps.Int64)
 	if deadline.Valid {
 		t.DeadlineAt = time.UnixMilli(deadline.Int64)

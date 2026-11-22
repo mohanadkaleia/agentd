@@ -74,6 +74,15 @@ type Liveness struct {
 	PID    int       `json:"pid"`
 	Listen string    `json:"listen,omitempty"`
 	At     time.Time `json:"at"`
+	// Models and Tiers are serve's configured models, so other commands can check a choice.
+	Models []ModelInfo       `json:"models,omitempty"`
+	Tiers  map[string]string `json:"tiers,omitempty"`
+}
+
+type ModelInfo struct {
+	ID    string `json:"id"`
+	Alias string `json:"alias,omitempty"`
+	Local bool   `json:"local"`
 }
 
 // StaleAfter is how long a liveness record counts after it was written.

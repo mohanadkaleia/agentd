@@ -21,13 +21,17 @@ type run struct {
 	ID    string
 	Steps int
 	Model string
+	// Requested is the model the resolution asked for, which a fallback after an error
+	// does not change; a new resolution that differs from it is an owner choice or an
+	// escalation to apply.
+	Requested string
 }
 
 func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	var rn run
 	var status string
-	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count, status, model_id FROM runs WHERE task_id = ?
-		ORDER BY started_at DESC, rowid DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps, &status, &rn.Model)
+	err := r.DB.QueryRowContext(ctx, `SELECT id, step_count, status, model_id, COALESCE(requested_model, model_id) FROM runs WHERE task_id = ?
+		ORDER BY started_at DESC, rowid DESC LIMIT 1`, t.ID).Scan(&rn.ID, &rn.Steps, &status, &rn.Model, &rn.Requested)
 	if err == nil {
 		if status != "running" {
 			if _, err := r.DB.ExecContext(ctx, `UPDATE runs SET status = 'running', finished_at = NULL WHERE id = ?`, rn.ID); err != nil {
@@ -47,9 +51,11 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 	if err != nil {
 		return rn, err
 	}
-	if rn.Model, err = r.firstModel(p.Policy); err != nil {
+	choice, err := r.resolveModel(ctx, t, p.Policy)
+	if err != nil {
 		return rn, err
 	}
+	rn.Model, rn.Requested = choice.Model, choice.Model
 	var opening []model.Message
 	opened := false
 	if r.Opener != nil {
@@ -64,8 +70,11 @@ func (r *Runtime) openRun(ctx context.Context, t tasks.Task) (run, error) {
 		return rn, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, status, started_at) VALUES (?, ?, ?, 'running', ?)`,
-		rn.ID, t.ID, rn.Model, now.UnixMilli()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, task_id, model_id, requested_model, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)`,
+		rn.ID, t.ID, rn.Model, rn.Requested, now.UnixMilli()); err != nil {
+		return rn, err
+	}
+	if err := audit.Record(ctx, tx, now, t.AssignmentID, "runtime", "run.model_selected", rn.ID, choice); err != nil {
 		return rn, err
 	}
 	if opened {
@@ -378,4 +387,28 @@ func (r *Runtime) ResumeWithinBudget(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// SpendByModel is an assignment's spend in its current budget period, per model actually used.
+func (r *Runtime) SpendByModel(ctx context.Context, a assignments.Assignment) (map[string]int64, error) {
+	since := int64(0)
+	if p := a.Policy.Limits.BudgetPeriod.Duration; p > 0 {
+		since = r.Now().Add(-p).UnixMilli()
+	}
+	rows, err := r.DB.QueryContext(ctx, `SELECT model, SUM(cost_micros) FROM model_usage WHERE assignment_id = ? AND created_at > ?
+		GROUP BY model ORDER BY model`, a.ID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var m string
+		var micros int64
+		if err := rows.Scan(&m, &micros); err != nil {
+			return nil, err
+		}
+		out[m] = micros
+	}
+	return out, rows.Err()
 }

@@ -48,6 +48,7 @@ func init() {
 		"retry":   {usage: "/retry <task> [note]", help: "continue a blocked task", starts: true, run: (*Service).cmdRetry},
 		"usage":   {usage: "/usage", help: "spend per assignment", run: (*Service).cmdUsage},
 		"new":     {usage: "/new", help: "start a new conversation", run: (*Service).cmdNew},
+		"model":   {usage: "/model [task] [model|tier|auto]", help: "see or choose the model for this conversation or a task", run: (*Service).cmdModel},
 		"answer":  {usage: "/answer <n or id> <text>", help: "answer a question a task asked you", run: (*Service).cmdAnswer},
 		"tell":    {usage: "/tell <task or assignment> <text>", help: "send a note to running work, word for word", run: (*Service).cmdTell},
 		"edit":    {usage: "/edit <n> <job file or json>", help: "replace a proposal with your edited version, which takes effect at once", run: (*Service).cmdEdit},
@@ -366,6 +367,18 @@ func (s *Service) cmdUsage(ctx context.Context, _ call) (string, error) {
 			name += " (this conversation)"
 		}
 		fmt.Fprintf(&b, "%-32s $%.4f of %s\n", name, float64(budget.SpentMicros)/1e6, limit)
+		byModel, err := s.Runtime.SpendByModel(ctx, a)
+		if err != nil {
+			return "", err
+		}
+		models := make([]string, 0, len(byModel))
+		for m := range byModel {
+			models = append(models, m)
+		}
+		sort.Strings(models)
+		for _, m := range models {
+			fmt.Fprintf(&b, "    %-28s $%.4f\n", m, float64(byModel[m])/1e6)
+		}
 	}
 	return b.String(), nil
 }

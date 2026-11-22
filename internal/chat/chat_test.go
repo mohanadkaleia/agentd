@@ -520,3 +520,31 @@ func TestWindowIsCappedByBytesButKeepsTheQuestion(t *testing.T) {
 		t.Fatalf("request holds %d messages; want the byte cap to drop old ones but keep both messages being answered", n)
 	}
 }
+
+func TestModelCommandShowsAndSetsTheConversationModel(t *testing.T) {
+	w := newWorld(t)
+	out := w.command("/model")
+	if w.failed(out) || !strings.Contains(out.Text(), "automatic") || !strings.Contains(out.Text(), "cloud, default") {
+		t.Fatalf("/model = %s", out.Text())
+	}
+	if r := w.command("/model nothing-like-this"); !w.failed(r) || !strings.Contains(r.Text(), "no such model") {
+		t.Fatalf("/model unknown = %s", r.Text())
+	}
+	if r := w.command("/model cloud"); w.failed(r) {
+		t.Fatal(r.Text())
+	}
+	var chosen string
+	w.app.DB.QueryRow(`SELECT COALESCE(model, '') FROM conversations WHERE id = ?`, w.conv).Scan(&chosen)
+	if chosen != "cloud" {
+		t.Fatalf("conversation model = %q", chosen)
+	}
+	w.model.reply = func(model.Request) (model.Message, error) {
+		return model.Message{Content: "/model strong and /model tsk_x auto"}, nil
+	}
+	w.say("anything")
+	w.drain()
+	w.app.DB.QueryRow(`SELECT COALESCE(model, '') FROM conversations WHERE id = ?`, w.conv).Scan(&chosen)
+	if chosen != "cloud" {
+		t.Fatalf("a reply changed the conversation model to %q", chosen)
+	}
+}

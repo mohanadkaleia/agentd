@@ -30,9 +30,21 @@ type Policy struct {
 	Models ModelPolicy     `json:"models,omitzero"`
 }
 
+// ModelPolicy limits which models an assignment may use (allowed, local_only) and states
+// its preferences within that limit (prefer, tier). A preference never widens the limit.
 type ModelPolicy struct {
 	Allowed   []string `json:"allowed,omitempty"`
 	LocalOnly bool     `json:"local_only,omitempty"`
+	Prefer    []string `json:"prefer,omitempty"`
+	Tier      string   `json:"tier,omitempty"`
+}
+
+// Tiers name model strengths an owner maps to configured models.
+var Tiers = []string{"fast", "default", "strong"}
+
+// ValidTier reports whether a tier name is known; "" means none.
+func ValidTier(t string) bool {
+	return t == "" || slices.Contains(Tiers, t)
 }
 
 type Limits struct {
@@ -90,6 +102,9 @@ func (p Policy) Validate() error {
 		if rule.Otherwise != "" && !validMode(rule.Otherwise) {
 			return fmt.Errorf("tool rule %q: otherwise %q is not one of allow, approval, deny", tool, rule.Otherwise)
 		}
+	}
+	if !ValidTier(p.Models.Tier) {
+		return fmt.Errorf("models.tier %q is not one of fast, default, strong", p.Models.Tier)
 	}
 	if p.Limits.MaxLLMSpendUSD < 0 {
 		return fmt.Errorf("max_llm_spend_usd must not be negative")

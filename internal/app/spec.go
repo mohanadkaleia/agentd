@@ -30,6 +30,7 @@ type ObligationSpec struct {
 	Evidence    watchdog.Evidence `json:"evidence"`
 	OnMiss      string            `json:"on_miss"`
 	Skills      []string          `json:"skills"`
+	Tier        string            `json:"tier,omitempty"`
 }
 
 type RouteSpec struct {
@@ -40,6 +41,7 @@ type RouteSpec struct {
 	Skills        []string          `json:"skills"`
 	Title         string            `json:"title"`
 	Objective     string            `json:"objective"`
+	Tier          string            `json:"tier,omitempty"`
 }
 
 type ScheduleSpec struct {
@@ -47,6 +49,7 @@ type ScheduleSpec struct {
 	Skills    []string        `json:"skills"`
 	Title     string          `json:"title"`
 	Objective string          `json:"objective"`
+	Tier      string          `json:"tier,omitempty"`
 }
 
 func (s Spec) skillNames() [][]string {
@@ -71,10 +74,21 @@ func (s Spec) validate() error {
 		if r.Source == "" || r.Kind == "" || r.Title == "" || r.Objective == "" {
 			return fmt.Errorf("%w: every route needs source, kind, title and objective", assignments.ErrInvalid)
 		}
+		if !policy.ValidTier(r.Tier) {
+			return fmt.Errorf("%w: route tier %q is not one of fast, default, strong", assignments.ErrInvalid, r.Tier)
+		}
 	}
 	for _, sc := range s.Schedules {
 		if sc.Every.Duration <= 0 || sc.Title == "" || sc.Objective == "" {
 			return fmt.Errorf("%w: every schedule needs a positive interval, title and objective", assignments.ErrInvalid)
+		}
+		if !policy.ValidTier(sc.Tier) {
+			return fmt.Errorf("%w: schedule tier %q is not one of fast, default, strong", assignments.ErrInvalid, sc.Tier)
+		}
+	}
+	for _, o := range s.Obligations {
+		if !policy.ValidTier(o.Tier) {
+			return fmt.Errorf("%w: obligation tier %q is not one of fast, default, strong", assignments.ErrInvalid, o.Tier)
 		}
 	}
 	return nil
@@ -127,14 +141,14 @@ func (a *App) CreateTx(ctx context.Context, tx *sql.Tx, s Spec) (string, error) 
 	for _, r := range s.Routes {
 		if _, err := a.Scheduler.AddRouteTx(ctx, tx, scheduler.Route{
 			AssignmentID: id, Source: r.Source, Kind: r.Kind, Match: r.Match, CoalesceField: r.CoalesceField,
-			Skills: r.Skills, Title: r.Title, Objective: r.Objective,
+			Skills: r.Skills, Title: r.Title, Objective: r.Objective, Tier: r.Tier,
 		}); err != nil {
 			return "", err
 		}
 	}
 	for _, sc := range s.Schedules {
 		if _, err := a.Scheduler.AddScheduleTx(ctx, tx, scheduler.Schedule{
-			AssignmentID: id, Every: sc.Every.Duration, Skills: sc.Skills, Title: sc.Title, Objective: sc.Objective,
+			AssignmentID: id, Every: sc.Every.Duration, Skills: sc.Skills, Title: sc.Title, Objective: sc.Objective, Tier: sc.Tier,
 		}); err != nil {
 			return "", err
 		}
@@ -142,7 +156,7 @@ func (a *App) CreateTx(ctx context.Context, tx *sql.Tx, s Spec) (string, error) 
 	for _, o := range s.Obligations {
 		if _, err := a.Watchdog.AddTx(ctx, tx, watchdog.Obligation{
 			AssignmentID: id, Description: o.Description, Every: o.Every.Duration, Grace: o.Grace.Duration,
-			Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills,
+			Evidence: o.Evidence, OnMiss: o.OnMiss, Skills: o.Skills, Tier: o.Tier,
 		}); err != nil {
 			return "", err
 		}

@@ -16,7 +16,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
     setup(props) {
       const view = reactive({
         conversations: [], conv: "", messages: [], lastRead: 0, error: "", loading: true,
-        working: false, tools: [], partial: {}, draft: "", connected: false, editing: {}, answers: {}, expanded: {},
+        working: false, tools: [], partial: {}, draft: "", models: { list: [], tiers: {} }, connected: false, editing: {}, answers: {}, expanded: {},
         announce: "",
       });
       let source;
@@ -107,6 +107,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
 
       onMounted(async () => {
         try {
+          try { view.models = await api("GET", "/api/models"); } catch { /* optional */ }
           await loadConversations();
           await open_(view.conversations[0].id);
         } catch (e) { view.error = e.message; view.loading = false; }
@@ -291,6 +292,19 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
             h("select", { id: "conv", value: view.conv, onChange: (e) => open_(e.target.value) }, view.conversations.map((c) =>
               h("option", { value: c.id }, (c.title || "Conversation") + " · " + new Date(c.last_at).toLocaleDateString() + (c.unread ? ` (${c.unread} new)` : "")))),
             h("button", { onClick: startNew }, "New conversation"),
+            h("label", { class: "sr-only", for: "conv-model" }, "Model for this conversation"),
+            h("select", { id: "conv-model", value: (view.conversations.find((c) => c.id === view.conv) || {}).model || "auto",
+              onChange: async (e) => {
+                try {
+                  const res = await api("PUT", `/api/conversations/${encodeURIComponent(view.conv)}/model`, { model: e.target.value });
+                  say(res.message);
+                  await loadConversations();
+                } catch (err) { say("Model not changed: " + err.message); }
+              } }, [
+              h("option", { value: "auto" }, "model: automatic"),
+              ...["fast", "default", "strong"].map((tier) => h("option", { value: tier }, `model: tier ${tier}`)),
+              ...view.models.list.map((m) => h("option", { value: m.id }, `model: ${m.id} (${m.local ? "local" : "cloud"})`)),
+            ]),
             h("span", { class: "muted small", role: "status" }, view.connected ? "" : "reconnecting…"),
           ]),
           h("div", { class: "timeline", role: "log", "aria-label": "Conversation", "aria-live": "off" }, [

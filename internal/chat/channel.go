@@ -205,7 +205,7 @@ func (s *Service) ignore(ctx context.Context, channel, why string) {
 	audit.Record(ctx, s.DB, s.Now(), "", "channel", "channel.ignored", channel, map[string]string{"why": why})
 }
 
-var widening = map[string]bool{"resume": true, "unhalt": true, "edit": true}
+var widening = map[string]bool{"resume": true, "unhalt": true, "edit": true, "model": true}
 var deciding = map[string]bool{"approve": true, "reject": true, "answer": true}
 
 // Inbound handles one update. Only the paired sender in a direct chat is heard; anything

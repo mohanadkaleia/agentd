@@ -514,6 +514,24 @@ func (a *App) checkPolicy(p policy.Policy) error {
 	return a.ownerOnly(p)
 }
 
+// checkPolicy refuses what the policy package cannot judge alone: an owner-confirmed tool
+// allowed outright, and a preferred model that is not configured (when this process knows
+// the configured models).
+func (a *App) checkStored(p policy.Policy) error {
+	if err := a.ownerOnly(p); err != nil {
+		return err
+	}
+	if a.Runtime.ModelID == "" {
+		return nil
+	}
+	for _, m := range p.Models.Prefer {
+		if _, err := a.Runtime.Choice(m); err != nil {
+			return fmt.Errorf("models.prefer: %w", err)
+		}
+	}
+	return nil
+}
+
 // ownerOnly refuses a policy that would let an owner-confirmed tool run without approval.
 func (a *App) ownerOnly(p policy.Policy) error {
 	for name, rule := range p.Tools {
@@ -563,6 +581,17 @@ func (a *App) describeAssignment(args json.RawMessage) (string, string) {
 		runs = append(runs, "on "+r.Source+"/"+r.Kind+": "+r.Title)
 	}
 	fmt.Fprintf(&b, "Runs: %s\n", list(runs))
+	if a.Runtime.ModelID != "" {
+		if res, err := a.Runtime.Preview(context.Background(), s.Policy, ""); err == nil {
+			where := "in the cloud: its content goes to " + strings.SplitN(res.Model, "/", 2)[0]
+			if a.Runtime.IsLocal(res.Model) {
+				where = "on this machine"
+			}
+			fmt.Fprintf(&b, "Model today: %s, %s\n", res.Model, where)
+		} else {
+			fmt.Fprintf(&b, "Model today: none allowed by its models policy\n")
+		}
+	}
 	if in.FirstTask != nil {
 		fmt.Fprintf(&b, "First task instruction (written by the agent): %s\n", in.FirstTask.Objective)
 	}

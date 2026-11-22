@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentd/internal/chat"
@@ -20,6 +21,7 @@ const maxMessageText = 32 << 10
 type conversationRow struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
+	Model    string    `json:"model,omitempty"`
 	LastAt   time.Time `json:"last_at"`
 	LastSeq  int64     `json:"last_seq"`
 	LastRead int64     `json:"last_read"`
@@ -31,7 +33,7 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) error
 	if _, err := s.App.Chat.Default(ctx); err != nil {
 		return err
 	}
-	rows, err := s.App.DB.QueryContext(ctx, `SELECT c.id, c.title, c.updated_at,
+	rows, err := s.App.DB.QueryContext(ctx, `SELECT c.id, c.title, COALESCE(c.model, ''), c.updated_at,
 		COALESCE((SELECT MAX(seq) FROM conversation_messages m WHERE m.conversation_id = c.id), 0),
 		COALESCE((SELECT seen_seq FROM conversation_reads cr WHERE cr.conversation_id = c.id AND cr.channel = ?), 0)
 		FROM conversations c WHERE c.status = 'open' ORDER BY c.updated_at DESC, c.rowid DESC LIMIT 50`, webChannel)
@@ -43,7 +45,7 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) error
 	for rows.Next() {
 		var c conversationRow
 		var at int64
-		if err := rows.Scan(&c.ID, &c.Title, &at, &c.LastSeq, &c.LastRead); err != nil {
+		if err := rows.Scan(&c.ID, &c.Title, &c.Model, &at, &c.LastSeq, &c.LastRead); err != nil {
 			return err
 		}
 		c.LastAt, c.Unread = time.UnixMilli(at), int(max(c.LastSeq-c.LastRead, 0))
@@ -299,4 +301,60 @@ func (s *Server) turnActivity(r *http.Request, conv string, seen map[string]stri
 		out = append(out, map[string]string{"turn_task_id": task, "action_id": id.String, "tool": tool.String, "status": state.String})
 	}
 	return working, out, rows.Err()
+}
+
+type modelRow struct {
+	ID    string `json:"id"`
+	Alias string `json:"alias,omitempty"`
+	Local bool   `json:"local"`
+}
+
+func (s *Server) listModels(w http.ResponseWriter, r *http.Request) error {
+	out := struct {
+		Models []modelRow        `json:"models"`
+		Tiers  map[string]string `json:"tiers"`
+	}{Models: []modelRow{}, Tiers: map[string]string{}}
+	for _, c := range s.App.Runtime.Catalogue() {
+		if c.ID != "" {
+			out.Models = append(out.Models, modelRow{ID: c.ID, Alias: c.Alias, Local: c.Local})
+		}
+	}
+	for t, m := range s.App.Runtime.Tiers {
+		out.Tiers[t] = m
+	}
+	return ok(w, out)
+}
+
+func (s *Server) setTaskModel(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	msg, err := s.App.Runtime.SetTaskModel(r.Context(), r.PathValue("id"), body.Model, "owner:"+webChannel)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "not found") {
+		return badRequest("%s", err.Error())
+	}
+	if err != nil {
+		return err
+	}
+	return ok(w, map[string]string{"message": msg})
+}
+
+func (s *Server) setConversationModel(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := decode(r, &body); err != nil {
+		return err
+	}
+	msg, err := s.App.Chat.SetConversationModel(r.Context(), r.PathValue("id"), body.Model, "owner:"+webChannel)
+	if errors.Is(err, chat.ErrNotFound) {
+		return statusError{http.StatusNotFound, "no such conversation"}
+	}
+	if err != nil {
+		return badRequest("%s", err.Error())
+	}
+	return ok(w, map[string]string{"message": msg})
 }

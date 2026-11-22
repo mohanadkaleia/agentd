@@ -37,7 +37,7 @@ import (
 
 const usage = `Talk to agentd: agentd chat
 
-usage: agentd [-db path] [-model spec] [-fallback-models specs] [-effort level] <command> [args]
+usage: agentd [-db path] [-model spec | -models a=spec,b=spec] [-tier fast=a] [-fallback-models specs] [-effort level] <command> [args]
 
 models:
   anthropic[/model-id]      Claude via the Anthropic API (default claude-opus-5-5)
@@ -70,6 +70,9 @@ commands:
   resolve <action-id> happened|not-happened [note]
                                        settle an action whose outcome could not be determined
   channel pair|list|set|revoke telegram talk to agentd from a Telegram bot on your phone (docs/chat.md)
+  models                               configured models, their aliases and tiers, and whether credentials are present
+  task model <task-id> <model|tier|auto>
+                                       choose the model for one task (checked against its models policy)
   tell <task|assignment> "text"        send the owner's note to running work, word for word
   answer <question-id> "text"          answer a question a task asked
   approve <approval-id>                approve a pending action
@@ -119,9 +122,24 @@ func run() error {
 	modelSpec := global.String("model", envOr("AGENTD_MODEL", ""), "model provider and id, needed by serve")
 	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
 	fallbackSpecs := global.String("fallback-models", envOr("AGENTD_FALLBACK_MODELS", ""), "comma-separated models to try when the main one fails before a run's first reply")
+	modelList := global.String("models", envOr("AGENTD_MODELS", ""), "configured models, comma-separated, alias=spec or spec; the first is the default")
+	tiers := tierFlags{}
+	global.Var(tiers, "tier", "map a tier to a model, e.g. -tier fast=ollama/qwen2.5:7b (repeatable; or AGENTD_TIERS)")
 	skillsDir := global.String("skills", envOr("AGENTD_SKILLS", "skills"), "directory of skill .md files")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return err
+	}
+	if env := os.Getenv("AGENTD_TIERS"); env != "" && len(tiers) == 0 {
+		if err := tiers.Set(env); err != nil {
+			return err
+		}
+	}
+	entries, err := parseCatalogue(*modelList, *modelSpec, *fallbackSpecs)
+	if err != nil {
+		return err
+	}
+	if len(entries) > 0 {
+		*modelSpec = entries[0].spec
 	}
 	args := global.Args()
 	if len(args) == 0 {
@@ -219,16 +237,11 @@ func run() error {
 		return err
 	}
 	a := app.New(db, provider, *modelSpec, registry, time.Now)
-	a.Runtime.ModelLocal = isLocal(*modelSpec)
-	for _, spec := range strings.Split(*fallbackSpecs, ",") {
-		if spec = strings.TrimSpace(spec); spec == "" {
-			continue
-		}
-		p, err := newProvider(spec, *effort)
-		if err != nil {
-			return fmt.Errorf("fallback model %q: %w", spec, err)
-		}
-		a.Runtime.Fallbacks = append(a.Runtime.Fallbacks, runtime.Candidate{ID: spec, Provider: p, Local: isLocal(spec)})
+	if err := configureModels(a, entries, tiers, *effort); err != nil {
+		return err
+	}
+	if args[0] != "serve" {
+		adoptCatalogue(ctx, a, db)
 	}
 	if err := skills.LoadDir(a.Skills, *skillsDir); err != nil {
 		return fmt.Errorf("loading skills: %w", err)
@@ -255,7 +268,8 @@ func run() error {
 			servers.Poll(ctx, a.Scheduler)
 		}
 		startTelegram(ctx, a, log)
-		go beat(ctx, db, *listen, log)
+		models, tierMap := catalogueInfo(a.Runtime)
+		go beat(ctx, db, system.Liveness{Listen: *listen, Models: models, Tiers: tierMap}, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		if err := system.Stopped(context.WithoutCancel(ctx), db); err != nil {
 			log.Error("liveness", "err", err)
@@ -291,6 +305,18 @@ func run() error {
 			return err
 		}
 		fmt.Printf("answered %q; its task continues\n", q.Question)
+		return nil
+	case "models":
+		return printModels(a)
+	case "task":
+		if cmd.NArg() != 3 || cmd.Arg(0) != "model" {
+			return fmt.Errorf("usage: agentd task model <task-id> <model|alias|tier|auto>")
+		}
+		msg, err := a.Runtime.SetTaskModel(ctx, cmd.Arg(1), cmd.Arg(2), "cli")
+		if err != nil {
+			return err
+		}
+		fmt.Println(msg)
 		return nil
 	case "status":
 		return status(ctx, a)
@@ -452,9 +478,11 @@ func status(ctx context.Context, a *app.App) error {
 }
 
 // beat records that this process is serving, so `agentd chat` can tell a message will be answered.
-func beat(ctx context.Context, db *sql.DB, listen string, log *slog.Logger) {
+func beat(ctx context.Context, db *sql.DB, l system.Liveness, log *slog.Logger) {
+	l.PID = os.Getpid()
 	for {
-		if err := system.Beat(ctx, db, system.Liveness{PID: os.Getpid(), Listen: listen, At: time.Now()}); err != nil && ctx.Err() == nil {
+		l.At = time.Now()
+		if err := system.Beat(ctx, db, l); err != nil && ctx.Err() == nil {
 			log.Error("liveness", "err", err)
 		}
 		select {

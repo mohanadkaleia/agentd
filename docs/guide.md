@@ -18,6 +18,34 @@ and JSON output, and phone setup.
   model calls while it waits. Answer on the card, with `/answer <n> <text>`, or with
   `agentd answer <question-id> "text"`.
 
+## Choosing a model
+
+Configure several models and name tiers, then let each piece of work use the right one:
+
+```bash
+agentd -models small=ollama/qwen2.5:7b,big=ollama/qwen3.5:27b,claude=anthropic \
+       -tier fast=small -tier default=big -tier strong=claude serve
+agentd models                      # what is configured, local or cloud, credentials present or not
+```
+
+`-model` and `-fallback-models` still work: the first model is the default, the others follow.
+Each time a run opens, its model comes from the most specific choice:
+
+| # | Choice | Set with |
+|---|---|---|
+| 1 | the owner's choice for this task | `agentd task model <task> <model or tier>`, `/model <task> ...`, the task page |
+| 2 | the owner's choice for this conversation (chat replies) | `/model <model or tier>`, `agentd chat -model ...`, the chat header |
+| 3 | the job's preference | `models: {prefer: [big]}` in the job file |
+| 4 | the task's tier | chat replies are `fast`; `tier: strong` on a schedule, route or obligation; `models: {tier: ...}` for the whole job |
+| 5 | the default | the first configured model |
+
+The job's models policy (`allowed`, `local_only`) is always the limit: a choice it forbids is
+skipped, and why is recorded with the run (the task page shows it). A run whose model fails after
+it has started answering moves one tier up for its next attempt, unless you chose its model. A
+change applies from the task's next step, or from its next run when its transcript holds a
+provider's private data (Claude's thinking). Moving work from a local model to a cloud one says so
+when you choose it; from a paired phone it needs the `widen` setting. `/usage` shows spend per model.
+
 ## Job files
 
 A job is a Markdown file: a header between two `---` lines, then the objective in plain words.

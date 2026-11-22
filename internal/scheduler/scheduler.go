@@ -30,6 +30,8 @@ type Route struct {
 	Title         string
 	Objective     string
 	Success       tasks.Success
+	// Tier is the model tier tasks from this route ask for; "" has no opinion.
+	Tier string
 }
 
 type Schedule struct {
@@ -40,6 +42,7 @@ type Schedule struct {
 	Skills       []string
 	Every        time.Duration
 	FirstAt      time.Time
+	Tier         string
 }
 
 type Scheduler struct {
@@ -91,10 +94,10 @@ func (s *Scheduler) AddRouteTx(ctx context.Context, ex audit.Execer, r Route) (s
 	}
 	id := ids.New("rte")
 	_, err = ex.ExecContext(ctx, `INSERT INTO event_routes (id, assignment_id, source, kind, match_json, coalesce_field, skills_json,
-		title, objective, success_json, created_at)
-		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)`,
+		title, objective, success_json, tier, created_at)
+		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, NULLIF(?, ''), ?)`,
 		id, r.AssignmentID, r.Source, r.Kind, string(match), r.CoalesceField, skillsJSON(r.Skills),
-		r.Title, r.Objective, string(success), s.Now().UnixMilli())
+		r.Title, r.Objective, string(success), r.Tier, s.Now().UnixMilli())
 	return id, err
 }
 
@@ -116,10 +119,10 @@ func (s *Scheduler) AddScheduleTx(ctx context.Context, ex audit.Execer, sc Sched
 	}
 	id := ids.New("sch")
 	_, err = ex.ExecContext(ctx, `INSERT INTO schedules (id, assignment_id, title, objective, success_json, skills_json,
-		interval_ms, next_fire_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		interval_ms, next_fire_at, tier, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
 		id, sc.AssignmentID, sc.Title, sc.Objective, string(success), skillsJSON(sc.Skills),
-		sc.Every.Milliseconds(), first.UnixMilli(), s.Now().UnixMilli())
+		sc.Every.Milliseconds(), first.UnixMilli(), sc.Tier, s.Now().UnixMilli())
 	return id, err
 }
 
@@ -171,10 +174,10 @@ func (s *Scheduler) RouteEvents(ctx context.Context) (int, error) {
 }
 
 type storedRoute struct {
-	id, assignmentID, title, objective, coalesceField string
-	match                                             map[string]string
-	skills                                            []string
-	success                                           tasks.Success
+	id, assignmentID, title, objective, coalesceField, tier string
+	match                                                   map[string]string
+	skills                                                  []string
+	success                                                 tasks.Success
 }
 
 func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
@@ -185,7 +188,7 @@ func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.QueryContext(ctx, `SELECT r.id, r.assignment_id, r.match_json, COALESCE(r.coalesce_field, ''),
-		COALESCE(r.skills_json, '[]'), r.title, r.objective, r.success_json
+		COALESCE(r.skills_json, '[]'), r.title, r.objective, r.success_json, COALESCE(r.tier, '')
 		FROM event_routes r JOIN assignments a ON a.id = r.assignment_id
 		WHERE r.source = ? AND r.kind = ? AND a.status IN ('active', 'paused')
 		ORDER BY r.created_at, r.id`, e.source, e.kind)
@@ -196,7 +199,7 @@ func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
 	for rows.Next() {
 		var r storedRoute
 		var match, skills, success string
-		if err := rows.Scan(&r.id, &r.assignmentID, &match, &r.coalesceField, &skills, &r.title, &r.objective, &success); err != nil {
+		if err := rows.Scan(&r.id, &r.assignmentID, &match, &r.coalesceField, &skills, &r.title, &r.objective, &success, &r.tier); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -255,6 +258,7 @@ func (s *Scheduler) routeOne(ctx context.Context, e pendingEvent) (int, error) {
 			Title:        r.title,
 			Objective:    objective,
 			Success:      r.success,
+			ModelTier:    r.tier,
 		})
 		if err != nil {
 			return 0, err
@@ -354,13 +358,13 @@ func (s *Scheduler) fireOne(ctx context.Context, id string, now time.Time) (bool
 		return false, err
 	}
 	defer tx.Rollback()
-	var assignmentID, title, objective, success, skills string
+	var assignmentID, title, objective, success, skills, tier string
 	var interval, fireAt int64
 	err = tx.QueryRowContext(ctx, `SELECT s.assignment_id, s.title, s.objective, s.success_json, COALESCE(s.skills_json, '[]'),
-		s.interval_ms, s.next_fire_at
+		s.interval_ms, s.next_fire_at, COALESCE(s.tier, '')
 		FROM schedules s JOIN assignments a ON a.id = s.assignment_id
 		WHERE s.id = ? AND s.enabled = 1 AND s.next_fire_at <= ? AND a.status = 'active'`, id, now.UnixMilli()).
-		Scan(&assignmentID, &title, &objective, &success, &skills, &interval, &fireAt)
+		Scan(&assignmentID, &title, &objective, &success, &skills, &interval, &fireAt, &tier)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -382,6 +386,7 @@ func (s *Scheduler) fireOne(ctx context.Context, id string, now time.Time) (bool
 		Title:        title,
 		Objective:    objective,
 		Success:      criteria,
+		ModelTier:    tier,
 	}); err != nil {
 		return false, err
 	}
@@ -399,7 +404,7 @@ func (s *Scheduler) fireOne(ctx context.Context, id string, now time.Time) (bool
 // Routes lists an assignment's event routes, oldest first.
 func (s *Scheduler) Routes(ctx context.Context, assignmentID string) ([]Route, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT source, kind, match_json, COALESCE(coalesce_field, ''), COALESCE(skills_json, '[]'),
-		title, objective FROM event_routes WHERE assignment_id = ? ORDER BY created_at, rowid`, assignmentID)
+		title, objective, COALESCE(tier, '') FROM event_routes WHERE assignment_id = ? ORDER BY created_at, rowid`, assignmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +413,7 @@ func (s *Scheduler) Routes(ctx context.Context, assignmentID string) ([]Route, e
 	for rows.Next() {
 		r := Route{AssignmentID: assignmentID}
 		var match, skills string
-		if err := rows.Scan(&r.Source, &r.Kind, &match, &r.CoalesceField, &skills, &r.Title, &r.Objective); err != nil {
+		if err := rows.Scan(&r.Source, &r.Kind, &match, &r.CoalesceField, &skills, &r.Title, &r.Objective, &r.Tier); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(match), &r.Match)
@@ -420,7 +425,7 @@ func (s *Scheduler) Routes(ctx context.Context, assignmentID string) ([]Route, e
 
 // Schedules lists an assignment's enabled schedules, oldest first.
 func (s *Scheduler) Schedules(ctx context.Context, assignmentID string) ([]Schedule, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT title, objective, COALESCE(skills_json, '[]'), interval_ms FROM schedules
+	rows, err := s.DB.QueryContext(ctx, `SELECT title, objective, COALESCE(skills_json, '[]'), interval_ms, COALESCE(tier, '') FROM schedules
 		WHERE assignment_id = ? AND enabled = 1 ORDER BY created_at, rowid`, assignmentID)
 	if err != nil {
 		return nil, err
@@ -431,7 +436,7 @@ func (s *Scheduler) Schedules(ctx context.Context, assignmentID string) ([]Sched
 		sc := Schedule{AssignmentID: assignmentID}
 		var skills string
 		var every int64
-		if err := rows.Scan(&sc.Title, &sc.Objective, &skills, &every); err != nil {
+		if err := rows.Scan(&sc.Title, &sc.Objective, &skills, &every, &sc.Tier); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(skills), &sc.Skills)

@@ -74,7 +74,9 @@ type Obligation struct {
 	Evidence     Evidence
 	OnMiss       string
 	Skills       []string
-	CreatedAt    time.Time
+	// Tier is the model tier catch-up tasks ask for; "" has no opinion.
+	Tier      string
+	CreatedAt time.Time
 }
 
 type Health struct {
@@ -130,9 +132,9 @@ func (w *Watchdog) AddTx(ctx context.Context, tx *sql.Tx, o Obligation) (string,
 	}
 	id := ids.New("obl")
 	now := w.Now()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO obligations (id, assignment_id, description, every_ms, grace_ms, evidence_json, on_miss, skills_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, o.AssignmentID, o.Description, o.Every.Milliseconds(), o.Grace.Milliseconds(),
-		string(evidence), o.OnMiss, skills, now.UnixMilli()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO obligations (id, assignment_id, description, every_ms, grace_ms, evidence_json, on_miss, skills_json, tier, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`, id, o.AssignmentID, o.Description, o.Every.Milliseconds(), o.Grace.Milliseconds(),
+		string(evidence), o.OnMiss, skills, o.Tier, now.UnixMilli()); err != nil {
 		return "", err
 	}
 	if err := audit.Record(ctx, tx, now, o.AssignmentID, "user", "obligation.created", id, map[string]string{"description": o.Description}); err != nil {
@@ -223,7 +225,7 @@ func (w *Watchdog) remediate(ctx context.Context, h Health) error {
 		return nil
 	}
 	_, err = w.Tasks.Create(ctx, tasks.NewTask{
-		AssignmentID: h.AssignmentID, OriginKey: key, Skills: h.Skills,
+		AssignmentID: h.AssignmentID, OriginKey: key, Skills: h.Skills, ModelTier: h.Tier,
 		Title: "Overdue: " + h.Description,
 		Objective: fmt.Sprintf("This obligation is overdue: %s. It is satisfied by %s, expected every %s; there has been none since %s. "+
 			"Do what is needed to satisfy it now. If you cannot, notify the user why.", h.Description, h.Evidence, h.Every, since),
@@ -264,7 +266,7 @@ func health(ctx context.Context, db *sql.DB, o Obligation, now time.Time) (Healt
 
 func load(ctx context.Context, db *sql.DB, where string, args ...any) ([]Obligation, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, assignment_id, description, every_ms, grace_ms, evidence_json, on_miss,
-		COALESCE(skills_json, ''), created_at FROM obligations WHERE `+where+` ORDER BY created_at, rowid`, args...)
+		COALESCE(skills_json, ''), COALESCE(tier, ''), created_at FROM obligations WHERE `+where+` ORDER BY created_at, rowid`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +276,7 @@ func load(ctx context.Context, db *sql.DB, where string, args ...any) ([]Obligat
 		var o Obligation
 		var every, grace, created int64
 		var evidence, skills string
-		if err := rows.Scan(&o.ID, &o.AssignmentID, &o.Description, &every, &grace, &evidence, &o.OnMiss, &skills, &created); err != nil {
+		if err := rows.Scan(&o.ID, &o.AssignmentID, &o.Description, &every, &grace, &evidence, &o.OnMiss, &skills, &o.Tier, &created); err != nil {
 			return nil, err
 		}
 		o.Every, o.Grace, o.CreatedAt = time.Duration(every)*time.Millisecond, time.Duration(grace)*time.Millisecond, time.UnixMilli(created)
