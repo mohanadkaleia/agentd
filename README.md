@@ -132,6 +132,28 @@ link-local, cloud-metadata and Tailscale addresses are refused, including throug
 are capped at 2 MB and 20,000 characters of text. Policy resources are hostnames:
 `"web_read": {"mode": "allow", "resources": ["www.sec.gov", "investor.example.com"], "otherwise": "approval"}`.
 
+## MCP servers
+
+`agentd serve -mcp-config ~/agentd-mcp.json` starts the [MCP](https://modelcontextprotocol.io)
+servers listed in the file and registers each of their tools as `<server>__<tool>`:
+
+```json
+{"servers": {"notes": {"command": "/opt/agentd/mcp/notes-server", "args": ["--stdio"],
+  "env": {"NOTES_DIR": "/Users/agentd/notes"}, "call_timeout": "60s",
+  "tools": {"include": ["search", "append"]}}}}
+```
+
+Installing a server grants nothing. A tool runs only when an assignment's policy has a rule for it
+(`"notes__search": {"mode": "allow"}`), and the model is only shown tools its policy can allow.
+Every MCP tool counts as a write with no policy resource, so an interrupted call or a call the
+server reports as failed blocks its task until you settle it with `agentd resolve`. The server runs
+as agentd's user with only `PATH`, `HOME` (its own directory under the data dir) and the `env` you
+list; it never sees agentd's environment, and it is never offered model access, prompts to you, or
+your files. Results are capped at 20,000 characters and marked untrusted. Commands must be absolute
+paths; pin versions rather than `npx some-server@latest`, which runs new code on every start. The
+file must not be writable by others, and must be `chmod 600` when it sets `env`. A server that fails
+to start is logged and skipped; tasks that need its tools wait for it (see `agentd show`).
+
 ## Phone notifications
 
 Notifications the agent raises can be pushed to your phone through the free [ntfy](https://ntfy.sh) app:

@@ -33,6 +33,21 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestOffersOnlyToolsThatCanBeAllowed(t *testing.T) {
+	p := Policy{Tools: map[string]Rule{
+		"web_search": {Mode: Allow},
+		"send_email": {Mode: RequireApproval, Resources: []string{"x"}, Otherwise: Deny},
+		"pay":        {Mode: Deny},
+		"blocklist":  {Mode: Deny, Resources: []string{"bad"}, Otherwise: Allow},
+		"typo":       {Mode: "alow"},
+	}}
+	for tool, want := range map[string]bool{"web_search": true, "send_email": true, "pay": false, "blocklist": true, "typo": false, "shell": false} {
+		if got := p.Offers(tool); got != want {
+			t.Errorf("Offers(%s) = %v, want %v", tool, got, want)
+		}
+	}
+}
+
 func TestLimitsRoundTripAndValidate(t *testing.T) {
 	var p Policy
 	err := json.Unmarshal([]byte(`{"tools":{},"limits":{"max_llm_spend_usd":3,

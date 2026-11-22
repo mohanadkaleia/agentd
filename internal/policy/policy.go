@@ -100,6 +100,12 @@ func Evaluate(p Policy, tool, resource string) Decision {
 	return decide(mode, reason)
 }
 
+func (p Policy) Offers(tool string) bool {
+	rule, ok := p.Tools[tool]
+	permits := func(m Mode) bool { return m == Allow || m == RequireApproval }
+	return ok && (permits(rule.Mode) || len(rule.Resources) > 0 && permits(rule.Otherwise))
+}
+
 func EvaluateScope(p Policy, tool string) (Decision, []string) {
 	rule, ok := p.Tools[tool]
 	if !ok {

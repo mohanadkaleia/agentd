@@ -2,15 +2,18 @@ package runtime_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"agentd/internal/demo"
 	"agentd/internal/gateway"
+	"agentd/internal/model"
 	"agentd/internal/overview"
 	"agentd/internal/tasks"
 	"agentd/internal/tools"
@@ -173,4 +176,28 @@ func TestServeSurvivesPanickingHousekeeping(t *testing.T) {
 	defer cancel()
 	h.app.Runtime.Serve(ctx, "serve", 1, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.expectStatus(tasks.WaitingApproval)
+}
+
+type unruledTool struct{ tools.WebSearch }
+
+func (unruledTool) Definition() model.ToolDefinition {
+	return model.ToolDefinition{Name: "unruled", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+
+func TestModelIsOfferedOnlyToolsThePolicyCanAllow(t *testing.T) {
+	var offered []string
+	h := newHarness(t, func(req model.Request) model.Message {
+		if offered == nil {
+			for _, d := range req.Tools {
+				offered = append(offered, d.Name)
+			}
+		}
+		return demo.Script(req)
+	})
+	h.tools = func(mb *tools.Mailbox) tools.Registry { return tools.NewRegistry(tools.WebSearch{}, mb, unruledTool{}) }
+	h.restart()
+	h.drain()
+	if !slices.Contains(offered, "send_email") || !slices.Contains(offered, "web_search") || slices.Contains(offered, "unruled") {
+		t.Fatalf("offered tools = %v, want the policy's tools and not unruled", offered)
+	}
 }

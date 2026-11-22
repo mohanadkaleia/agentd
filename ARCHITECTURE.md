@@ -222,6 +222,15 @@ policy can allow-list contacts; anything wider must be a draft. The inbox watche
 history from the moment it is connected (no backfill) and recovers from an expired history id by
 re-scanning the last two days, deduplicated by message id.
 
+**MCP servers** (`internal/integrations/mcp`): the official Go SDK over stdio; the only package
+allowed to import it. Each remote tool becomes one `tools.Tool` named `<server>__<tool>`, so the
+runtime and gateway see nothing new. The client offers servers no sampling, elicitation or roots, so
+a server cannot spend the model budget, prompt the owner, or ask for files. A child process gets
+only `PATH`, `HOME` and its configured env. Every MCP tool is a write with no resource: a request
+that provably never left (not connected, method not found, invalid params) is "not executed";
+anything else that fails, including a result the server flags as an error, has an unknown outcome
+and blocks the task, because the protocol has no idempotency keys to check against.
+
 **Notification delivery** (`notify.Deliverer`, `internal/integrations/ntfy`): housekeeping claims
 each pending notification by pushing its next attempt two minutes out, sends it through the
 configured channel, and records the result. Transient failures retry with doubling backoff (30 s up
@@ -279,6 +288,7 @@ the same stores and gateway as the runtime. Provider-native model payloads never
 | `internal/notify` | Notification outbox and the `notify` tool. |
 | `internal/outcomes` | Completion criteria evidence and automatic project completion. |
 | `internal/watchdog` | Obligations: health from evidence, catch-up tasks and escalation. |
+| `internal/integrations/mcp` | MCP servers' tools as agentd tools (stdio), config file. |
 | `internal/integrations/ntfy` | Phone delivery channel for notifications. |
 | `internal/integrations/portfolio` | `portfolio_positions`: read-only holdings from an owner-kept snapshot, exact decimal values and weights. |
 | `internal/integrations/web` | `web_read`: one public page as text, with an address guard against local and private networks. |

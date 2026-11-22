@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -17,6 +18,7 @@ import (
 	"agentd/internal/assignments"
 	"agentd/internal/demo"
 	"agentd/internal/integrations/gmail"
+	"agentd/internal/integrations/mcp"
 	"agentd/internal/integrations/portfolio"
 	"agentd/internal/integrations/web"
 	"agentd/internal/model"
@@ -40,8 +42,9 @@ models:
   ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
 commands:
-    serve [-workers N] [-listen ADDR]    run the supervisor (and the HTTP API when -listen is set)
-    gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
+  serve [-workers N] [-listen ADDR] [-mcp-config FILE]
+                                       run the supervisor (and the HTTP API when -listen is set)
+  gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
   ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
   halt [reason]                        emergency stop: no task starts, no tool runs, no model call is made
@@ -50,7 +53,7 @@ commands:
   create <assignment.json>             create a project or responsibility, with its routes and schedules
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
   status                               show assignments, tasks, actions, approvals
-    retry <task-id> [note]               continue a blocked task in its existing run
+  retry <task-id> [note]               continue a blocked task in its existing run
   resolve <action-id> happened|not-happened [note]
                                        settle an action whose outcome could not be determined
   approve <approval-id>                approve a pending action
@@ -115,6 +118,7 @@ func run() error {
 	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
 	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
 	holdings := cmd.String("holdings", envOr("AGENTD_HOLDINGS", ""), "JSON holdings snapshot that portfolio_positions reads (off when empty)")
+	mcpConfig := cmd.String("mcp-config", envOr("AGENTD_MCP_CONFIG", ""), "JSON file listing MCP servers whose tools to register (off when empty)")
 	demoTools := cmd.Bool("demo-tools", false, "register the simulated web_search and send_email tools used by the demo")
 	toolDelay := cmd.Duration("tool-delay", 0, "pause inside the simulated send_email after sending, to test crash recovery")
 	assignment := cmd.String("assignment", "", "assignment id")
@@ -153,8 +157,21 @@ func run() error {
 		var extra []tools.Tool
 		account, extra = gmailTools(ctx, log)
 		registered = append(registered, extra...)
+		if *mcpConfig != "" {
+			cfg, err := mcp.Load(*mcpConfig)
+			if err != nil {
+				return err
+			}
+			servers, found := mcp.Start(ctx, cfg, filepath.Dir(*dbPath), log)
+			defer servers.Close()
+			registered = append(registered, found...)
+		}
 	}
-	a := app.New(db, provider, *modelSpec, tools.NewRegistry(registered...), time.Now)
+	registry, err := uniqueRegistry(registered)
+	if err != nil {
+		return err
+	}
+	a := app.New(db, provider, *modelSpec, registry, time.Now)
 	a.Runtime.ModelLocal = isLocal(*modelSpec)
 	for _, spec := range strings.Split(*fallbackSpecs, ",") {
 		if spec = strings.TrimSpace(spec); spec == "" {
@@ -390,4 +407,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func uniqueRegistry(registered []tools.Tool) (tools.Registry, error) {
+	r := tools.Registry{}
+	for _, t := range registered {
+		name := t.Definition().Name
+		if _, taken := r[name]; taken {
+			return nil, fmt.Errorf("two tools are named %q", name)
+		}
+		r[name] = t
+	}
+	return r, nil
 }

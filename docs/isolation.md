@@ -16,6 +16,11 @@ LaunchDaemon. `deploy/provision-user.sh` does that.
 | A compromised macOS kernel, or physical access to an unlocked Mac | No. |
 | Prompt injection making agentd misuse the access it legitimately has | No. That is the policy gateway's job (tool rules, scopes, approvals). |
 
+This matters more once you install MCP servers (`-mcp-config`): a local server is third-party code
+running as agentd's user. Under the default LaunchAgent install that is you, so it can read your
+files and, through `/usr/bin/security`, Keychain items. Under the separate account it can read only
+what that account can. Keep server binaries and the MCP config writable by an admin only.
+
 Secrets move from the login Keychain to owner-only files (`AGENTD_SECRETS_DIR`), because a
 LaunchDaemon's account never logs in and its login Keychain is never unlocked. agentd refuses a
 secrets directory that anyone but its owner can open. Nothing secret goes into the plist, process
