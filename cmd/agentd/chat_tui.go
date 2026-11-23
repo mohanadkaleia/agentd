@@ -808,7 +808,7 @@ func (t *tui) submit(text string) tea.Cmd {
 	if cmd, ok := t.decide(text); ok {
 		return cmd
 	}
-	t.emit("\n" + t.theme.muted.Render("> "+strings.ReplaceAll(t.c.wrap(sanitize(text), 2), "\n", "\n  ")))
+	t.emit("\n" + t.theme.muted.Render("> "+strings.ReplaceAll(xansi.Wrap(sanitize(text), t.width-3, ""), "\n", "\n  ")))
 	if !t.status.alive && !strings.HasPrefix(text, "/") && !t.warnedDown {
 		t.warnedDown = true
 		t.emit(t.theme.warn.Render("· " + t.c.wrap(tuiDownHint, 2)))
@@ -989,7 +989,7 @@ func (t *tui) render(m chat.Message) string {
 		if m.Channel != "" && m.Channel != chatChannel {
 			from = " (" + sanitize(m.Channel) + ")"
 		}
-		return t.theme.muted.Render("> " + strings.ReplaceAll(t.c.wrap(sanitize(m.Text()), 2), "\n", "\n  ") + from)
+		return t.theme.muted.Render("> " + strings.ReplaceAll(xansi.Wrap(sanitize(m.Text()), t.width-3, ""), "\n", "\n  ") + from)
 	}
 	return t.theme.accent.Render("●") + " " + strings.ReplaceAll(t.markdown(m.Text()), "\n", "\n  ")
 }
@@ -1128,7 +1128,7 @@ func (t *tui) card(m chat.Message) string {
 	tint := map[string]lipgloss.Style{chat.KindApproval: t.theme.warn, chat.KindProposal: t.theme.accent,
 		chat.KindQuestion: t.theme.violet, chat.KindNotification: t.theme.muted, chat.KindReport: t.theme.good}[m.Kind]
 	decidable := m.Kind == chat.KindApproval || m.Kind == chat.KindProposal || m.Kind == chat.KindQuestion
-	open := m.Status == "pending" || m.Status == "open"
+	open := decidable && (m.Status == "pending" || m.Status == "open")
 	name := tuiKinds[m.Kind]
 	if card.N > 0 {
 		name += fmt.Sprintf(" %d", card.N)
