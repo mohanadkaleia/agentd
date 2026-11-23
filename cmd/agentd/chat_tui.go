@@ -590,11 +590,17 @@ func (t *tui) show(m chat.Message) {
 	}
 }
 
-// focused is the open card a decision key would act on: the last thing shown, if it is a card.
+// focused is the card Tab gives the focus to: the newest one still waiting for a decision.
+// The focus line names it, so it need not be the last thing shown.
 func (t *tui) focused() *chat.Message {
-	t.c.mu.Lock()
-	defer t.c.mu.Unlock()
-	return t.c.last
+	var newest *chat.Message
+	for _, m := range t.open {
+		if newest == nil || m.Seq > newest.Seq {
+			card := m
+			newest = &card
+		}
+	}
+	return newest
 }
 
 // focusKey handles a key while a card has the focus. It reports whether the key was used;
@@ -617,7 +623,7 @@ func (t *tui) focusKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return t.post(answer), true
 		}
 	case len(k) == 1 && strings.Contains("arde", k):
-		if cmd, ok := t.decide(k); ok {
+		if cmd, ok := t.decide(k, card); ok {
 			return cmd, true
 		}
 	}
@@ -805,7 +811,10 @@ func (t *tui) submit(text string) tea.Cmd {
 	case "/clear":
 		return tea.ClearScreen
 	}
-	if cmd, ok := t.decide(text); ok {
+	t.c.mu.Lock()
+	last := t.c.last
+	t.c.mu.Unlock()
+	if cmd, ok := t.decide(text, last); ok {
 		return cmd
 	}
 	t.emit("\n" + t.theme.muted.Render("> "+strings.ReplaceAll(xansi.Wrap(sanitize(text), t.width-3, ""), "\n", "\n  ")))
@@ -819,13 +828,10 @@ func (t *tui) submit(text string) tea.Cmd {
 
 // decide handles the one-letter answers to the card shown last. A letter is only a
 // decision when it is the whole message and the card is the last thing shown.
-func (t *tui) decide(text string) (tea.Cmd, bool) {
+func (t *tui) decide(text string, last *chat.Message) (tea.Cmd, bool) {
 	if len(text) != 1 {
 		return nil, false
 	}
-	t.c.mu.Lock()
-	last := t.c.last
-	t.c.mu.Unlock()
 	if last == nil || last.Kind == chat.KindQuestion {
 		return nil, false
 	}
@@ -903,7 +909,7 @@ func (t *tui) view() string {
 		case card.Kind == chat.KindQuestion:
 			keys = fmt.Sprintf("esc, then /answer %d <text>", card.Card().N)
 		}
-		rows = append(rows, t.c.clip(" "+t.theme.warn.Bold(true).Render("▸ "+t.cardName(*card))+t.theme.muted.Render("  "+keys), t.width-1))
+		rows = append(rows, xansi.Truncate(" "+t.theme.warn.Bold(true).Render("▸ "+t.cardName(*card))+t.theme.muted.Render("  "+keys), t.width-1, "…"))
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(t.width - 2)
 	box = box.BorderForeground(t.theme.muted.GetForeground())
