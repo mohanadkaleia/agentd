@@ -107,7 +107,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
 
       onMounted(async () => {
         try {
-          try { view.models = await api("GET", "/api/models"); } catch { /* optional */ }
+          try { const m = await api("GET", "/api/models"); view.models = { list: m.models || [], tiers: m.tiers || {} }; } catch { /* optional */ }
           await loadConversations();
           await open_(view.conversations[0].id);
         } catch (e) { view.error = e.message; view.loading = false; }
