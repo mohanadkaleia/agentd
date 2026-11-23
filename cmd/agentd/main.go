@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -53,6 +54,8 @@ commands:
   gmail auth -client-secret FILE       connect a Gmail account (stored in the login keychain)
   gmail status                         show the connected Gmail account
   ntfy setup [-full] | test | off      deliver notifications to your phone through the ntfy app
+  mcp add <name> <url> | -- <command>  connect an MCP server: stores secrets, signs in, reviews its tools
+  mcp remove <name>                    disconnect an MCP server and delete the secrets add stored
   mcp list                             MCP servers: state, transport, tools by review status, scopes, last error
   mcp tools <server>                   a server's tools: status, declared effect and resource, calls, manual resolves
   mcp review [server]                  show MCP tools that are new or changed since you accepted them
@@ -220,6 +223,8 @@ func run() error {
 	var registered []tools.Tool
 	var account *gmail.Account
 	var servers *mcp.Manager
+	// watched is the MCP config as it was when serve read it.
+	watched := ""
 	if args[0] == "serve" {
 		registered = append(registered, &web.Reader{Now: time.Now, Timeout: 30 * time.Second})
 		if *holdings != "" {
@@ -228,7 +233,15 @@ func run() error {
 		var extra []tools.Tool
 		account, extra = gmailTools(ctx, log)
 		registered = append(registered, extra...)
-		if *mcpConfig != "" {
+		named := *mcpConfig != ""
+		if !named {
+			*mcpConfig = defaultMCPConfig(filepath.Dir(*dbPath))
+		}
+		if abs, err := filepath.Abs(*mcpConfig); err == nil {
+			*mcpConfig = abs
+		}
+		watched = fileSignature(*mcpConfig)
+		if watched != "" || named {
 			cfg, err := mcp.Load(*mcpConfig)
 			if err != nil {
 				return err
@@ -281,12 +294,33 @@ func run() error {
 		if *listen != "" && os.Getenv("AGENTD_API_TOKEN") == "" {
 			tokenPath, _ = filepath.Abs(*tokenFile)
 		}
-		go beat(ctx, db, system.Liveness{Listen: *listen, TokenFile: tokenPath, Models: models, Tiers: tierMap}, log)
-		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
+		go beat(ctx, db, system.Liveness{Listen: *listen, TokenFile: tokenPath, MCPConfig: *mcpConfig, Models: models, Tiers: tierMap}, log)
+		// A changed MCP config is loaded by starting again in place: tools are registered
+		// once, at start, so that no tool can appear or change under a running task.
+		serving, stopServing := context.WithCancel(ctx)
+		defer stopServing()
+		var reload atomic.Bool
+		go watchMCPConfig(serving, db, *mcpConfig, watched, 2*time.Second, 2*time.Minute, log, func() {
+			reload.Store(true)
+			stopServing()
+		})
+		a.Runtime.Serve(serving, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		if err := system.Stopped(context.WithoutCancel(ctx), db); err != nil {
 			log.Error("liveness", "err", err)
 		}
 		stopAPI()
+		if reload.Load() && ctx.Err() == nil {
+			if servers != nil {
+				servers.Close()
+			}
+			db.Close()
+			log.Info("agentd starting again to load the changed MCP config")
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			return syscall.Exec(exe, os.Args, os.Environ())
+		}
 		log.Info("agentd stopped")
 		return nil
 	case "halt":

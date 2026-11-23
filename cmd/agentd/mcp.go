@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,23 +21,41 @@ import (
 )
 
 func mcpCommand(ctx context.Context, db *sql.DB, dataDir string, args []string) error {
-	usage := fmt.Errorf("usage: agentd mcp list | tools <server> | review [server] | accept <server> (<tool>... | -all) |\n" +
-		"       auth <server> | test <server> | restart <server> | check   (auth, test and check read -config FILE or AGENTD_MCP_CONFIG)")
+	usage := fmt.Errorf("usage: agentd mcp add <name> ... | remove <name> | presets | list | tools <server> | review [server] |\n" +
+		"       accept <server> (<tool>... | -all) | auth <server> | test <server> | restart <server> | check\n" +
+		"       (the config is -config FILE, AGENTD_MCP_CONFIG, or mcp.json next to the database)")
 	if len(args) == 0 {
 		return usage
 	}
+	defaultPath := envOr("AGENTD_MCP_CONFIG", defaultMCPConfig(dataDir))
+	if args[0] == "presets" {
+		mcpPresetList(os.Stdout)
+		return nil
+	}
+	if args[0] == "add" {
+		o, err := parseMCPAdd(args[1:])
+		if err != nil {
+			return err
+		}
+		if o.config == "" {
+			o.config = defaultPath
+		}
+		return mcpAdd(ctx, db, dataDir, o.config, o, terminalConsole())
+	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
-	path := fs.String("config", envOr("AGENTD_MCP_CONFIG", ""), "the MCP config file agentd serve uses")
+	path := fs.String("config", defaultPath, "the MCP config file agentd serve uses")
+	yes := fs.Bool("yes", false, "remove without asking")
 	all := fs.Bool("all", false, "accept every new or changed tool of the server (each is printed first)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	rest := fs.Args()
 	config := func() (mcp.Config, error) {
-		if *path == "" {
-			return mcp.Config{}, fmt.Errorf("this command needs the MCP config: -config FILE or AGENTD_MCP_CONFIG")
+		c, err := mcp.Load(*path)
+		if errors.Is(err, os.ErrNotExist) {
+			return c, fmt.Errorf("no MCP config at %s; add a server with: agentd mcp add", *path)
 		}
-		return mcp.Load(*path)
+		return c, err
 	}
 	server := func() (string, mcp.ServerConfig, error) {
 		if len(rest) != 1 {
@@ -53,6 +72,11 @@ func mcpCommand(ctx context.Context, db *sql.DB, dataDir string, args []string) 
 		return rest[0], c, nil
 	}
 	switch args[0] {
+	case "remove":
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: agentd mcp remove [-yes] <name>")
+		}
+		return mcpRemove(ctx, db, *path, rest[0], *yes, terminalConsole())
 	case "list":
 		return mcpList(ctx, db, os.Stdout)
 	case "tools":

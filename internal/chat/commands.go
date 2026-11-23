@@ -48,6 +48,7 @@ func init() {
 		"retry":   {usage: "/retry <task> [note]", help: "continue a blocked task", starts: true, run: (*Service).cmdRetry},
 		"usage":   {usage: "/usage", help: "spend per assignment", run: (*Service).cmdUsage},
 		"new":     {usage: "/new", help: "start a new conversation", run: (*Service).cmdNew},
+		"mcp":     {usage: "/mcp", help: "connected MCP servers and how to add one", run: (*Service).cmdMCP},
 		"model":   {usage: "/model [task] [model|tier|auto]", help: "see or choose the model for this conversation or a task", run: (*Service).cmdModel},
 		"answer":  {usage: "/answer <n or id> <text>", help: "answer a question a task asked you", run: (*Service).cmdAnswer},
 		"tell":    {usage: "/tell <task or assignment> <text>", help: "send a note to running work, word for word", run: (*Service).cmdTell},
@@ -347,6 +348,44 @@ func (s *Service) cmdRetry(ctx context.Context, c call) (string, error) {
 		return "", err
 	}
 	return "Task " + c.args[0] + " will continue.", nil
+}
+
+func (s *Service) cmdMCP(ctx context.Context, c call) (string, error) {
+	if len(c.args) > 0 {
+		return "", errors.New("servers are added and removed in a terminal, where secrets can be typed safely: agentd mcp add <name> ..., agentd mcp remove <name>")
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT s.server, s.state, s.last_error,
+		(SELECT COUNT(*) FROM mcp_tools t WHERE t.server = s.server AND t.status = 'accepted'),
+		(SELECT COUNT(*) FROM mcp_tools t WHERE t.server = s.server AND t.status IN ('new', 'changed'))
+		FROM mcp_servers s WHERE s.state != 'removed' ORDER BY s.server`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var name, state, detail string
+		var accepted, waiting int
+		if err := rows.Scan(&name, &state, &detail, &accepted, &waiting); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%-16s %-14s %d tool(s) accepted", name, state, accepted)
+		if waiting > 0 {
+			fmt.Fprintf(&b, ", %d to review (agentd mcp review %s)", waiting, name)
+		}
+		if detail != "" && state != "needs_review" {
+			fmt.Fprintf(&b, "  %s", detail)
+		}
+		b.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if b.Len() == 0 {
+		b.WriteString("No MCP server is connected.\n")
+	}
+	b.WriteString("Add one in a terminal: agentd mcp add <name> <url>, or agentd mcp add <name> -- <command>. agentd mcp presets lists known services.\n")
+	return b.String(), nil
 }
 
 func (s *Service) cmdUsage(ctx context.Context, _ call) (string, error) {

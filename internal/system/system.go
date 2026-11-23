@@ -71,12 +71,14 @@ const aliveKey = "serve.alive"
 // Liveness is what a running `agentd serve` records about itself, so other processes
 // can tell whether anything will act on what they write.
 type Liveness struct {
-	PID    int       `json:"pid"`
-	Listen string    `json:"listen,omitempty"`
+	PID    int    `json:"pid"`
+	Listen string `json:"listen,omitempty"`
 	// TokenFile is where the API token is kept (never the token), so this user's other
 	// commands can call the API. Empty when the token came from the environment.
-	TokenFile string `json:"token_file,omitempty"`
-	At     time.Time `json:"at"`
+	TokenFile string    `json:"token_file,omitempty"`
+	At        time.Time `json:"at"`
+	// MCPConfig is the MCP config file serve watches; it restarts itself when the file changes.
+	MCPConfig string `json:"mcp_config,omitempty"`
 	// Models and Tiers are serve's configured models, so other commands can check a choice.
 	Models []ModelInfo       `json:"models,omitempty"`
 	Tiers  map[string]string `json:"tiers,omitempty"`

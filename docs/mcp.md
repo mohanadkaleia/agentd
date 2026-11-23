@@ -5,7 +5,51 @@ without new Go code: a local server it starts (stdio) or a hosted one it reaches
 Every MCP tool goes through the same gateway as a built-in tool: the action ledger, policy rules,
 approvals bound to exact arguments, rate limits, audit and the emergency stop.
 
-## Set up a server in five steps
+## Add a server with one command
+
+```bash
+agentd mcp add notes https://mcp.example.com/mcp -token        # hosted, bearer token
+agentd mcp add notes https://mcp.example.com/mcp -oauth        # hosted, sign in in the browser
+agentd mcp add files -env API_KEY -- /usr/local/bin/files-mcp --stdio   # a local program
+agentd mcp add slack -client-id <id> -client-secret            # a preset; agentd mcp presets lists them
+agentd mcp remove notes
+```
+
+What `add` does, in order:
+
+1. Asks for each secret without showing it and keeps it in the keychain as `agentd/<name>-<what>`.
+   The config file only ever holds the reference. `-env KEY=value` is for values that are not secret.
+2. Signs in in your browser when the server uses OAuth.
+3. Connects once, lists the tools, and calls none of them. A tool whose name a model cannot use
+   (dots, too long) gets a local name.
+4. Asks about each tool: `r` accepts it as read-only, `w` accepts it as a tool that changes things,
+   `s` skips it. The server's own hints, and agentd's preset for a known service, are shown as
+   suggestions; nothing is accepted without your answer. Skipped tools never run and stay in
+   `agentd mcp review`.
+5. Writes the entry to `mcp.json` next to the database (mode 0600), which `agentd serve` loads
+   with no flag. If the server did not answer, nothing is saved and the secrets are deleted again.
+
+A running `agentd serve` watches that file. When it changes and is valid, agentd waits up to two
+minutes for running tasks to finish and then starts again in place, so the new server is loaded
+without you restarting anything. Tools are registered only at start, so none can appear or change
+under a running task.
+
+`remove` deletes the entry and the secrets `add` stored for it, after asking (`-yes` to skip the
+question). Accepted tool definitions are kept, so adding the server again later does not accept
+anything that changed in between.
+
+In the chat, `/mcp` lists the servers and their state. In the terminal chat, `/mcp add ...` and
+`/mcp remove ...` run the same commands. A job can use a tool only when its policy has a rule for
+it: ask in chat, for example "let the refund job read Slack", and approve the proposal.
+
+Presets hold what agentd knows about a hosted service: its URL, scopes and, for Gmail, which
+tools read and which write. You still bring your own OAuth client; `agentd mcp presets` prints the
+setup for each.
+
+## Set up a server by hand
+
+`agentd mcp add` writes the same file these steps do; use them for options it has no flag for
+(polls, reconcile rules, resources).
 
 1. **Write the config** (`chmod 600`), for example [`examples/mcp.json`](examples/mcp.json). Store
    secrets in the keychain and reference them: `security add-generic-password -s agentd -a slack-client-secret -w`.

@@ -548,3 +548,28 @@ func TestModelCommandShowsAndSetsTheConversationModel(t *testing.T) {
 		t.Fatalf("a reply changed the conversation model to %q", chosen)
 	}
 }
+
+func TestMCPCommandListsServersAndNeverAddsFromChat(t *testing.T) {
+	w := newWorld(t)
+	command := func(text string) string {
+		w.say(text)
+		results := w.by(chat.System, chat.KindCommandResult)
+		return results[len(results)-1].Text()
+	}
+	out := command("/mcp")
+	if !strings.Contains(out, "No MCP server is connected") || !strings.Contains(out, "agentd mcp add") {
+		t.Fatalf("/mcp with no servers:\n%s", out)
+	}
+	if _, err := w.app.DB.Exec(`INSERT INTO mcp_servers (server, seen_at, state) VALUES ('chat', 0, 'ready'), ('old', 0, 'removed');
+		INSERT INTO mcp_tools (server, tool, definition_hash, definition_json, status, first_seen_at, changed_at) VALUES
+		('chat', 'read', 'a', '{}', 'accepted', 0, 0), ('chat', 'post', 'b', '{}', 'new', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	out = command("/mcp")
+	if !strings.Contains(out, "chat") || !strings.Contains(out, "1 tool(s) accepted, 1 to review") || strings.Contains(out, "old") {
+		t.Fatalf("/mcp:\n%s", out)
+	}
+	if out = command("/mcp add notes https://example.com/mcp"); !strings.Contains(out, "in a terminal") {
+		t.Fatalf("/mcp add from a channel that cannot ask for secrets:\n%s", out)
+	}
+}

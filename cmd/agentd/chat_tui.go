@@ -811,6 +811,19 @@ func (t *tui) submit(text string) tea.Cmd {
 	case "/clear":
 		return tea.ClearScreen
 	}
+	// Adding and removing a server asks for secrets and answers, so it runs as the same
+	// command a terminal would, with the chat stepping aside.
+	if fields := strings.Fields(text); len(fields) > 2 && fields[0] == "/mcp" && (fields[1] == "add" || fields[1] == "remove") && len(serveCommand) > 0 {
+		args := append(append([]string{}, serveCommand[1:len(serveCommand)-1]...), "mcp")
+		cmd := exec.Command(serveCommand[0], append(args, fields[1:]...)...)
+		t.emit("\n" + t.theme.muted.Render("> "+sanitize(text)))
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			if err != nil {
+				return tuiPosted{err: errors.New("agentd mcp " + fields[1] + " did not finish: " + err.Error())}
+			}
+			return nil
+		})
+	}
 	t.c.mu.Lock()
 	last := t.c.last
 	t.c.mu.Unlock()

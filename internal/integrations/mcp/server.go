@@ -33,6 +33,8 @@ const (
 var toolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 type Server struct {
+	// offered is every tool name the server listed on the last discovery.
+	offered []string
 	Name    string
 	config  ServerConfig
 	log     *slog.Logger
@@ -273,6 +275,7 @@ func (s *Server) discover(ctx context.Context, cs *mcp.ClientSession) ([]tools.T
 	var found []tools.Tool
 	listed := map[string]listed{}
 	defs := map[string]model.ToolDefinition{}
+	s.offered = nil
 	for remote, err := range cs.Tools(ctx, nil) {
 		if err != nil {
 			return nil, fmt.Errorf("tools/list: %w", err)
@@ -280,6 +283,7 @@ func (s *Server) discover(ctx context.Context, cs *mcp.ClientSession) ([]tools.T
 		if !s.config.Tools.allows(remote.Name) {
 			continue
 		}
+		s.offered = append(s.offered, remote.Name)
 		if len(listed) == maxToolsPerServer {
 			s.log.Warn("mcp server offers too many tools; ignoring the rest", "limit", maxToolsPerServer)
 			break
@@ -762,6 +766,20 @@ func Probe(ctx context.Context, name string, c ServerConfig, o Options) ([]Pin, 
 	}
 	s.close()
 	return ListPins(ctx, o.DB, name)
+}
+
+// Survey is Probe, and also returns every tool name the server offers, including the ones
+// skipped because a model cannot use their name.
+func Survey(ctx context.Context, name string, c ServerConfig, o Options) ([]Pin, []string, error) {
+	s := newServer(name, c, o.DataDir, newStore(o.DB, time.Now), o.Log)
+	s.vault, s.probe = o.Vault, true
+	if _, err := s.start(ctx); err != nil {
+		return nil, nil, err
+	}
+	offered := s.offered
+	s.close()
+	pins, err := ListPins(ctx, o.DB, name)
+	return pins, offered, err
 }
 
 // Check resolves every secret a server needs, without connecting to it.

@@ -196,6 +196,12 @@ func (c *Chat) Redefine(tool, description string) {
 	c.add(tool, description, handlers[tool])
 }
 
+// ServeStdio runs the chat server on standard input and output until they close, for
+// tests that start an MCP server as a child process.
+func ServeStdio() {
+	NewChat().Server.Run(context.Background(), &mcp.StdioTransport{})
+}
+
 // Offline drops every session and refuses new ones until Online.
 func (c *Chat) Offline() {
 	c.mu.Lock()

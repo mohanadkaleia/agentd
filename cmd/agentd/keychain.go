@@ -71,6 +71,35 @@ func keychainStoreHex(service, account string, secret []byte) error {
 	return nil
 }
 
+// keychainStore keeps a secret as typed. It reaches the keychain tool on its standard
+// input, never on a command line other users could read.
+func keychainStore(service, account, secret string) error {
+	if strings.ContainsAny(secret, "\n\r") {
+		return errors.New("a secret cannot span lines")
+	}
+	if secretsDir() != "" {
+		path, err := secretFile(account)
+		if err != nil {
+			return err
+		}
+		tmp := path + ".new"
+		if err := os.WriteFile(tmp, []byte(secret), 0o600); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	}
+	if !secretName.MatchString(account) {
+		return fmt.Errorf("invalid secret name %q", account)
+	}
+	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(secret)
+	cmd := exec.Command("/usr/bin/security", "-i")
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -U -s %s -a %s -w \"%s\"\n", service, account, quoted))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("keychain: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func keychainLoadHex(service, account string) ([]byte, bool) {
 	v := keychainSecret(service, account)
 	if v == "" {

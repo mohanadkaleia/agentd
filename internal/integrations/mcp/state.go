@@ -90,6 +90,13 @@ func RecordScopes(ctx context.Context, db *sql.DB, now time.Time, server, scopes
 	return err
 }
 
+// Removed marks a server as taken out of the config. Its tools' accepted definitions are
+// kept, so adding it again does not silently accept anything that changed meanwhile.
+func Removed(ctx context.Context, db *sql.DB, server string) error {
+	_, err := db.ExecContext(ctx, `UPDATE mcp_servers SET state = 'removed', last_error = '', next_retry_at = NULL WHERE server = ?`, server)
+	return err
+}
+
 func ListServers(ctx context.Context, db *sql.DB) ([]ServerStatus, error) {
 	rows, err := db.QueryContext(ctx, `SELECT server, state, transport, last_error, next_retry_at, state_since, scopes
 		FROM mcp_servers ORDER BY server`)

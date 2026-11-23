@@ -110,6 +110,17 @@ func (s *Secret) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// MarshalJSON writes a secret the way UnmarshalJSON reads it.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	switch {
+	case s.Keychain != "":
+		return json.Marshal(map[string]string{"keychain": s.Keychain})
+	case s.File != "":
+		return json.Marshal(map[string]string{"file": s.File})
+	}
+	return json.Marshal(s.Literal)
+}
+
 func (s Secret) reference() bool { return s.Keychain != "" || s.File != "" }
 
 type ToolFilter struct {
@@ -296,6 +307,46 @@ func loopback(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
+
+// Check validates a config as if it were stored readable by its owner only.
+func (c Config) Check() error { return c.validate(0o600) }
+
+// LoadOrEmpty is Load, with a missing file read as a config with no servers.
+func LoadOrEmpty(path string) (Config, error) {
+	c, err := Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Config{Servers: map[string]ServerConfig{}}, nil
+	}
+	if c.Servers == nil {
+		c.Servers = map[string]ServerConfig{}
+	}
+	return c, err
+}
+
+// Save validates a config and writes it for its owner only, replacing the file in one step.
+func Save(path string, c Config) error {
+	if err := c.Check(); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, append(body, '\n'), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ValidToolName reports whether a server's tool can be offered to models under local.
+func ValidToolName(server, local string) bool { return toolName.MatchString(server + "__" + local) }
+
+// CredentialAccount is where a server's OAuth sign-in is stored.
+func CredentialAccount(server string) string { return credentialAccount(server) }
 
 func Load(path string) (Config, error) {
 	info, err := os.Stat(path)
