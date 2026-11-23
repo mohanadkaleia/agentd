@@ -55,6 +55,19 @@ func init() {
 	}
 }
 
+// CommandHelp is one slash command as a client shows it in a menu.
+type CommandHelp struct{ Name, Usage, Help string }
+
+// Commands lists the slash commands in name order.
+func Commands() []CommandHelp {
+	out := make([]CommandHelp, 0, len(commands))
+	for name, c := range commands {
+		out = append(out, CommandHelp{Name: name, Usage: c.usage, Help: c.help})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // Command runs one owner slash command. It never calls a model, so it works while the
 // model is down, the front desk is paused or out of budget, and (unless it starts work)
 // during an emergency stop.

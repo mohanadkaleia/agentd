@@ -73,8 +73,12 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 	noWait := f.Bool("no-wait", false, "store the message and exit without waiting for the reply")
 	timeout := f.Duration("timeout", 0, "give up waiting after this long (default: none interactive, 5m one-shot)")
 	modelChoice := f.String("model", "", "choose the model for this conversation: a model, alias, tier, or auto")
+	ui := f.String("ui", "classic", "interactive interface: classic or new")
 	if err := f.Parse(args); err != nil {
 		return &exitError{code: 1, msg: err.Error()}
+	}
+	if *ui != "classic" && *ui != "new" {
+		return &exitError{code: 1, msg: "-ui is classic or new"}
 	}
 	a := app.New(db, nil, "", tools.Registry{}, time.Now)
 	c := &chatClient{app: a, out: stdout, json: *asJSON, width: width, timeout: *timeout,
@@ -124,6 +128,9 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 	if message == "" {
 		if !tty || *asJSON {
 			return &exitError{code: 1, msg: "no message: pass one, pipe one in, or run `agentd chat` in a terminal"}
+		}
+		if in, ok := stdin.(*os.File); ok && *ui == "new" && os.Getenv("TERM") != "dumb" {
+			return c.tui(ctx, in)
 		}
 		return c.interactive(ctx, stdin)
 	}
@@ -266,23 +273,7 @@ func (c *chatClient) follow(ctx context.Context, m chat.Message, timeout time.Du
 			if done {
 				continue
 			}
-			switch {
-			case direct && msg.Kind == chat.KindCommandResult:
-				done, result = true, answered
-				if failedText(msg) {
-					result = refused
-				}
-			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Author == chat.Agent:
-				done, result = true, answered
-			case !direct && (msg.Kind == chat.KindProposal || msg.Kind == chat.KindApproval || msg.Kind == chat.KindQuestion) && msg.Card().TaskID == m.TurnTaskID:
-				done, result = true, answered
-			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindError:
-				done, result = true, failed
-			case !direct && msg.TurnTaskID == m.TurnTaskID && msg.Kind == chat.KindNotice && msg.RefKind == "":
-				done, result = true, cancelled
-			case msg.Kind == chat.KindNotice && msg.RefKind == "wait":
-				done, result = true, waiting
-			}
+			done, result = settles(m, msg)
 		}
 		if done {
 			return result, nil
@@ -310,6 +301,29 @@ func (c *chatClient) follow(ctx context.Context, m chat.Message, timeout time.Du
 	}
 }
 
+// settles reports whether msg ends the wait that began with the owner's message sent, and how.
+func settles(sent, msg chat.Message) (bool, outcome) {
+	direct := sent.TurnTaskID == ""
+	switch {
+	case direct && msg.Kind == chat.KindCommandResult:
+		if failedText(msg) {
+			return true, refused
+		}
+		return true, answered
+	case !direct && msg.TurnTaskID == sent.TurnTaskID && msg.Author == chat.Agent:
+		return true, answered
+	case !direct && (msg.Kind == chat.KindProposal || msg.Kind == chat.KindApproval || msg.Kind == chat.KindQuestion) && msg.Card().TaskID == sent.TurnTaskID:
+		return true, answered
+	case !direct && msg.TurnTaskID == sent.TurnTaskID && msg.Kind == chat.KindError:
+		return true, failed
+	case !direct && msg.TurnTaskID == sent.TurnTaskID && msg.Kind == chat.KindNotice && msg.RefKind == "":
+		return true, cancelled
+	case msg.Kind == chat.KindNotice && msg.RefKind == "wait":
+		return true, waiting
+	}
+	return false, answered
+}
+
 func failedText(m chat.Message) bool {
 	var t chat.Text
 	json.Unmarshal(m.Body, &t)
@@ -322,33 +336,50 @@ var toolWords = map[string]string{
 	"get_usage": "checking spend", "list_tools": "checking available tools",
 }
 
+type toolCall struct{ id, tool, status string }
+
+func (t toolCall) words() string {
+	if words := toolWords[t.tool]; words != "" {
+		return words
+	}
+	return "using " + t.tool
+}
+
+func (c *chatClient) toolCalls(ctx context.Context, turn string) ([]toolCall, error) {
+	rows, err := c.app.DB.QueryContext(ctx, `SELECT id, tool_name, status FROM actions WHERE task_id = ? ORDER BY created_at, id`, turn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []toolCall
+	for rows.Next() {
+		var t toolCall
+		if err := rows.Scan(&t.id, &t.tool, &t.status); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // activity prints one line per tool call the turn makes.
 func (c *chatClient) activity(ctx context.Context, turn string, seen map[string]bool) error {
-	rows, err := c.app.DB.QueryContext(ctx, `SELECT id, tool_name, status FROM actions WHERE task_id = ? ORDER BY created_at, id`, turn)
+	calls, err := c.toolCalls(ctx, turn)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, tool, status string
-		if err := rows.Scan(&id, &tool, &status); err != nil {
-			return err
-		}
-		if seen[id] {
+	for _, t := range calls {
+		if seen[t.id] {
 			continue
 		}
-		seen[id] = true
+		seen[t.id] = true
 		if c.json {
-			c.record(map[string]string{"type": "tool", "turn_task_id": turn, "tool": tool, "status": status})
+			c.record(map[string]string{"type": "tool", "turn_task_id": turn, "tool": t.tool, "status": t.status})
 			continue
 		}
-		words := toolWords[tool]
-		if words == "" {
-			words = "using " + tool
-		}
-		c.print(c.dim("  · " + sanitize(words)))
+		c.print(c.dim("  · " + sanitize(t.words())))
 	}
-	return rows.Err()
+	return nil
 }
 
 func (c *chatClient) history(ctx context.Context, n int) error {
@@ -369,6 +400,16 @@ func (c *chatClient) history(ctx context.Context, n int) error {
 
 // show prints one message, as text or as a JSON line.
 func (c *chatClient) show(m chat.Message) {
+	c.track(m)
+	if c.json {
+		c.emit(m)
+		return
+	}
+	c.print(c.render(m))
+}
+
+// track remembers how far the conversation has been shown and which open card came last.
+func (c *chatClient) track(m chat.Message) {
 	c.mu.Lock()
 	c.after = max(c.after, m.Seq)
 	if (m.Kind == chat.KindApproval || m.Kind == chat.KindProposal || m.Kind == chat.KindQuestion) && (m.Status == "pending" || m.Status == "open") {
@@ -378,26 +419,23 @@ func (c *chatClient) show(m chat.Message) {
 		c.last = nil
 	}
 	c.mu.Unlock()
-	if c.json {
-		c.emit(m)
-		return
-	}
+}
+
+func (c *chatClient) render(m chat.Message) string {
 	switch m.Kind {
 	case chat.KindApproval, chat.KindProposal, chat.KindQuestion, chat.KindNotification, chat.KindReport:
-		c.print(c.card(m))
+		return c.card(m)
 	case chat.KindError:
-		c.print(c.bold("! ") + c.wrap(sanitize(m.Text()), 2))
+		return c.bold("! ") + c.wrap(sanitize(m.Text()), 2)
 	case chat.KindNotice:
-		c.print(c.dim("· " + c.wrap(sanitize(m.Text()), 2)))
+		return c.dim("· " + c.wrap(sanitize(m.Text()), 2))
 	case chat.KindCommandResult:
-		c.print(strings.TrimRight(sanitize(m.Text()), "\n"))
-	default:
-		if m.Author == chat.Owner {
-			c.print(c.dim("you: ") + c.wrap(sanitize(m.Text()), 5))
-		} else {
-			c.print(c.wrap(sanitize(m.Text()), 0))
-		}
+		return strings.TrimRight(sanitize(m.Text()), "\n")
 	}
+	if m.Author == chat.Owner {
+		return c.dim("you: ") + c.wrap(sanitize(m.Text()), 5)
+	}
+	return c.wrap(sanitize(m.Text()), 0)
 }
 
 func (c *chatClient) card(m chat.Message) string {
