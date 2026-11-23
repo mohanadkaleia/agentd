@@ -1,5 +1,6 @@
 import { createApp, h, reactive, onMounted, onUnmounted, watch } from "/vue.js";
 import { makeChat } from "/chat.js";
+import { icon } from "/icons.js";
 
 const state = reactive({
   csrf: null,
@@ -9,7 +10,41 @@ const state = reactive({
   counts: { approvals: 0, unresolved: 0, questions: 0 },
   servers: [],
   toast: "",
+  dialog: null,
 });
+
+// ask opens an in-page dialog and resolves to the typed text ("" when there is no
+// input) or null when the owner cancels.
+function ask(options) {
+  return new Promise((resolve) => { state.dialog = { value: "", ...options, resolve }; });
+}
+const confirmBox = async (title, body, options) => (await ask({ title, body, ...options })) !== null;
+const promptBox = (title, body, options) => ask({ title, body, input: true, ...options });
+function closeDialog(result) {
+  const d = state.dialog;
+  state.dialog = null;
+  if (d) d.resolve(result);
+}
+function dialogView() {
+  const d = state.dialog;
+  if (!d) return null;
+  return h("dialog", {
+    class: "modal", "aria-labelledby": "dialog-title",
+    ref: (el) => { if (el && !el.open) el.showModal(); },
+    onCancel: (e) => { e.preventDefault(); closeDialog(null); },
+  }, h("form", { onSubmit: (e) => { e.preventDefault(); closeDialog(d.input ? d.value : ""); } }, [
+    h("h2", { id: "dialog-title" }, d.title),
+    d.body ? h("p", { class: "muted pre-line" }, d.body) : null,
+    d.input ? [
+      h("label", { class: "sr-only", for: "dialog-input" }, d.label || d.title),
+      h("input", { id: "dialog-input", value: d.value, placeholder: d.placeholder || "", autofocus: true, onInput: (e) => { d.value = e.target.value; } }),
+    ] : null,
+    h("div", { class: "row end" }, [
+      h("button", { type: "button", onClick: () => closeDialog(null) }, "Cancel"),
+      h("button", { type: "submit", class: d.danger ? "danger" : "primary" }, d.confirm || "Confirm"),
+    ]),
+  ]));
+}
 
 window.addEventListener("hashchange", () => { state.route = location.hash.slice(1) || "/"; });
 
@@ -58,11 +93,17 @@ async function refreshShell() {
   } catch (e) { /* the view shows its own error */ }
 }
 
-const fmtTime = (t) => (t ? new Date(t).toLocaleString() : "");
+const fmtTime = (t) => (t ? new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "");
 const money = (n) => "$" + Number(n || 0).toFixed(2);
 const pretty = (v) => { try { return JSON.stringify(typeof v === "string" ? JSON.parse(v) : v, null, 2); } catch { return String(v); } };
 const status = (s) => h("span", { class: "status " + s }, s.replace(/_/g, " "));
 const link = (to, text) => h("a", { href: "#" + to }, text);
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+const pageHead = (title, sub, extra) => h("div", { class: "page-head" }, [h("h1", title), extra || null, sub ? h("p", { class: "sub" }, sub) : null]);
+const sectionHead = (title, count) => h("div", { class: "section-head" }, [h("h2", title), count ? h("span", { class: "count num" }, String(count)) : null]);
+const loading = () => h("p", { class: "muted" }, "Loading…");
+const failed = (message) => h("p", { class: "status failed", role: "alert" }, message);
+const mark = () => h("span", { class: "mark", "aria-hidden": "true" }, "B");
 
 function loader(fetcher) {
   const view = reactive({ data: null, error: "", loading: true });
@@ -79,47 +120,62 @@ function loader(fetcher) {
   return { view, load };
 }
 
+const stopAll = async () => {
+  const reason = await promptBox("Emergency stop", "No task starts, no tool runs and no model call is made until you lift it.",
+    { placeholder: "Reason (optional)", label: "Reason", confirm: "Stop everything", danger: true });
+  if (reason !== null) act("Emergency stop", "POST", "/api/system/emergency-stop", { reason });
+};
+const liftStop = async () => {
+  if (await confirmBox("Lift the emergency stop?", "Baseet will start working again.", { confirm: "Lift stop" })) act("Resume", "POST", "/api/system/resume");
+};
+const signOut = async () => { await api("DELETE", "/ui/session").catch(() => {}); state.signedIn = false; state.csrf = null; };
+
 function shell(content) {
   return () => {
     if (state.signedIn === false) return h(Login);
-    if (state.signedIn === null) return h("main", h("p", { class: "muted" }, "Loading…"));
-    const items = [["/", "Chat"], ["/work", "Work"], ["/inbox", "Inbox"], ["/tools", "Tools"], ["/activity", "Activity"]];
+    if (state.signedIn === null) return h("main", loading());
+    const items = [["/", "Chat", "chat"], ["/work", "Work", "work"], ["/inbox", "Inbox", "inbox"], ["/tools", "Tools", "tools"], ["/activity", "Activity", "activity"]];
     const waiting = state.counts.approvals + state.counts.unresolved + state.counts.questions;
     const troubled = state.servers.filter((s) => s.state === "needs_auth" || s.state === "failed");
     const reviews = state.servers.filter((s) => s.state === "needs_review").length;
-    return h("div", [
-      state.system.halted
-        ? h("div", { class: "halted", role: "alert" }, [
-            h("strong", "Emergency stop is on."),
-            h("span", state.system.reason || ""),
-            h("button", { onClick: () => confirm("Lift the emergency stop and let Baseet work again?") && act("Resume", "POST", "/api/system/resume") }, "Lift stop"),
-          ])
-        : null,
-      h("header", [
-        h("h1", "Baseet"),
-        h("nav", { "aria-label": "Main" }, items.map(([to, text]) =>
-          h("a", { href: "#" + to, class: state.route === to ? "active" : "", "aria-current": state.route === to ? "page" : null }, [
-            text, (to === "/inbox" || to === "/") && waiting ? [" ", h("span", { class: "badge", "aria-label": waiting + " waiting" }, String(waiting))] : null,
-            to === "/tools" && troubled.length + reviews ? [" ", h("span", { class: "badge", "aria-label": (troubled.length + reviews) + " need attention" }, String(troubled.length + reviews))] : null,
+    const halted = state.system.halted;
+    const current = (to) => state.route === to || (to === "/" && state.route.startsWith("/?")) || (to === "/work" && /^\/[at]\//.test(state.route));
+    return h("div", { class: "app" }, [
+      h("aside", { class: "side" }, [
+        h("a", { class: "brand", href: "#/" }, [mark(), "Baseet"]),
+        h("nav", { "aria-label": "Main" }, items.map(([to, text, ic]) =>
+          h("a", { href: "#" + to, class: current(to) ? "active" : "", "aria-current": current(to) ? "page" : null }, [
+            icon(ic), h("span", { class: "label" }, text),
+            to === "/inbox" && waiting ? h("span", { class: "badge", "aria-label": waiting + " waiting" }, String(waiting)) : null,
+            to === "/tools" && troubled.length + reviews ? h("span", { class: "badge", "aria-label": (troubled.length + reviews) + " need attention" }, String(troubled.length + reviews)) : null,
           ]))),
-        state.system.halted ? null : h("button", {
-          class: "danger",
-          onClick: () => {
-            const reason = prompt("Emergency stop: no task starts, no tool runs, no model call is made. Reason?");
-            if (reason !== null) act("Emergency stop", "POST", "/api/system/emergency-stop", { reason });
-          },
-        }, "Emergency stop"),
-        h("button", { onClick: async () => { await api("DELETE", "/ui/session").catch(() => {}); state.signedIn = false; state.csrf = null; } }, "Sign out"),
+        h("div", { class: "side-foot" }, [
+          h("div", { class: "sys " + (halted ? "off" : "on") }, [h("span", { class: "dot" }), h("span", { class: "label" }, halted ? "Stopped" : "Running")]),
+          halted ? null : h("button", { class: "quiet stop", onClick: stopAll }, [icon("stop"), h("span", { class: "label" }, "Emergency stop")]),
+          h("button", { class: "quiet", onClick: signOut }, [icon("signout"), h("span", { class: "label" }, "Sign out")]),
+        ]),
       ]),
-      troubled.length && state.route !== "/tools"
-        ? h("div", { class: "card banner", role: "alert" }, [
-            h("strong", "Tools unavailable: "),
-            troubled.map((s) => s.server + " " + s.state.replace("_", " ")).join(", "), " · ", link("/tools", "details"),
-          ])
-        : null,
-      h("main", content()),
+      h("div", { class: "content" }, [
+        halted
+          ? h("div", { class: "alert halted", role: "alert" }, [
+              h("strong", "Emergency stop is on."),
+              h("span", state.system.reason || ""),
+              h("span", { class: "spacer" }),
+              h("button", { onClick: liftStop }, "Lift stop"),
+            ])
+          : null,
+        troubled.length && state.route !== "/tools"
+          ? h("div", { class: "alert trouble", role: "alert" }, [
+              h("strong", "Tools unavailable:"),
+              h("span", troubled.map((s) => s.server + " " + s.state.replace("_", " ")).join(", ")),
+              link("/tools", "Details"),
+            ])
+          : null,
+        h("main", content()),
+      ]),
       h("div", { class: "sr-only", role: "status", "aria-live": "polite" }, state.toast),
       state.toast ? h("div", { class: "toast", "aria-hidden": "true" }, state.toast) : null,
+      dialogView(),
     ]);
   };
 }
@@ -145,12 +201,13 @@ const Login = {
       }
     };
     return () => h("main", { class: "login" }, h("form", { class: "card", onSubmit: submit }, [
-      h("h2", "Sign in to Baseet"),
+      h("div", { class: "brand" }, [mark(), "Baseet"]),
+      h("h1", "Sign in"),
       h("p", { class: "muted" }, "Paste the API token from the api-token file. It is sent once; the browser keeps only a session cookie it cannot read."),
       h("label", { for: "token" }, "API token"),
       h("input", { id: "token", type: "password", autocomplete: "off", value: form.token, onInput: (e) => { form.token = e.target.value; } }),
-      form.error ? h("p", { role: "alert", style: "color: var(--bad)" }, form.error) : null,
-      h("p", h("button", { class: "primary", type: "submit", disabled: form.busy || !form.token }, "Sign in")),
+      form.error ? h("p", { class: "error", role: "alert" }, form.error) : null,
+      h("button", { class: "primary", type: "submit", disabled: form.busy || !form.token }, "Sign in"),
     ]));
   },
 };
@@ -160,21 +217,30 @@ const Assignments = {
     const { view, load } = loader(() => api("GET", "/api/assignments"));
     onMounted(load);
     return shell(() => {
-      if (view.loading) return h("p", { class: "muted" }, "Loading…");
-      if (view.error) return h("p", { role: "alert" }, view.error);
-      if (!view.data.length) return h("p", ["Nothing assigned yet. ", link("/", "Ask for something in the chat"), " or create one with agentd create."]);
-      return h("div", { class: "grid" }, view.data.map((a) => h("article", { class: "card" }, [
-        h("h2", link("/a/" + a.id, a.name)),
-        h("div", { class: "row" }, [status(a.status), h("span", { class: "muted" }, a.kind)]),
-        a.status_reason ? h("p", { class: "muted" }, a.status_reason) : null,
-        h("p", ["Next: ", a.next.what, a.next.at ? h("span", { class: "muted" }, " · " + fmtTime(a.next.at)) : null]),
-        h("p", { class: "muted" }, [
-          "Spend ", money(a.spent_usd), a.budget_usd ? " of " + money(a.budget_usd) : "",
-          a.pending_approvals ? " · " + a.pending_approvals + " approval(s)" : "",
-          a.blocked_tasks ? " · " + a.blocked_tasks + " blocked" : "",
-          a.overdue_obligations ? " · " + a.overdue_obligations + " overdue" : "",
-        ]),
-      ])));
+      if (view.loading) return loading();
+      if (view.error) return failed(view.error);
+      if (!view.data.length) return [pageHead("Work"), h("div", { class: "empty" }, [
+        h("h2", "Nothing assigned yet"),
+        h("p", ["Describe what you want in the ", link("/", "chat"), ", or create a job with agentd create."]),
+      ])];
+      return [
+        pageHead("Work", "Every project and responsibility, with what happens next."),
+        h("div", { class: "grid" }, view.data.map((a) => h("article", { class: "card" }, [
+          h("div", { class: "row" }, [status(a.status), h("span", { class: "eyebrow" }, a.kind)]),
+          h("h2", link("/a/" + a.id, a.name)),
+          a.status_reason ? h("p", { class: "muted small" }, a.status_reason) : null,
+          h("div", { class: "next" }, [h("span", { class: "eyebrow" }, "Next"), a.next.what, a.next.at ? h("span", { class: "muted" }, " · " + fmtTime(a.next.at)) : null]),
+          a.pending_approvals || a.blocked_tasks || a.overdue_obligations ? h("div", { class: "row" }, [
+            a.pending_approvals ? h("span", { class: "chip warn" }, a.pending_approvals + " to approve") : null,
+            a.blocked_tasks ? h("span", { class: "chip bad" }, a.blocked_tasks + " blocked") : null,
+            a.overdue_obligations ? h("span", { class: "chip bad" }, a.overdue_obligations + " overdue") : null,
+          ]) : null,
+          h("div", { class: "meter" }, [
+            h("span", { class: "num" }, ["Spent ", money(a.spent_usd), a.budget_usd ? " of " + money(a.budget_usd) : ""]),
+            a.budget_usd ? h("progress", { class: a.spent_usd / a.budget_usd > 0.8 ? "high" : "", max: a.budget_usd, value: Math.min(a.spent_usd, a.budget_usd), "aria-label": "Budget used" }) : null,
+          ]),
+        ]))),
+      ];
     });
   },
 };
@@ -191,29 +257,36 @@ const Assignment = {
     onMounted(load);
     watch(() => props.id, load);
     const run = async (action) => {
-      if (action !== "pause" && action !== "resume" && !confirm(`${action[0].toUpperCase() + action.slice(1)} this assignment? This cannot be undone.`)) return;
+      if (action !== "pause" && action !== "resume" && !await confirmBox(`${cap(action)} this assignment?`, "This cannot be undone.", { confirm: cap(action), danger: true })) return;
       if (await act(action, "POST", `/api/assignments/${props.id}/${action}`)) load();
     };
     const confirmCriterion = async (c) => {
-      const note = prompt(`Confirm "${c.description}" yourself? Add a note (optional):`);
+      const note = await promptBox("Confirm this yourself?", c.description, { placeholder: "Note (optional)", label: "Note", confirm: "I verified this" });
       if (note !== null && await act("Confirm", "POST", `/api/assignments/${props.id}/criteria/${encodeURIComponent(c.id)}/confirm`, { note })) load();
     };
     return shell(() => {
-      if (view.loading) return h("p", { class: "muted" }, "Loading…");
-      if (view.error) return h("p", { role: "alert" }, view.error);
+      if (view.loading) return loading();
+      if (view.error) return failed(view.error);
       const a = view.data;
       const actions = (lifecycle[a.kind] || {})[a.status] || [];
       return [
+        h("p", { class: "small" }, link("/work", "← Work")),
+        pageHead(a.name, null, [status(a.status), h("span", { class: "eyebrow" }, a.kind)]),
         h("section", { class: "card" }, [
-          h("h2", a.name),
-          h("div", { class: "row" }, [status(a.status), h("span", { class: "muted" }, a.kind), a.status_reason ? h("span", { class: "muted" }, a.status_reason) : null]),
-          h("p", a.objective),
-          h("p", ["Next: ", h("strong", a.next.what)]),
-          h("p", link("/?about=" + a.id, "Ask about this")),
+          a.status_reason ? h("p", { class: "muted" }, a.status_reason) : null,
+          h("p", { class: "lede pre-line" }, a.objective),
+          h("div", { class: "next" }, [h("span", { class: "eyebrow" }, "Next"), a.next.what]),
           (a.policy_warnings || []).map((w) => h("p", { class: "status pending", role: "note" }, "Policy: " + w)),
-          h("p", { class: "muted" }, ["Spend ", money(a.spent_usd), a.budget_usd ? ` of ${money(a.budget_usd)}${a.budget_period ? " per " + a.budget_period : ""}` : "",
-            a.reserved_usd ? ` (+${money(a.reserved_usd)} held)` : ""]),
-          h("div", { class: "row" }, actions.map((x) => h("button", { class: x === "pause" || x === "resume" ? "" : "danger", onClick: () => run(x) }, x[0].toUpperCase() + x.slice(1)))),
+          h("div", { class: "meter" }, [
+            h("span", { class: "num" }, ["Spent ", money(a.spent_usd), a.budget_usd ? ` of ${money(a.budget_usd)}${a.budget_period ? " per " + a.budget_period : ""}` : "",
+              a.reserved_usd ? ` (+${money(a.reserved_usd)} held)` : ""]),
+            a.budget_usd ? h("progress", { class: a.spent_usd / a.budget_usd > 0.8 ? "high" : "", max: a.budget_usd, value: Math.min(a.spent_usd, a.budget_usd), "aria-label": "Budget used" }) : null,
+          ]),
+          h("div", { class: "row" }, [
+            h("a", { class: "btn", href: "#/?about=" + a.id }, [icon("chat"), "Ask about this"]),
+            h("span", { class: "spacer" }),
+            ...actions.map((x) => h("button", { class: x === "pause" || x === "resume" ? "" : "quiet stop", onClick: () => run(x) }, cap(x))),
+          ]),
         ]),
         a.criteria && a.criteria.length ? h("section", { class: "card" }, [
           h("h3", "Completion criteria"),
@@ -237,7 +310,7 @@ const Assignment = {
         ]),
         h("section", { class: "card" }, [
           h("h3", "Recent activity"),
-          h("table", h("tbody", a.recent.map((r) => h("tr", [h("td", { class: "muted" }, fmtTime(r.at)), h("td", r.actor), h("td", r.operation), h("td", { class: "muted" }, r.object_id)])))),
+          h("div", { class: "scroll-x" }, h("table", h("tbody", a.recent.map((r) => h("tr", [h("td", { class: "muted num" }, fmtTime(r.at)), h("td", r.actor), h("td", h("code", r.operation)), h("td", { class: "muted" }, r.object_id)]))))),
         ]),
         h("section", { class: "card" }, [h("h3", "State"), h("pre", pretty(a.state))]),
       ];
@@ -251,7 +324,7 @@ const Task = {
     const { view, load } = loader(() => api("GET", "/api/tasks/" + props.id));
     onMounted(load);
     const retry = async () => {
-      const note = prompt("Continue this blocked task in its existing run. Note for the agent (optional):");
+      const note = await promptBox("Retry this task?", "It continues in its existing run.", { placeholder: "Note for the agent (optional)", label: "Note", confirm: "Retry" });
       if (note !== null && await act("Retry", "POST", `/api/tasks/${props.id}/retry`, { note })) load();
     };
     const note = reactive({ text: "" });
@@ -269,16 +342,17 @@ const Task = {
       if (note.text.trim() && await act("Note", "POST", `/api/tasks/${props.id}/notes`, { text: note.text })) { note.text = ""; load(); }
     };
     return shell(() => {
-      if (view.loading) return h("p", { class: "muted" }, "Loading…");
-      if (view.error) return h("p", { role: "alert" }, view.error);
+      if (view.loading) return loading();
+      if (view.error) return failed(view.error);
       const t = view.data;
       return [
+        h("p", { class: "small" }, link("/a/" + t.assignment_id, "← Assignment")),
+        pageHead(t.title, null, [status(t.status), h("span", { class: "muted small" }, `${t.attempts} attempt${t.attempts === 1 ? "" : "s"}`)]),
         h("section", { class: "card" }, [
-          h("h2", t.title),
-          h("div", { class: "row" }, [status(t.status), h("span", { class: "muted" }, `attempts ${t.attempts}`), link("/a/" + t.assignment_id, "assignment")]),
+          h("h3", "Objective"),
           h("pre", t.objective),
           t.result ? h("pre", pretty(t.result)) : null,
-          t.status === "blocked" ? h("button", { onClick: retry }, "Retry") : null,
+          t.status === "blocked" ? h("button", { class: "primary", onClick: retry }, "Retry") : null,
         ]),
         h("section", { class: "card" }, [
           h("h3", "Model"),
@@ -300,12 +374,12 @@ const Task = {
           h("label", { for: "note" }, "Message this task"),
           h("p", { class: "muted small" }, "Your words reach the task at its next step. They do not change what it is allowed to do."),
           h("textarea", { id: "note", rows: 2, value: note.text, onInput: (e) => { note.text = e.target.value; } }),
-          h("p", h("button", { type: "submit", disabled: !note.text.trim() }, "Send note")),
+          h("div", { class: "row end" }, h("button", { class: "primary", type: "submit", disabled: !note.text.trim() }, "Send note")),
         ]),
         h("section", { class: "card" }, [
           h("h3", "Transcript"),
           t.transcript.map((m) => h("div", { class: "msg " + m.role }, [
-            h("div", { class: "muted" }, m.role + (m.tool_call_id ? " · " + m.tool_call_id : "")),
+            h("div", { class: "eyebrow" }, m.role + (m.tool_call_id ? " · " + m.tool_call_id : "")),
             m.content ? h("pre", m.content) : null,
             m.tool_calls ? h("pre", pretty(m.tool_calls)) : null,
           ])),
@@ -326,19 +400,20 @@ const Inbox = {
     onMounted(load);
     const decide = async (a, approve) => {
       const verb = approve ? "approve" : "reject";
-      if (!confirm(`${verb[0].toUpperCase() + verb.slice(1)} action ${a.action_id}?\n\n${a.tool} ${a.resource || ""}\narguments sha256 ${a.arguments_sha256.slice(0, 16)}…`)) return;
+      if (!await confirmBox(`${cap(verb)} ${a.tool}?`, `${a.resource || ""}\nAction ${a.action_id}\nArguments sha256 ${a.arguments_sha256.slice(0, 16)}…`.trim(), { confirm: cap(verb), danger: !approve })) return;
       if (await act(verb, "POST", `/api/approvals/${a.id}/${verb}`)) load();
     };
     const resolve = async (u, happened) => {
-      const note = prompt(happened ? "How did you confirm it took effect?" : "How did you confirm it did not take effect?");
+      const note = await promptBox(happened ? "It happened" : "It did not happen", happened ? "How did you confirm it took effect?" : "How did you confirm it did not take effect?", { placeholder: "What you checked", label: "How you confirmed", confirm: "Record" });
       if (note !== null && await act("Resolve", "POST", `/api/actions/${u.id}/resolve`, { happened, note })) load();
     };
     return shell(() => {
-      if (view.loading) return h("p", { class: "muted" }, "Loading…");
-      if (view.error) return h("p", { role: "alert" }, view.error);
+      if (view.loading) return loading();
+      if (view.error) return failed(view.error);
       const d = view.data;
       return [
-        h("h2", "Waiting for your approval"),
+        pageHead("Inbox", "Decisions only you can make."),
+        sectionHead("Waiting for your approval", d.approvals.length),
         d.approvals.length ? d.approvals.map((a) => h("article", { class: "card" }, [
           h("h3", [a.tool, " ", h("span", { class: "muted" }, a.resource || "")]),
           h("p", { class: "muted" }, [`action ${a.action_id} · expires ${fmtTime(a.expires_at)} · `, link("/a/" + a.assignment_id, "assignment")]),
@@ -346,7 +421,7 @@ const Inbox = {
           h("p", { class: "muted" }, "Exactly these arguments (sha256 " + a.arguments_sha256 + ") will run; any change needs a new approval."),
           h("div", { class: "row" }, [h("button", { class: "primary", onClick: () => decide(a, true) }, "Approve"), h("button", { onClick: () => decide(a, false) }, "Reject")]),
         ])) : h("p", { class: "muted" }, "Nothing waiting."),
-        h("h2", "Outcome unknown"),
+        sectionHead("Outcome unknown", d.unresolved.length),
         d.unresolved.length ? d.unresolved.map((u) => h("article", { class: "card" }, [
           h("h3", [u.tool, " ", h("span", { class: "muted" }, u.resource || "")]),
           h("p", { class: "muted" }, ["action ", u.id, " · ", link("/t/" + u.task_id, "task")]),
@@ -355,11 +430,11 @@ const Inbox = {
           h("p", "Baseet could not tell whether this happened, so it will not retry it. Check the real system, then:"),
           h("div", { class: "row" }, [h("button", { onClick: () => resolve(u, true) }, "It happened"), h("button", { onClick: () => resolve(u, false) }, "It did not happen")]),
         ])) : h("p", { class: "muted" }, "None."),
-        h("h2", "Undelivered notifications"),
-        d.notifications.length ? h("table", h("tbody", d.notifications.map((n) => h("tr", [
+        sectionHead("Undelivered notifications", d.notifications.length),
+        d.notifications.length ? h("section", { class: "card" }, h("table", h("tbody", d.notifications.map((n) => h("tr", [
           h("td", status(n.severity)), h("td", [h("strong", n.title), h("div", n.body)]),
           h("td", { class: "muted" }, n.delivery_failed ? "failed: " + n.last_error : n.delivery_attempts ? "retrying: " + (n.last_error || "") : "waiting"),
-        ])))) : h("p", { class: "muted" }, "None."),
+        ]))))) : h("p", { class: "muted" }, "None."),
       ];
     });
   },
@@ -374,7 +449,7 @@ const Tools = {
     });
     onMounted(load);
     const accept = async (p) => {
-      if (!confirm(`Accept ${p.server}__${p.tool} exactly as shown (definition ${p.definition_hash.slice(0, 12)})?`)) return;
+      if (!await confirmBox(`Accept ${p.server}__${p.tool}?`, `Exactly as shown, definition ${p.definition_hash.slice(0, 12)}.`, { confirm: "Accept" })) return;
       if (await act("Accept", "POST", `/api/mcp/servers/${encodeURIComponent(p.server)}/tools/${encodeURIComponent(p.tool)}/accept`, { definition_hash: p.definition_hash })) load();
     };
     const restart = async (s) => {
@@ -382,20 +457,21 @@ const Tools = {
     };
     const schema = (raw) => { try { return pretty(JSON.parse(JSON.stringify(raw)).inputSchema); } catch { return ""; } };
     return shell(() => {
-      if (view.loading) return h("p", { class: "muted" }, "Loading…");
-      if (view.error) return h("p", { role: "alert" }, view.error);
+      if (view.loading) return loading();
+      if (view.error) return failed(view.error);
       const d = view.data;
       const pending = d.tools.filter((p) => p.status === "new" || p.status === "changed");
       return [
-        h("h2", "MCP servers"),
-        d.servers.length ? h("section", { class: "card" }, h("table", h("tbody", d.servers.map((s) => h("tr", [
+        pageHead("Tools", "Services Baseet can use, and tool definitions waiting for your review."),
+        sectionHead("MCP servers", d.servers.length),
+        d.servers.length ? h("section", { class: "card scroll-x" }, h("table", h("tbody", d.servers.map((s) => h("tr", [
           h("td", [h("strong", s.server), h("div", { class: "muted" }, s.transport + (s.scopes ? " · scopes " + s.scopes : ""))]),
           h("td", status(s.state)),
           h("td", { class: "muted" }, Object.entries(s.tools).map(([k, v]) => v + " " + k).join(", ")),
           h("td", { class: "muted" }, [s.last_error || "", s.next_retry_at ? " · retry " + fmtTime(s.next_retry_at) : ""]),
           h("td", s.state === "failed" ? h("button", { onClick: () => restart(s) }, "Restart") : null),
         ]))))) : h("p", { class: "muted" }, "No MCP server has run yet. Start agentd with -mcp-config."),
-        h("h2", "Tools awaiting review"),
+        sectionHead("Tools awaiting review", pending.length),
         pending.length ? pending.map((p) => h("article", { class: "card" }, [
           h("h3", [p.server + "__" + p.tool, " ", status(p.status)]),
           h("p", { class: "muted" }, "Text is shown with hidden characters escaped. A tool runs only after you accept this exact definition."),
@@ -439,8 +515,9 @@ const Activity = {
     onMounted(connect);
     onUnmounted(() => { clearTimeout(timer); if (source) source.close(); });
     return shell(() => [
-      h("div", { class: "row" }, [h("h2", "Activity"), h("span", { class: "muted", role: "status" }, feed.connected ? "live" : "reconnecting… (showing what arrived so far)")]),
-      h("section", { class: "card" }, feed.rows.length
+      pageHead("Activity", null, h("span", { class: "sys " + (feed.connected ? "on" : "off"), role: "status" },
+        [h("span", { class: "dot" }), feed.connected ? "Live" : "Reconnecting… showing what arrived so far"])),
+      h("section", { class: "card scroll-x" }, feed.rows.length
         ? h("table", h("tbody", feed.rows.map((r) => h("tr", { key: r.id }, [
             h("td", { class: "muted" }, fmtTime(r.at)), h("td", r.actor), h("td", r.operation),
             h("td", r.assignment_id ? link("/a/" + r.assignment_id, r.object_id || r.assignment_id) : h("span", { class: "muted" }, r.object_id)),
@@ -450,7 +527,7 @@ const Activity = {
   },
 };
 
-const Chat = makeChat({ state, api, say, shell, refreshShell });
+const Chat = makeChat({ state, api, say, shell, refreshShell, mark });
 
 const App = {
   setup() {

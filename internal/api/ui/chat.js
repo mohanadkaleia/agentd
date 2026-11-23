@@ -1,10 +1,11 @@
 import { h, reactive, onMounted, onUnmounted, nextTick } from "/vue.js";
 import { blocks, toolWords, open, merge, countdown, suggest, cardKinds } from "/text.js";
+import { icon } from "/icons.js";
 
 // Chat is the conversation with Baseet: the owner's and agent's messages, cards for
 // what needs the owner, and a composer. Every piece of text from a model, tool or project
 // is rendered as text nodes; nothing is ever inserted as HTML.
-export function makeChat({ state, api, say, shell, refreshShell }) {
+export function makeChat({ state, api, say, shell, refreshShell, mark }) {
   const store = {
     get(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } },
     set(key, value) { try { if (value) localStorage.setItem(key, value); else localStorage.removeItem(key); } catch { /* storage blocked */ } },
@@ -198,19 +199,25 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
       });
       const plain = (text) => String(text || "").split("\n").map((line, i) => (i ? [h("br"), line] : line));
 
-      const outcome = (m) => h("p", { class: "status " + m.status }, m.status === "pending" || m.status === "open" ? "waiting for you" : m.status);
+      const outcome = (m) => h("span", { class: "status " + m.status }, m.status === "pending" || m.status === "open" ? "waiting for you" : m.status);
+      const kindNames = { proposal: "Proposal", approval: "Approval", question: "Question", notification: "Notification", report: "Report" };
+      const starters = ["What are you working on?", "Get me a refund for my cancelled flight", "Every weekday at 8, summarise new email from my accountant"];
 
       const card = (m) => {
         const c = m.body || {};
         const live = open(m);
         const label = (verb) => `${verb} ${c.title || c.tool || "this"}`;
+        const decidable = m.kind === "proposal" || m.kind === "approval" || m.kind === "question";
         const head = [
-          h("strong", { class: "kind" }, m.kind === "proposal" ? "Proposal" : m.kind === "approval" ? "Approval" : m.kind === "question" ? "Question" : m.kind === "notification" ? "Notification" : "Report"),
-          c.n ? h("span", { class: "muted" }, " #" + c.n) : null,
-          c.assignment ? h("span", { class: "muted" }, " · " + c.assignment) : null,
+          h("span", { class: "tile" }, icon(m.kind)),
+          h("strong", { class: "kind" }, kindNames[m.kind] || "Report"),
+          c.n ? h("span", { class: "muted num" }, "#" + c.n) : null,
+          c.assignment ? h("span", { class: "muted" }, c.assignment) : null,
+          h("span", { class: "spacer" }),
           c.severity ? h("span", { class: "status " + c.severity }, c.severity) : null,
+          decidable && !live ? outcome(m) : null,
         ];
-        const parts = [h("div", { class: "row" }, head), h("h3", plain(c.title))];
+        const parts = [h("div", { class: "head" }, head), h("h3", plain(c.title))];
         if (m.kind === "proposal" || m.kind === "approval") {
           if (c.text) parts.push(h("div", { class: "lines" }, c.text.split("\n").map((line) =>
             h("p", { class: /^(WIDENS|Warning)/.test(line) ? "widen" : "" }, line))));
@@ -224,7 +231,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
               h("button", { "aria-label": label("Reject"), onClick: () => decide(m, false) }, "Reject"),
             ];
             if (m.kind === "proposal") buttons.push(h("button", { "aria-label": label("Edit"), onClick: () => { view.editing[m.id] = c.spec || JSON.stringify(c.arguments, null, 2); } }, "Edit"));
-            parts.push(h("div", { class: "row" }, buttons));
+            parts.push(h("div", { class: "row actions" }, buttons));
             if (view.editing[m.id] !== undefined) {
               parts.push(h("label", { for: "edit-" + m.id }, "Your version (takes effect when saved)"));
               parts.push(h("textarea", { id: "edit-" + m.id, rows: 12, value: view.editing[m.id], onInput: (e) => { view.editing[m.id] = e.target.value; } }));
@@ -240,7 +247,7 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
                 h("button", { onClick: () => { delete view.editing[m.id]; } }, "Cancel"),
               ]));
             }
-          } else parts.push(outcome(m));
+          }
         } else if (m.kind === "question") {
           if (c.text) parts.push(h("p", plain(c.text)));
           if (live) {
@@ -249,9 +256,9 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
             parts.push(h("form", { class: "row", onSubmit: (e) => { e.preventDefault(); answer(m, view.answers[m.id] || ""); } }, [
               h("label", { class: "sr-only", for: "answer-" + m.id }, "Your answer to " + c.title),
               h("input", { id: "answer-" + m.id, value: view.answers[m.id] || "", placeholder: "Your answer", onInput: (e) => { view.answers[m.id] = e.target.value; } }),
-              h("button", { type: "submit" }, "Answer"),
+              h("button", { class: "primary", type: "submit" }, "Answer"),
             ]));
-          } else parts.push(outcome(m));
+          }
         } else {
           if (c.text) parts.push(h("p", plain(c.text)));
           const links = [];
@@ -269,12 +276,12 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
         if (m.author === "owner") {
           return h("div", { class: "bubble owner", key: m.id }, [
             h("div", plain(text)),
-            m.sending ? h("div", { class: "muted small" }, "sending…") : null,
-            m.failed ? h("div", { class: "small", role: "alert" }, ["Not sent: " + (m.error || "error") + " ",
+            m.sending ? h("div", { class: "note" }, "Sending…") : null,
+            m.failed ? h("div", { class: "note", role: "alert" }, ["Not sent: " + (m.error || "error") + " ",
               h("button", { onClick: () => send(text, m) }, "Retry")]) : null,
           ]);
         }
-        if (m.author === "agent") return h("div", { class: "bubble agent", key: m.id }, rich(text));
+        if (m.author === "agent") return h("div", { class: "turn", key: m.id }, [mark(), h("div", { class: "bubble agent" }, rich(text))]);
         const failed = m.body && m.body.failed;
         return h("div", { class: "bubble system " + m.kind + (failed ? " failed" : ""), key: m.id },
           m.kind === "command_result" ? h("pre", text) : plain(text));
@@ -286,41 +293,49 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
         const away = view.messages.filter((m) => m.seq > view.lastRead && m.author !== "owner" && cardKinds.includes(m.kind));
         const firstAway = view.lastRead > 0 && away.length ? away[0].id : "";
         const suggestions = suggest(view.draft);
+        const conv = view.conversations.find((c) => c.id === view.conv) || {};
+        const setModel = async (e) => {
+          try {
+            const res = await api("PUT", `/api/conversations/${encodeURIComponent(view.conv)}/model`, { model: e.target.value });
+            say(res.message);
+            await loadConversations();
+          } catch (err) { say("Model not changed: " + err.message); }
+        };
         return h("div", { class: "chat" }, [
-          h("div", { class: "row chat-head" }, [
+          h("div", { class: "chat-head" }, [
+            h("h1", { class: "sr-only" }, "Chat"),
             h("label", { class: "sr-only", for: "conv" }, "Conversation"),
             h("select", { id: "conv", value: view.conv, onChange: (e) => open_(e.target.value) }, view.conversations.map((c) =>
               h("option", { value: c.id }, (c.title || "Conversation") + " · " + new Date(c.last_at).toLocaleDateString() + (c.unread ? ` (${c.unread} new)` : "")))),
-            h("button", { onClick: startNew }, "New conversation"),
-            h("label", { class: "sr-only", for: "conv-model" }, "Model for this conversation"),
-            h("select", { id: "conv-model", value: (view.conversations.find((c) => c.id === view.conv) || {}).model || "auto",
-              onChange: async (e) => {
-                try {
-                  const res = await api("PUT", `/api/conversations/${encodeURIComponent(view.conv)}/model`, { model: e.target.value });
-                  say(res.message);
-                  await loadConversations();
-                } catch (err) { say("Model not changed: " + err.message); }
-              } }, [
-              h("option", { value: "auto" }, "model: automatic"),
-              ...["fast", "default", "strong"].map((tier) => h("option", { value: tier }, `model: tier ${tier}`)),
-              ...view.models.list.map((m) => h("option", { value: m.id }, `model: ${m.id} (${m.local ? "local" : "cloud"})`)),
-            ]),
-            h("span", { class: "muted small", role: "status" }, view.connected ? "" : "reconnecting…"),
+            h("button", { class: "quiet", onClick: startNew }, [icon("plus"), "New"]),
+            h("span", { class: "spacer" }),
+            h("span", { class: "muted small", role: "status" }, view.connected ? "" : "Reconnecting…"),
           ]),
           h("div", { class: "timeline", role: "log", "aria-label": "Conversation", "aria-live": "off" }, [
-            view.messages.length ? null : h("p", { class: "muted" },
-              "Ask anything: \"what are you working on?\", \"get me a refund for flight LH123\", or /help for commands."),
+            view.messages.length ? null : h("div", { class: "hero" }, [
+              mark(),
+              h("h2", "What should Baseet work on?"),
+              h("p", { class: "muted lede" }, "Describe it in your own words. Baseet drafts the job, you approve it, and it reports back here. Type /help for commands."),
+              h("div", { class: "starters" }, starters.map((text) =>
+                h("button", { type: "button", onClick: () => { view.draft = text; store.set(draftKey(), text); focus(); } }, [text, icon("arrow")]))),
+            ]),
             ...view.messages.flatMap((m) => [
               m.id === firstAway ? h("div", { class: "divider", role: "separator", key: "away" },
                 `While you were away: ${away.length} new, ${away.filter(open).length} waiting for you`) : null,
               bubble(m),
             ]),
             ...Object.entries(view.partial).map(([turn, text]) =>
-              h("div", { class: "bubble agent provisional", key: "partial-" + turn, "aria-busy": "true" }, [rich(text), h("div", { class: "muted small" }, "writing…")])),
+              h("div", { class: "turn", key: "partial-" + turn }, [mark(), h("div", { class: "bubble agent provisional", "aria-busy": "true" }, rich(text))])),
             view.working ? h("div", { class: "working", role: "status" }, [
-              h("span", "Working"),
-              ...view.tools.map((t) => h("div", { class: "muted small" }, toolWords(t.tool))),
-              h("button", { class: "danger", onKeydown: (e) => { if (e.key === "Escape") cancel(); }, onClick: cancel }, "Stop"),
+              mark(),
+              h("div", { class: "body" }, [
+                h("div", { class: "line" }, [
+                  h("span", { class: "dots", "aria-hidden": "true" }, [h("i"), h("i"), h("i")]),
+                  h("span", "Working"),
+                  h("button", { class: "quiet stop", onKeydown: (e) => { if (e.key === "Escape") cancel(); }, onClick: cancel }, "Stop"),
+                ]),
+                ...view.tools.map((t) => h("div", { class: "muted small" }, toolWords(t.tool))),
+              ]),
             ]) : null,
             h("div", { id: "chat-end" }),
           ]),
@@ -328,14 +343,25 @@ export function makeChat({ state, api, say, shell, refreshShell }) {
           h("form", { class: "composer", onSubmit: (e) => { e.preventDefault(); send(view.draft); } }, [
             suggestions.length ? h("div", { class: "row suggest", "aria-label": "Commands" }, suggestions.map((s) =>
               h("button", { type: "button", onClick: () => { view.draft = s + " "; focus(); } }, s))) : null,
-            h("label", { class: "sr-only", for: "composer" }, "Message"),
-            h("textarea", {
-              id: "composer", rows: 2, value: view.draft, placeholder: "Message Baseet (Enter to send, Shift+Enter for a new line)",
-              ref: (el) => { composer = el; },
-              onInput: (e) => { view.draft = e.target.value; store.set(draftKey(), view.draft); },
-              onKeydown: onKey,
-            }),
-            h("button", { class: "primary", type: "submit", disabled: !view.draft.trim() }, "Send"),
+            h("div", { class: "box" }, [
+              h("label", { class: "sr-only", for: "composer" }, "Message"),
+              h("textarea", {
+                id: "composer", rows: 1, value: view.draft, placeholder: "Message Baseet",
+                ref: (el) => { composer = el; },
+                onInput: (e) => { view.draft = e.target.value; store.set(draftKey(), view.draft); },
+                onKeydown: onKey,
+              }),
+              h("div", { class: "bar" }, [
+                h("label", { class: "sr-only", for: "conv-model" }, "Model for this conversation"),
+                h("select", { id: "conv-model", value: conv.model || "auto", onChange: setModel }, [
+                  h("option", { value: "auto" }, "Model: automatic"),
+                  ...["fast", "default", "strong"].map((tier) => h("option", { value: tier }, `Model: ${tier} tier`)),
+                  ...view.models.list.map((m) => h("option", { value: m.id }, `Model: ${m.id} (${m.local ? "local" : "cloud"})`)),
+                ]),
+                h("span", { class: "hint" }, "Enter to send · Shift+Enter for a new line"),
+                h("button", { class: "primary send", type: "submit", disabled: !view.draft.trim(), "aria-label": "Send" }, icon("send")),
+              ]),
+            ]),
           ]),
         ]);
       });
