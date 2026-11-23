@@ -55,11 +55,24 @@ email or a web page and expect it to be treated as data.
 ## In the interactive session
 
 - On start: one line of status, then what arrived since you were last here, decisions first.
-- **Enter** sends. End a line with `\` or paste several lines to keep going.
-- **Ctrl-C** while agentd is working stops that turn. **Ctrl-C** or **Ctrl-D** at the prompt
-  leaves. Leaving stops nothing: your projects keep running.
-- An approval card shows `(d)etails (a)pprove (r)eject`. Typing just `d`, `a` or `r` acts on it
-  only when that card is the last thing shown; otherwise use `/approve <n>` or `/reject <n>`.
+  `agentd` with no command opens this session too.
+- The input box stays at the bottom. **Enter** sends. **Ctrl-J**, **Alt-Enter** or a line ending
+  in `\` adds a line; pasted text keeps its lines. **Up** and **Down** recall earlier input.
+- Type `/` to see every command with what it does; **Tab** or **Enter** completes the one selected.
+- The line under the box always shows the model, how many items wait on you, the emergency stop
+  when it is on, and whether a server is running. With no server, **Ctrl-S** starts `agentd serve`
+  in the background with the flags this chat was started with; its log is
+  `~/.local/state/agentd/serve.log`.
+- Replies are written to the screen as the model produces them when the server has `-listen` set
+  (the chat reads the API token file the server uses); otherwise each reply appears when complete.
+- **Esc** or **Ctrl-C** while agentd is working stops that turn. **Ctrl-C** twice, or **Ctrl-D**,
+  at an empty box leaves. Leaving stops nothing: your projects keep running.
+- An open approval, proposal or question is a box. When it is the last thing shown, **Tab** gives
+  it the focus and then one key decides: `a` approve, `r` reject, `d` details, `e` edit, or a
+  number for a question's choice. **Esc** gives the focus back. Without the focus a letter is only
+  a decision when it is the whole message, so a sentence can never approve anything. Otherwise use
+  `/approve <n>` or `/reject <n>`. A decided card is repeated as one line with its outcome.
+- `agentd chat -ui classic` is the earlier plain line prompt; it is also used when `TERM=dumb`.
 - Ask for new work in plain words ("get me a refund for flight LH123"). agentd drafts it and shows a
   proposal card: what it may do without asking, what needs your approval, its budget, and when it is
   done. Nothing exists until you approve that exact draft. `e` opens the draft in `$EDITOR`; saving

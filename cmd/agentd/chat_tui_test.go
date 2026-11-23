@@ -3,6 +3,10 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -11,8 +15,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"agentd/internal/api"
 	"agentd/internal/app"
 	"agentd/internal/chat"
+	"agentd/internal/model"
+	"agentd/internal/system"
 	"agentd/internal/tools"
 )
 
@@ -25,6 +32,14 @@ type tuiSession struct {
 	done chan error
 	mu   sync.Mutex
 	out  strings.Builder
+	last string
+}
+
+// view is the live region as last drawn.
+func (s *tuiSession) view() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
 }
 
 func (w *chatWorld) tui() *tuiSession {
@@ -39,6 +54,11 @@ func (w *chatWorld) tui() *tuiSession {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.out.WriteString(block + "\n")
+	}
+	s.ui.drawn = func(view string) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.last = view
 	}
 	s.p = tea.NewProgram(s.ui, tea.WithContext(w.ctx), tea.WithInput(nil), tea.WithOutput(io.Discard))
 	go func() { s.done <- func() error { _, err := s.p.Run(); return err }() }()
@@ -91,8 +111,9 @@ func TestNewChatAnswersAndApprovesFromACard(t *testing.T) {
 	s.waitFor("Approved [1]")
 	s.say("hello")
 	s.waitFor("front desk")
+	s.waitFor("◦ Approval 1 · approved")
 	out := s.leave()
-	for _, want := range []string{"Baseet", "While you were away (1)", "a approve", "> hello", "● front desk", "Your projects keep running"} {
+	for _, want := range []string{"Baseet", "While you were away (1)", "a approve", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -125,8 +146,8 @@ func TestNewChatNeverApprovesFromALetterInsideAMessage(t *testing.T) {
 func TestNewChatSaysWhenNothingIsServing(t *testing.T) {
 	w := newChatWorld(t, false)
 	s := w.tui()
-	s.waitFor("agentd is not running")
-	if view := s.ui.View(); !strings.Contains(view, "server not running") {
+	s.waitFor("No server is running")
+	if view := s.view(); !strings.Contains(view, "server not running") {
 		t.Fatalf("status line:\n%s", view)
 	}
 	s.leave()
@@ -134,7 +155,9 @@ func TestNewChatSaysWhenNothingIsServing(t *testing.T) {
 
 func tuiFor(t *testing.T, width int) *tui {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	return newTUI(t.Context(), &chatClient{width: width}, false)
+	ui := newTUI(t.Context(), &chatClient{width: width}, false)
+	ui.status.alive = true
+	return ui
 }
 
 func cardMessage(kind, status string, card chat.Card) chat.Message {
@@ -211,5 +234,92 @@ func TestNewChatRendersMarkdown(t *testing.T) {
 		"1. first\n• second\n\n│ quoted\n\n│ fmt.Println(1)\n\nJob    │ State\nrefund │ open"
 	if got != want {
 		t.Fatalf("markdown:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+func TestNewChatDecidesAFocusedCardWithOneKey(t *testing.T) {
+	w := newChatWorld(t, true)
+	w.pendingApproval()
+	s := w.tui()
+	s.waitFor("Approval 1")
+	s.p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	s.p.Send(tea.KeyMsg{Type: tea.KeyBackspace})
+	s.p.Send(tea.KeyMsg{Type: tea.KeyTab})
+	s.p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	s.waitFor("Approved [1]")
+	s.leave()
+	var status string
+	w.db.QueryRow(`SELECT status FROM approvals`).Scan(&status)
+	if status != "approved" {
+		t.Fatalf("approval = %s; a typed r must not reject, and tab then a must approve", status)
+	}
+}
+
+func TestNewChatShowsAReplyWhileItIsWritten(t *testing.T) {
+	ui := tuiFor(t, 80)
+	ui.Update(tuiDelta{TaskID: "t1", Text: "Half a **sen"})
+	ui.Update(tuiDelta{TaskID: "t1", Text: "tence** \x1b[2Jso far"})
+	if view := ui.View(); !strings.Contains(view, "● Half a sentence so far") || strings.Contains(view, "\x1b[2J") {
+		t.Fatalf("streamed text is not shown safely:\n%q", view)
+	}
+	ui.Update(tuiDelta{TaskID: "t1", Restarted: true})
+	ui.Update(tuiDelta{TaskID: "t1", Text: "Again"})
+	if view := ui.View(); strings.Contains(view, "Half") || !strings.Contains(view, "● Again") {
+		t.Fatalf("a restarted reply kept its old text:\n%s", view)
+	}
+	text, _ := json.Marshal(chat.Text{Text: "Again, in full."})
+	ui.polled(tuiPolled{msgs: []chat.Message{{ID: "m", Seq: 1, Kind: chat.KindText, Author: chat.Agent, TurnTaskID: "t1", Body: text}}})
+	if view := ui.View(); strings.Contains(view, "●") {
+		t.Fatalf("the streamed text stayed after the stored reply arrived:\n%s", view)
+	}
+}
+
+func TestNewChatStreamsFromARunningServer(t *testing.T) {
+	w := newChatWorld(t, true)
+	token := strings.Repeat("t", 40)
+	srv := httptest.NewServer((&api.Server{App: w.serve, Token: token, StreamPoll: 20 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Handler())
+	t.Cleanup(func() {
+		srv.CloseClientConnections()
+		srv.Close()
+	})
+	tokenFile := filepath.Join(t.TempDir(), "api-token")
+	os.WriteFile(tokenFile, []byte(token+"\n"), 0o600)
+	if err := system.Beat(w.ctx, w.db, system.Liveness{PID: 1, At: time.Now(), Listen: strings.TrimPrefix(srv.URL, "http://"), TokenFile: tokenFile}); err != nil {
+		t.Fatal(err)
+	}
+	w.setReply(func(model.Request) model.Message { return model.Message{Content: "BLOCK"} })
+	s := w.tui()
+	go s.ui.stream()
+	s.waitFor("Baseet")
+	s.say("hello")
+	var turn string
+	deadline := time.Now().Add(10 * time.Second)
+	for turn == "" && time.Now().Before(deadline) {
+		w.db.QueryRow(`SELECT turn_task_id FROM conversation_messages WHERE author = 'owner'`).Scan(&turn)
+		time.Sleep(20 * time.Millisecond)
+	}
+	for !strings.Contains(s.view(), "● written so far") {
+		if time.Now().After(deadline) {
+			t.Fatalf("streamed text never reached the chat:\n%s", s.view())
+		}
+		w.serve.Chat.Restarted(turn)
+		w.serve.Chat.Delta(turn, "written so far")
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestNewChatStartsTheServerWhenAsked(t *testing.T) {
+	ui := tuiFor(t, 80)
+	ui.status.alive = false
+	started := 0
+	ui.startServer = func() (string, error) { started++; return "/tmp/serve.log", nil }
+	if view := ui.View(); !strings.Contains(view, "ctrl+s to start it") {
+		t.Fatalf("status line:\n%s", view)
+	}
+	_, cmd := ui.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	ui.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil || !strings.Contains(ui.View(), "starting the server") {
+		t.Fatalf("ctrl+s did not start the server:\n%s", ui.View())
 	}
 }

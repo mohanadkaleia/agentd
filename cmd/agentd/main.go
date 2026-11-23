@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"golang.org/x/term"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -44,7 +45,7 @@ models:
   ollama/model-id           local model via Ollama, e.g. ollama/qwen2.5:7b
 
 commands:
-  chat                                 talk to agentd in this terminal (needs agentd serve running)
+  chat                                 talk to agentd in this terminal; also what agentd alone does
   chat "message" | chat - | ... | chat send one message (or standard input), print the reply, exit
        [-new] [-c id] [-history [-n 50]] [-json] [-no-wait] [-timeout 5m]
   serve [-workers N] [-listen ADDR] [-mcp-config FILE]
@@ -142,9 +143,16 @@ func run() error {
 		*modelSpec = entries[0].spec
 	}
 	args := global.Args()
+	if len(args) == 0 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		args = []string{"chat"}
+	}
 	if len(args) == 0 {
 		global.Usage()
 		return fmt.Errorf("missing command")
+	}
+	if exe, err := os.Executable(); err == nil {
+		flags := os.Args[1 : len(os.Args)-len(global.Args())]
+		serveCommand = append(append([]string{exe}, flags...), "serve")
 	}
 
 	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
@@ -269,7 +277,11 @@ func run() error {
 		}
 		startTelegram(ctx, a, log)
 		models, tierMap := catalogueInfo(a.Runtime)
-		go beat(ctx, db, system.Liveness{Listen: *listen, Models: models, Tiers: tierMap}, log)
+		tokenPath := ""
+		if *listen != "" && os.Getenv("AGENTD_API_TOKEN") == "" {
+			tokenPath, _ = filepath.Abs(*tokenFile)
+		}
+		go beat(ctx, db, system.Liveness{Listen: *listen, TokenFile: tokenPath, Models: models, Tiers: tierMap}, log)
 		a.Runtime.Serve(ctx, fmt.Sprintf("%s-%d", host, os.Getpid()), *workers, time.Second, log)
 		if err := system.Stopped(context.WithoutCancel(ctx), db); err != nil {
 			log.Error("liveness", "err", err)

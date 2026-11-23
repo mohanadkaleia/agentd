@@ -73,7 +73,7 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 	noWait := f.Bool("no-wait", false, "store the message and exit without waiting for the reply")
 	timeout := f.Duration("timeout", 0, "give up waiting after this long (default: none interactive, 5m one-shot)")
 	modelChoice := f.String("model", "", "choose the model for this conversation: a model, alias, tier, or auto")
-	ui := f.String("ui", "classic", "interactive interface: classic or new")
+	ui := f.String("ui", "new", "interactive interface: new, or classic for the plain line prompt")
 	if err := f.Parse(args); err != nil {
 		return &exitError{code: 1, msg: err.Error()}
 	}

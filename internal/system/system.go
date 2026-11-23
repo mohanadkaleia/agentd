@@ -73,6 +73,9 @@ const aliveKey = "serve.alive"
 type Liveness struct {
 	PID    int       `json:"pid"`
 	Listen string    `json:"listen,omitempty"`
+	// TokenFile is where the API token is kept (never the token), so this user's other
+	// commands can call the API. Empty when the token came from the environment.
+	TokenFile string `json:"token_file,omitempty"`
 	At     time.Time `json:"at"`
 	// Models and Tiers are serve's configured models, so other commands can check a choice.
 	Models []ModelInfo       `json:"models,omitempty"`

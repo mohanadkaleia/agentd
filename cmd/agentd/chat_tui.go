@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -37,7 +43,15 @@ const (
 	tuiBusyPoll    = 150 * time.Millisecond
 	tuiStatusEvery = time.Second
 	tuiQuitWindow  = 2 * time.Second
+	tuiPartialRows = 12
+	tuiStartWait   = 8 * time.Second
 )
+
+const tuiDownHint = "No server is running, so nothing will answer. Press ctrl+s to start one in the background."
+
+// serveCommand is this executable with the same global flags and the serve command; the
+// chat runs it when the owner asks it to start the server.
+var serveCommand []string
 
 type tuiStatus struct {
 	jobs, waiting int
@@ -93,6 +107,17 @@ type tui struct {
 	seen     map[string]bool
 	sent     map[string]bool
 
+	// partial is reply text streamed so far for partialTask, shown until the stored reply arrives.
+	partial     string
+	partialTask string
+	deltas      chan chat.Delta
+	// open holds the cards still waiting for a decision, to notice when one is decided.
+	open  map[int64]chat.Message
+	focus bool
+	// startServer starts a background server and says where its log is.
+	startServer func() (string, error)
+	starting    bool
+
 	status     tuiStatus
 	statusAt   time.Time
 	hint       string
@@ -104,6 +129,8 @@ type tui struct {
 	printing bool
 	// printed, when set, receives every block sent to the scrollback.
 	printed func(string)
+	// drawn, when set, receives each frame of the live region.
+	drawn func(string)
 }
 
 type (
@@ -116,10 +143,17 @@ type (
 	tuiPolled struct {
 		msgs   []chat.Message
 		tools  []toolCall
+		cards  []chat.Message
 		status *tuiStatus
 		err    error
 	}
-	tuiPosted struct {
+	tuiDelta   chat.Delta
+	tuiStarted struct {
+		log string
+		err error
+	}
+	tuiStartCheck struct{}
+	tuiPosted     struct {
 		m   chat.Message
 		err error
 	}
@@ -134,6 +168,7 @@ type (
 
 func (c *chatClient) tui(ctx context.Context, in *os.File) error {
 	t := newTUI(ctx, c, c.color && lipgloss.HasDarkBackground())
+	go t.stream()
 	_, err := tea.NewProgram(t, tea.WithContext(ctx), tea.WithInput(in), tea.WithOutput(c.out)).Run()
 	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
 		return nil
@@ -143,7 +178,8 @@ func (c *chatClient) tui(ctx context.Context, in *os.File) error {
 
 func newTUI(ctx context.Context, c *chatClient, dark bool) *tui {
 	t := &tui{ctx: ctx, c: c, theme: newTheme(c.color, dark), hist: loadHistory(), histAt: -1,
-		seen: map[string]bool{}, sent: map[string]bool{}}
+		seen: map[string]bool{}, sent: map[string]bool{}, open: map[int64]chat.Message{},
+		deltas: make(chan chat.Delta, 256), startServer: startServer}
 	in := textarea.New()
 	in.ShowLineNumbers = false
 	in.CharLimit = 0
@@ -183,7 +219,100 @@ func (t *tui) fit() {
 }
 
 func (t *tui) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, t.spin.Tick, t.load)
+	return tea.Batch(textarea.Blink, t.spin.Tick, t.load, t.nextDelta)
+}
+
+func (t *tui) nextDelta() tea.Msg {
+	select {
+	case d := <-t.deltas:
+		return tuiDelta(d)
+	case <-t.ctx.Done():
+		return nil
+	}
+}
+
+// stream follows the server's event stream for reply text as it is written. Messages and
+// cards still come from the database, so the chat works the same without it.
+func (t *tui) stream() {
+	for t.ctx.Err() == nil {
+		t.streamOnce()
+		select {
+		case <-t.ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (t *tui) streamOnce() {
+	l, alive, err := system.Alive(t.ctx, t.c.app.DB, time.Now())
+	if err != nil || !alive || l.Listen == "" {
+		return
+	}
+	token := os.Getenv("AGENTD_API_TOKEN")
+	if token == "" && l.TokenFile != "" {
+		body, _ := os.ReadFile(l.TokenFile)
+		token = strings.TrimSpace(string(body))
+	}
+	if token == "" {
+		return
+	}
+	url := fmt.Sprintf("http://%s/api/conversations/%s/stream?after=%d", l.Listen, t.c.conv, int64(math.MaxInt64))
+	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := (&http.Client{Transport: &http.Transport{}}).Do(req)
+	if err != nil {
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return
+	}
+	lines := bufio.NewScanner(res.Body)
+	lines.Buffer(make([]byte, 64<<10), 1<<20)
+	event := ""
+	for lines.Scan() {
+		line := lines.Text()
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: ") && (event == "delta" || event == "turn"):
+			var d chat.Delta
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &d) != nil || d.TaskID == "" || (event == "turn" && !d.Restarted) {
+				continue
+			}
+			select {
+			case t.deltas <- d:
+			case <-t.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// startServer runs `agentd serve` in the background, detached from this terminal.
+func startServer() (string, error) {
+	if len(serveCommand) == 0 || stateDir() == "" {
+		return "", errors.New("cannot start the server from here; run `agentd serve` in another terminal")
+	}
+	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(stateDir(), "serve.log")
+	log, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer log.Close()
+	cmd := exec.Command(serveCommand[0], serveCommand[1:]...)
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	return path, cmd.Process.Release()
 }
 
 func (t *tui) load() tea.Msg {
@@ -218,6 +347,10 @@ func (c *chatClient) status(ctx context.Context) (tuiStatus, error) {
 }
 
 func (t *tui) poll(after int64, turn string, withStatus bool) tea.Cmd {
+	cards := make([]chat.Message, 0, len(t.open))
+	for _, m := range t.open {
+		cards = append(cards, m)
+	}
 	return func() tea.Msg {
 		var p tuiPolled
 		if p.msgs, p.err = t.c.app.Chat.Messages(t.ctx, t.c.conv, after, 200); p.err != nil {
@@ -230,7 +363,9 @@ func (t *tui) poll(after int64, turn string, withStatus bool) tea.Cmd {
 		}
 		if withStatus {
 			st, err := t.c.status(t.ctx)
-			p.status, p.err = &st, err
+			if p.status, p.err = &st, err; err == nil && len(cards) > 0 {
+				p.cards, p.err = cards, t.c.app.Chat.Live(t.ctx, cards)
+			}
 		}
 		if len(p.msgs) > 0 {
 			t.c.app.Chat.MarkRead(t.ctx, t.c.conv, chatChannel, p.msgs[len(p.msgs)-1].Seq)
@@ -324,6 +459,30 @@ func (t *tui) update(msg tea.Msg) tea.Cmd {
 		sent := msg.m
 		t.turn, t.started, t.stopping, t.seen = &sent, time.Now(), false, map[string]bool{}
 		return nil
+	case tuiDelta:
+		switch {
+		case msg.Restarted && msg.TaskID == t.partialTask:
+			t.partial = ""
+		case !msg.Restarted && msg.TaskID != t.partialTask:
+			t.partialTask, t.partial = msg.TaskID, msg.Text
+		case !msg.Restarted:
+			t.partial += msg.Text
+		}
+		return t.nextDelta
+	case tuiStarted:
+		if msg.err != nil {
+			t.starting = false
+			t.emit(t.theme.bad.Render("✗ " + t.c.wrap(sanitize(msg.err.Error()), 2)))
+			return nil
+		}
+		t.emit(t.theme.muted.Render("· Starting agentd in the background. Its log is " + msg.log))
+		return tea.Tick(tuiStartWait, func(time.Time) tea.Msg { return tuiStartCheck{} })
+	case tuiStartCheck:
+		if t.starting && !t.status.alive {
+			t.emit(t.theme.bad.Render("✗ " + t.c.wrap("The server did not start. Its log says why; a common cause is that no model is set (agentd -model ... chat).", 2)))
+		}
+		t.starting = false
+		return nil
 	case tuiEdited:
 		if msg.err != nil {
 			t.emit(t.theme.bad.Render("✗ " + sanitize(msg.err.Error())))
@@ -351,13 +510,13 @@ func (t *tui) loaded(l tuiLoaded) tea.Cmd {
 	t.status, t.statusAt = l.status, time.Now()
 	t.emit(t.theme.accent.Bold(true).Render("Baseet") + t.theme.muted.Render(" · "+plural(l.status.jobs, "job")+" · / for commands"))
 	if !l.status.alive {
-		t.emit(t.theme.warn.Render("· " + t.c.wrap(notRunningHint, 2)))
+		t.emit(t.theme.warn.Render("· " + t.c.wrap(tuiDownHint, 2)))
 		t.warnedDown = true
 	}
 	if len(l.away) > 0 {
 		t.emit("\n" + t.theme.muted.Render(fmt.Sprintf("While you were away (%d):", len(l.away))))
 		for _, m := range l.away {
-			t.c.track(m)
+			t.show(m)
 			t.emit(t.render(m))
 		}
 	} else if l.last == 0 {
@@ -379,6 +538,20 @@ func (t *tui) polled(p tuiPolled) {
 	}
 	if p.status != nil {
 		t.status = *p.status
+		if t.status.alive {
+			t.starting = false
+		}
+	}
+	for _, m := range p.cards {
+		if was, ok := t.open[m.Seq]; ok && m.Status != was.Status {
+			delete(t.open, m.Seq)
+			t.emit(t.render(m))
+			t.c.mu.Lock()
+			if t.c.last != nil && t.c.last.Seq == m.Seq {
+				t.c.last = nil
+			}
+			t.c.mu.Unlock()
+		}
 	}
 	for _, call := range p.tools {
 		if !t.seen[call.id] {
@@ -387,23 +560,89 @@ func (t *tui) polled(p tuiPolled) {
 		}
 	}
 	for _, m := range p.msgs {
-		t.c.track(m)
+		t.show(m)
 		if !t.sent[m.ID] {
 			t.emit("\n" + t.render(m))
 		}
+		if m.TurnTaskID != "" && m.TurnTaskID == t.partialTask && m.Author != chat.Owner {
+			t.partial, t.partialTask = "", ""
+		}
 		if t.turn != nil {
 			if done, _ := settles(*t.turn, m); done {
+				if t.turn.TurnTaskID == t.partialTask {
+					t.partial, t.partialTask = "", ""
+				}
 				t.turn = nil
 			}
 		}
 	}
+	if t.focused() == nil {
+		t.focus = false
+	}
+}
+
+// show records a message as shown: how far the conversation has been read, which open
+// card came last, and which cards still wait for a decision.
+func (t *tui) show(m chat.Message) {
+	t.c.track(m)
+	if (m.Kind == chat.KindApproval || m.Kind == chat.KindProposal || m.Kind == chat.KindQuestion) && (m.Status == "pending" || m.Status == "open") {
+		t.open[m.Seq] = m
+	}
+}
+
+// focused is the open card a decision key would act on: the last thing shown, if it is a card.
+func (t *tui) focused() *chat.Message {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	return t.c.last
+}
+
+// focusKey handles a key while a card has the focus. It reports whether the key was used;
+// any other key gives the focus back to the composer and is handled there.
+func (t *tui) focusKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	card := t.focused()
+	t.focus = false
+	if card == nil || msg.Paste {
+		return nil, false
+	}
+	k := msg.String()
+	switch {
+	case k == "esc" || k == "tab" || k == "ctrl+c":
+		return nil, true
+	case card.Kind == chat.KindQuestion:
+		choices := card.Card().Choices
+		if len(k) == 1 && k[0] >= '1' && int(k[0]-'0') <= len(choices) {
+			answer := fmt.Sprintf("/answer %d %s", card.Card().N, choices[k[0]-'1'])
+			t.emit("\n" + t.theme.muted.Render("> "+sanitize(answer)))
+			return t.post(answer), true
+		}
+	case len(k) == 1 && strings.Contains("arde", k):
+		if cmd, ok := t.decide(k); ok {
+			return cmd, true
+		}
+	}
+	return nil, false
 }
 
 func (t *tui) key(msg tea.KeyMsg) tea.Cmd {
 	t.hint = ""
+	if t.focus {
+		if cmd, used := t.focusKey(msg); used {
+			return cmd
+		}
+	}
 	draft := t.in.Value()
 	menu := t.matches()
 	switch msg.String() {
+	case "ctrl+s":
+		if !t.status.alive && !t.starting {
+			t.starting = true
+			return func() tea.Msg {
+				log, err := t.startServer()
+				return tuiStarted{log: log, err: err}
+			}
+		}
+		return nil
 	case "ctrl+c":
 		switch {
 		case draft != "":
@@ -433,6 +672,8 @@ func (t *tui) key(msg tea.KeyMsg) tea.Cmd {
 	case "tab":
 		if len(menu) > 0 {
 			t.complete(menu)
+		} else if draft == "" && t.focused() != nil {
+			t.focus = true
 		}
 		return nil
 	case "up", "down":
@@ -570,7 +811,7 @@ func (t *tui) submit(text string) tea.Cmd {
 	t.emit("\n" + t.theme.muted.Render("> "+strings.ReplaceAll(t.c.wrap(sanitize(text), 2), "\n", "\n  ")))
 	if !t.status.alive && !strings.HasPrefix(text, "/") && !t.warnedDown {
 		t.warnedDown = true
-		t.emit(t.theme.warn.Render("· " + t.c.wrap(notRunningHint, 2)))
+		t.emit(t.theme.warn.Render("· " + t.c.wrap(tuiDownHint, 2)))
 		t.emit(t.theme.muted.Render("· Your message is saved and will be answered when agentd starts."))
 	}
 	return t.post(text)
@@ -623,10 +864,25 @@ func (e *editorRun) SetStdout(io.Writer) {}
 func (e *editorRun) SetStderr(io.Writer) {}
 
 func (t *tui) View() string {
+	view := t.view()
+	if t.drawn != nil {
+		t.drawn(view)
+	}
+	return view
+}
+
+func (t *tui) view() string {
 	if t.quitting {
 		return ""
 	}
 	rows := []string{""}
+	if t.partial != "" {
+		lines := strings.Split(t.markdown(t.partial), "\n")
+		if len(lines) > tuiPartialRows {
+			lines = append([]string{t.theme.muted.Render("…")}, lines[len(lines)-tuiPartialRows:]...)
+		}
+		rows = append(rows, t.theme.accent.Render("●")+" "+strings.Join(lines, "\n  "), "")
+	}
 	if t.running() {
 		state := "Working"
 		if t.stopping {
@@ -636,6 +892,18 @@ func (t *tui) View() string {
 		}
 		rows = append(rows, " "+t.spin.View()+" "+state+t.theme.muted.Render(
 			fmt.Sprintf(" · %s · esc to stop", time.Since(t.started).Round(time.Second))), "")
+	}
+	if card := t.focused(); t.focus && card != nil {
+		keys := "a approve · r reject · d details · esc back"
+		switch {
+		case card.Kind == chat.KindProposal:
+			keys = "a approve · r reject · e edit · d details · esc back"
+		case card.Kind == chat.KindQuestion && len(card.Card().Choices) > 0:
+			keys = fmt.Sprintf("1 to %d to answer · esc back", len(card.Card().Choices))
+		case card.Kind == chat.KindQuestion:
+			keys = fmt.Sprintf("esc, then /answer %d <text>", card.Card().N)
+		}
+		rows = append(rows, t.c.clip(" "+t.theme.warn.Bold(true).Render("▸ "+t.cardName(*card))+t.theme.muted.Render("  "+keys), t.width-1))
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(t.width - 2)
 	box = box.BorderForeground(t.theme.muted.GetForeground())
@@ -672,11 +940,18 @@ func (t *tui) statusLine() string {
 	if t.status.halted {
 		parts = append(parts, t.theme.bad.Render("emergency stop ON"))
 	}
-	if !t.status.alive {
-		parts = append(parts, t.theme.bad.Render("server not running"))
+	switch {
+	case t.status.alive:
+	case t.starting:
+		parts = append(parts, t.theme.warn.Render("starting the server"))
+	default:
+		parts = append(parts, t.theme.bad.Render("server not running · ctrl+s to start it"))
 	}
 	left := "  " + strings.Join(parts, t.theme.muted.Render(" · "))
 	right := t.theme.muted.Render("/ commands · ctrl+j new line")
+	if card := t.focused(); card != nil && !t.focus && t.in.Value() == "" {
+		right = t.theme.warn.Render("tab to decide " + t.cardName(*card))
+	}
 	if gap := t.width - 1 - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
 		return left + strings.Repeat(" ", gap) + right
 	}
@@ -841,6 +1116,13 @@ var tuiKinds = map[string]string{
 	chat.KindNotification: "Notification", chat.KindReport: "Report",
 }
 
+func (t *tui) cardName(m chat.Message) string {
+	if n := m.Card().N; n > 0 {
+		return fmt.Sprintf("%s %d", tuiKinds[m.Kind], n)
+	}
+	return tuiKinds[m.Kind]
+}
+
 func (t *tui) card(m chat.Message) string {
 	card := m.Card()
 	tint := map[string]lipgloss.Style{chat.KindApproval: t.theme.warn, chat.KindProposal: t.theme.accent,
@@ -871,13 +1153,13 @@ func (t *tui) card(m chat.Message) string {
 	}
 	if open {
 		keys := map[string]string{
-			chat.KindApproval: "a approve   r reject   d details   then enter",
-			chat.KindProposal: "a approve   r reject   e edit   d details   then enter",
+			chat.KindApproval: "tab, then  a approve   r reject   d details",
+			chat.KindProposal: "tab, then  a approve   r reject   e edit   d details",
 			chat.KindQuestion: fmt.Sprintf("answer with /answer %d <text>", card.N),
 		}[m.Kind]
 		body = append(body, "", t.theme.muted.Render(keys))
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tint.GetForeground()).
-		Padding(0, 1).Width(t.width - 2)
+		Padding(0, 1).Width(t.width - 3)
 	return box.Render(strings.Join(body, "\n"))
 }
