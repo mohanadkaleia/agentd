@@ -428,3 +428,27 @@ func TestAProposalCardEndsTheWait(t *testing.T) {
 		t.Fatalf("exit %d, output %q", code(err), out)
 	}
 }
+
+// /model in the chat lists and accepts serve's models, though the chat process configures none.
+func TestChatModelCommandSeesServeModels(t *testing.T) {
+	w := newChatWorld(t, false)
+	live := system.Liveness{PID: 1, At: time.Now(), Models: []system.ModelInfo{
+		{ID: "anthropic/claude-opus-5-5", Alias: "opus"},
+		{ID: "anthropic/claude-sonnet-5-5", Alias: "sonnet"},
+	}}
+	if err := system.Beat(w.ctx, w.db, live); err != nil {
+		t.Fatal(err)
+	}
+	out, err := w.chat("", "/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"anthropic/claude-opus-5-5 (opus), cloud, default", "anthropic/claude-sonnet-5-5 (sonnet), cloud"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/model output lacks %q:\n%s", want, out)
+		}
+	}
+	if out, err := w.chat("", "/model sonnet"); err != nil || strings.Contains(out, "no such model") {
+		t.Errorf("/model sonnet: %v\n%s", err, out)
+	}
+}

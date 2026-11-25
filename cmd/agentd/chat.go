@@ -81,6 +81,8 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 		return &exitError{code: 1, msg: "-ui is classic or new"}
 	}
 	a := app.New(db, nil, "", tools.Registry{}, time.Now)
+	// Commands like /model run here, not in serve, so they need serve's models.
+	adoptCatalogue(ctx, a, db)
 	c := &chatClient{app: a, out: stdout, json: *asJSON, width: width, timeout: *timeout,
 		color: tty && os.Getenv("NO_COLOR") == "" && !*asJSON}
 	var err error
@@ -96,7 +98,6 @@ func runChat(ctx context.Context, db *sql.DB, args []string, stdin io.Reader, st
 		return err
 	}
 	if *modelChoice != "" {
-		adoptCatalogue(ctx, a, db)
 		msg, err := a.Chat.SetConversationModel(ctx, c.conv, *modelChoice, "owner:"+chatChannel)
 		if err != nil {
 			return &exitError{code: 1, msg: err.Error()}
