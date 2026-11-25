@@ -11,14 +11,12 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -46,32 +44,24 @@ const (
 	tuiStatusEvery = time.Second
 	tuiQuitWindow  = 2 * time.Second
 	tuiPartialRows = 12
-	tuiStartWait   = 15 * time.Second
+	tuiAwayRows    = 8
+	tuiStartWait   = 45 * time.Second
 	// tuiGuard is how long a dialog that opened by itself ignores Enter, so that a key
 	// already on its way to the composer cannot decide anything.
-	tuiGuard  = 500 * time.Millisecond
-	tuiListen = "127.0.0.1:7777"
+	tuiGuard = 500 * time.Millisecond
 )
 
 const tuiDownHint = "No server is running, so nothing will answer. Press ctrl+s to start one in the background."
-
-// serveCommand is this executable with the same global flags and the serve command; the
-// chat runs it to start the server. serveHasModel says whether those flags name a model.
-var (
-	serveCommand  []string
-	serveHasModel bool
-	// chatDBPath is the database in use, shown when the chat opens.
-	chatDBPath string
-)
-
-// errNoModel means no server can be started until the owner picks a model.
-var errNoModel = errors.New("no model is set")
 
 type tuiStatus struct {
 	jobs, waiting int
 	halted        bool
 	alive         bool
 	model         string
+	// stale means the server runs an earlier build of this executable.
+	stale bool
+	// working is how many job tasks are running now, the chat's own replies aside.
+	working int
 }
 
 type tuiTheme struct {
@@ -119,7 +109,9 @@ type tui struct {
 	started  time.Time
 	stopping bool
 	seen     map[string]bool
-	sent     map[string]bool
+	// doing is the step the turn is on, in words.
+	doing string
+	sent  map[string]bool
 
 	// partial is reply text streamed so far for partialTask, shown until the stored reply arrives.
 	partial     string
@@ -134,11 +126,13 @@ type tui struct {
 	help      bool
 	// startServer starts a background server and says where its log is. models lists the
 	// models found on this machine. autoStart starts a server when the chat opens.
-	startServer func(ctx context.Context, db *sql.DB, model string) (string, error)
+	startServer func(ctx context.Context, db *sql.DB, model string) (*launched, error)
 	models      func(ctx context.Context) []string
 	autoStart   bool
 	starting    bool
-	serveLog    string
+	restarting  bool
+	launch      *launched
+	launchedAt  time.Time
 
 	status     tuiStatus
 	statusAt   time.Time
@@ -173,7 +167,7 @@ type (
 	tuiDelta   chat.Delta
 	tuiModels  struct{ list []string }
 	tuiStarted struct {
-		log string
+		l   *launched
 		err error
 	}
 	tuiStartCheck struct{}
@@ -229,19 +223,29 @@ func newTUI(ctx context.Context, c *chatClient, dark bool) *tui {
 
 func (t *tui) resize(width int) {
 	t.width = max(min(width, tuiMaxWidth), 30)
-	t.c.width = t.width
+	// One column is kept free: a line as wide as the terminal breaks the redraw below it.
+	t.c.width = t.width - 1
 	t.in.SetWidth(t.width - 1)
 	t.fit()
 }
 
-// fit sizes the composer to its text, up to tuiMaxRows.
-func (t *tui) fit() {
-	per := max(t.width-3, 10)
-	rows := 0
-	for _, line := range strings.Split(t.in.Value(), "\n") {
-		rows += max(1, (lipgloss.Width(line)+per)/per)
+// fit keeps the composer at its full height; composer shows only the rows in use. Growing
+// the text area as the text wraps would leave its view scrolled past the first rows.
+func (t *tui) fit() { t.in.SetHeight(tuiMaxRows) }
+
+// composer is the input as drawn: its rows up to the last one holding text.
+func (t *tui) composer() string {
+	lines := strings.Split(t.in.View(), "\n")
+	keep := 1
+	for i, line := range lines {
+		if plain := xansi.Strip(line); len(plain) > 2 && strings.TrimSpace(plain[2:]) != "" {
+			keep = i + 1
+		}
 	}
-	t.in.SetHeight(max(1, min(rows, tuiMaxRows)))
+	// A line just opened below the text is empty but holds the cursor.
+	value := t.in.Value()
+	keep += len(value) - len(strings.TrimRight(value, "\n"))
+	return strings.Join(lines[:min(keep, len(lines))], "\n")
 }
 
 func (t *tui) Init() tea.Cmd {
@@ -318,60 +322,6 @@ func (t *tui) streamOnce() {
 	}
 }
 
-// startServer runs `agentd serve` in the background, detached from this terminal: with
-// the model just picked, else with this command's own model flags, else the way serve
-// last ran. Without any of those it returns errNoModel.
-func startServer(ctx context.Context, db *sql.DB, model string) (string, error) {
-	if len(serveCommand) == 0 || stateDir() == "" {
-		return "", errors.New("cannot start the server from here; run `agentd serve` in another terminal")
-	}
-	args, dir := append([]string{}, serveCommand[1:]...), ""
-	switch {
-	case model != "":
-		args = append(append(args[:len(args)-1], "-model", model), "serve")
-		args = withListen(args)
-	case serveHasModel:
-		args = withListen(args)
-	default:
-		last, ok, err := system.LastLaunch(ctx, db)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", errNoModel
-		}
-		args, dir = last.Args, last.Dir
-	}
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
-		return "", err
-	}
-	path := filepath.Join(stateDir(), "serve.log")
-	log, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", err
-	}
-	defer log.Close()
-	cmd := exec.Command(serveCommand[0], args...)
-	cmd.Dir = dir
-	cmd.Stdout, cmd.Stderr = log, log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-	return path, cmd.Process.Release()
-}
-
-// withListen adds the local API address, which streaming and the web page need, when the
-// address is free.
-func withListen(args []string) []string {
-	l, err := net.Listen("tcp", tuiListen)
-	if err != nil {
-		return args
-	}
-	l.Close()
-	return append(args, "-listen", tuiListen)
-}
-
 // detectModels lists the models this machine can use right now: Claude when a key is
 // set, and whatever a local Ollama has pulled.
 func detectModels(ctx context.Context) []string {
@@ -420,22 +370,62 @@ func (t *tui) start(model string) tea.Cmd {
 	}
 	t.starting = true
 	return func() tea.Msg {
-		log, err := t.startServer(t.ctx, t.c.app.DB, model)
+		l, err := t.startServer(t.ctx, t.c.app.DB, model)
 		if errors.Is(err, errNoModel) {
 			return tuiModels{list: t.models(t.ctx)}
 		}
-		return tuiStarted{log: log, err: err}
+		return tuiStarted{l: l, err: err}
 	}
 }
 
-// lastLogLine is the last thing the server wrote to its log, to say why it did not start.
-func lastLogLine(path string) string {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+// restart stops the server and starts it again, loading the build now on disk.
+func (t *tui) restart() tea.Cmd {
+	if t.starting {
+		return nil
 	}
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-	return sanitize(lines[len(lines)-1])
+	t.starting, t.restarting = true, true
+	t.status.alive = false
+	return func() tea.Msg {
+		db := t.c.app.DB
+		if _, err := stopServer(t.ctx, db); err != nil {
+			return tuiStarted{err: err}
+		}
+		// A service manager may have started it again already.
+		time.Sleep(300 * time.Millisecond)
+		if _, alive, _ := system.Alive(t.ctx, db, time.Now()); alive {
+			return tuiStarted{}
+		}
+		l, err := t.startServer(t.ctx, db, "")
+		if errors.Is(err, errNoModel) {
+			return tuiModels{list: t.models(t.ctx)}
+		}
+		return tuiStarted{l: l, err: err}
+	}
+}
+
+// commandList is /help: every command, the chat's own included.
+func (t *tui) commandList() string {
+	const col = 26
+	var out []string
+	for _, c := range append(chat.Commands(), tuiLocal...) {
+		help := xansi.Wrap(sanitize(c.Help), max(t.width-col-5, 20), "")
+		help = strings.ReplaceAll(help, "\n", "\n"+strings.Repeat(" ", col+2))
+		if lipgloss.Width(c.Usage) > col-2 {
+			out = append(out, "  "+t.theme.accent.Render(c.Usage), strings.Repeat(" ", col+2)+t.theme.muted.Render(help))
+			continue
+		}
+		out = append(out, "  "+t.theme.accent.Render(fmt.Sprintf("%-*s", col, c.Usage))+t.theme.muted.Render(help))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *tui) startCheck() tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return tuiStartCheck{} })
+}
+
+// fail prints something that went wrong.
+func (t *tui) fail(text string) {
+	t.emit(t.theme.bad.Render("✗ " + t.c.wrap(sanitize(text), 2)))
 }
 
 func (t *tui) load() tea.Msg {
@@ -457,7 +447,9 @@ func (c *chatClient) status(ctx context.Context) (tuiStatus, error) {
 		(SELECT COUNT(*) FROM assignments WHERE builtin IS NULL AND status IN ('active', 'paused')),
 		(SELECT COUNT(*) FROM approvals WHERE status = 'pending')
 		+ (SELECT COUNT(*) FROM actions WHERE status = 'needs_reconciliation'),
-		COALESCE((SELECT model FROM conversations WHERE id = ?), '')`, c.conv).Scan(&s.jobs, &s.waiting, &s.model); err != nil {
+		COALESCE((SELECT model FROM conversations WHERE id = ?), ''),
+		(SELECT COUNT(*) FROM tasks t JOIN assignments a ON a.id = t.assignment_id WHERE t.status = 'running' AND a.builtin IS NULL)`,
+		c.conv).Scan(&s.jobs, &s.waiting, &s.model, &s.working); err != nil {
 		return s, err
 	}
 	st, err := system.Get(ctx, c.app.DB)
@@ -469,7 +461,33 @@ func (c *chatClient) status(ctx context.Context) (tuiStatus, error) {
 	if s.alive = alive; alive && s.model == "" && len(l.Models) > 0 {
 		s.model = l.Models[0].ID
 	}
+	s.stale = alive && otherBuild(l)
+	if !alive && s.model == "" {
+		s.model = c.plannedModel(ctx)
+	}
 	return s, err
+}
+
+// plannedModel is the model a server started from here would use, when that is known.
+func (c *chatClient) plannedModel(ctx context.Context) string {
+	args := serveCommand
+	if !serveHasModel {
+		last, ok, err := system.LastLaunch(ctx, c.app.DB)
+		if err != nil || !ok {
+			return ""
+		}
+		args = last.Args
+	}
+	for i, a := range args[:max(len(args)-1, 0)] {
+		if a == "-model" || a == "--model" || a == "-models" || a == "--models" {
+			first, _, _ := strings.Cut(args[i+1], ",")
+			if _, spec, ok := strings.Cut(first, "="); ok {
+				return spec
+			}
+			return first
+		}
+	}
+	return ""
 }
 
 func (t *tui) poll(after int64, turn string, withStatus bool) tea.Cmd {
@@ -582,8 +600,12 @@ func (t *tui) update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		t.sent[msg.m.ID] = true
+		if msg.m.TurnTaskID == "" && t.running() {
+			// A command answered at once does not end the reply still being written.
+			return nil
+		}
 		sent := msg.m
-		t.turn, t.started, t.stopping, t.seen = &sent, time.Now(), false, map[string]bool{}
+		t.turn, t.started, t.stopping, t.seen, t.doing = &sent, time.Now(), false, map[string]bool{}, ""
 		return nil
 	case tuiDelta:
 		switch {
@@ -601,17 +623,29 @@ func (t *tui) update(msg tea.Msg) tea.Cmd {
 			t.emit(t.theme.bad.Render("✗ " + t.c.wrap(sanitize(msg.err.Error()), 2)))
 			return nil
 		}
-		t.serveLog = msg.log
-		return tea.Tick(tuiStartWait, func(time.Time) tea.Msg { return tuiStartCheck{} })
-	case tuiStartCheck:
-		if t.starting && !t.status.alive {
-			why := "The server did not start. Its log is " + t.serveLog
-			if last := lastLogLine(t.serveLog); last != "" {
-				why += " and ends with: " + last
-			}
-			t.emit(t.theme.bad.Render("✗ " + t.c.wrap(why, 2)))
+		if msg.l == nil {
+			t.starting, t.restarting = false, false
+			return nil
 		}
-		t.starting = false
+		t.launch, t.launchedAt = msg.l, time.Now()
+		return t.startCheck()
+	case tuiStartCheck:
+		switch {
+		case !t.starting || t.launch == nil:
+		case t.status.alive && t.statusAt.After(t.launchedAt):
+			if t.starting = false; t.restarting {
+				t.restarting = false
+				t.emit(t.theme.muted.Render("· The server is running again."))
+			}
+		case t.launch.exited():
+			t.starting = false
+			t.fail(startFailure(t.launch).Error())
+		case time.Since(t.launchedAt) > tuiStartWait:
+			t.starting = false
+			t.fail("The server is still not up. Its log is " + t.launch.log)
+		default:
+			return t.startCheck()
+		}
 		return nil
 	case tuiModels:
 		t.starting = false
@@ -652,8 +686,19 @@ func (t *tui) loaded(l tuiLoaded) tea.Cmd {
 	}
 	if len(l.away) > 0 {
 		t.emit("\n" + t.theme.muted.Render(fmt.Sprintf("While you were away (%d):", len(l.away))))
-		for _, m := range l.away {
+		// A long absence shows what needs a decision and the latest few; the rest is one line.
+		skipped := 0
+		for i, m := range l.away {
 			t.show(m)
+			_, waits := t.open[m.Seq]
+			if len(l.away) > tuiAwayRows && !waits && i < len(l.away)-tuiAwayRows/2 {
+				skipped++
+				continue
+			}
+			if skipped > 0 {
+				t.emit(t.theme.muted.Render(fmt.Sprintf("  … %s not shown; agentd chat -history prints them", plural(skipped, "earlier message"))))
+				skipped = 0
+			}
 			t.emit(t.render(m))
 		}
 	} else if l.last == 0 {
@@ -676,9 +721,6 @@ func (t *tui) polled(p tuiPolled) {
 	}
 	if p.status != nil {
 		t.status = *p.status
-		if t.status.alive {
-			t.starting = false
-		}
 	}
 	for _, m := range p.cards {
 		if was, ok := t.open[m.Seq]; ok && m.Status != was.Status {
@@ -694,11 +736,22 @@ func (t *tui) polled(p tuiPolled) {
 	for _, call := range p.tools {
 		if !t.seen[call.id] {
 			t.seen[call.id] = true
-			t.emit(t.theme.good.Render("●") + " " + t.theme.muted.Render(sanitize(call.words())))
+			words := sanitize(call.words())
+			words = strings.ToUpper(words[:1]) + words[1:]
+			// A step tried again is shown once; the work line says what is under way.
+			if words != t.doing {
+				t.emit(t.theme.good.Render("●") + " " + t.theme.muted.Render(words))
+			}
+			t.doing = words
 		}
 	}
 	for _, m := range p.msgs {
 		t.show(m)
+		// What was written before an interruption stays on screen, marked as cut short.
+		if t.partial != "" && m.TurnTaskID == t.partialTask && m.Author != chat.Owner && m.Kind != chat.KindText {
+			t.emit("\n" + t.theme.accent.Render("●") + " " + strings.ReplaceAll(t.markdown(t.partial), "\n", "\n  ") +
+				"\n" + t.theme.muted.Render("  ⎿ cut short"))
+		}
 		if !t.sent[m.ID] {
 			t.emit("\n" + t.render(m))
 		}
@@ -1021,6 +1074,7 @@ func (t *tui) history(step int, draft string) bool {
 
 var tuiLocal = []chat.CommandHelp{
 	{Name: "clear", Usage: "/clear", Help: "clear the screen"},
+	{Name: "restart", Usage: "/restart", Help: "restart the background server, for example after an update"},
 	{Name: "quit", Usage: "/quit", Help: "leave the chat; your work keeps running"},
 }
 
@@ -1061,6 +1115,13 @@ func (t *tui) submit(text string) tea.Cmd {
 		return t.quit()
 	case "/clear":
 		return tea.ClearScreen
+	case "/help":
+		t.emit("\n" + t.theme.muted.Render("> /help"))
+		t.emit(t.commandList())
+		return nil
+	case "/restart":
+		t.emit("\n" + t.theme.muted.Render("> /restart"))
+		return t.restart()
 	case "/model":
 		if t.modelPicker() {
 			return nil
@@ -1159,6 +1220,9 @@ func (t *tui) view() string {
 	}
 	if t.running() {
 		state := "Working…"
+		if t.doing != "" {
+			state = t.doing + "…"
+		}
 		if t.stopping {
 			state = "Interrupting…"
 		} else if !t.status.alive {
@@ -1171,7 +1235,7 @@ func (t *tui) view() string {
 		return strings.Join(append(rows, t.dialogView()), "\n")
 	}
 	rule := t.theme.muted.Render(strings.Repeat("─", t.width-1))
-	rows = append(rows, rule, t.in.View(), rule)
+	rows = append(rows, rule, t.composer(), rule)
 	switch menu := t.matches(); {
 	case len(menu) > 0:
 		at := min(t.menu, len(menu)-1)
@@ -1249,14 +1313,13 @@ func (t *tui) welcome(s tuiStatus) string {
 	if s.waiting > 0 {
 		work += fmt.Sprintf(" · %d waiting on you", s.waiting)
 	}
-	model := "not started yet"
+	body := []string{t.theme.accent.Bold(true).Render("◆ agentd") + t.theme.muted.Render("  "+strings.TrimPrefix(version(), "agentd ")), "",
+		t.theme.muted.Render(t.c.clip("  "+work, inner))}
 	if s.model != "" {
-		model = sanitize(s.model)
+		body = append(body, t.theme.muted.Render(t.c.clip("  model  "+sanitize(s.model), inner)))
 	}
-	body := []string{t.theme.accent.Bold(true).Render("◆ agentd"), "", t.theme.muted.Render(t.c.clip("  "+work, inner)),
-		t.theme.muted.Render(t.c.clip("  model  "+model, inner))}
-	if chatDBPath != "" {
-		path := chatDBPath
+	if dbFile != "" {
+		path := dbFile
 		if abs, err := filepath.Abs(path); err == nil {
 			path = abs
 		}
@@ -1282,6 +1345,9 @@ func (t *tui) statusLine() string {
 		model = "model: " + sanitize(t.status.model)
 	}
 	parts := []string{t.theme.muted.Render(model)}
+	if t.status.working > 0 {
+		parts = append(parts, t.theme.accent.Render(plural(t.status.working, "task")+" running"))
+	}
 	if t.status.waiting > 0 {
 		parts = append(parts, t.theme.warn.Render(fmt.Sprintf("%d waiting on you", t.status.waiting)))
 	}
@@ -1289,17 +1355,24 @@ func (t *tui) statusLine() string {
 		parts = append(parts, t.theme.bad.Render("emergency stop ON"))
 	}
 	switch {
-	case t.status.alive:
 	case t.starting:
+		parts = append(parts, t.theme.warn.Render("starting the server"))
+	case t.status.stale:
+		parts = append(parts, t.theme.warn.Render("server runs another build · /restart"))
+	case t.status.alive:
+	case false:
 		parts = append(parts, t.theme.warn.Render("starting the server"))
 	default:
 		parts = append(parts, t.theme.bad.Render("server not running · ctrl+s to start it"))
 	}
-	right := strings.Join(parts, t.theme.muted.Render(" · "))
-	if gap := t.width - 3 - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
-		return "  " + left + strings.Repeat(" ", gap) + right
+	// When both sides do not fit, the model goes first: it is the least urgent part.
+	for _, shown := range [][]string{parts, parts[1:]} {
+		right := strings.Join(shown, t.theme.muted.Render(" · "))
+		if gap := t.width - 3 - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
+			return "  " + left + strings.Repeat(" ", gap) + right
+		}
 	}
-	return xansi.Truncate("  "+right, t.width-1, "…")
+	return xansi.Truncate("  "+strings.Join(parts, t.theme.muted.Render(" · ")), t.width-1, "…")
 }
 
 func remaining(d time.Duration) string {
@@ -1497,11 +1570,11 @@ func (t *tui) card(m chat.Message) string {
 	}
 	if open {
 		keys := map[string]string{
-			chat.KindApproval: "a approve · r reject · d details",
-			chat.KindProposal: "a approve · r reject · e edit · d details",
-			chat.KindQuestion: fmt.Sprintf("answer with /answer %d <text>", card.N),
+			chat.KindQuestion: fmt.Sprintf("/answer %d <text>", card.N),
 		}[m.Kind]
-		body = append(body, "", t.theme.muted.Render(keys))
+		if keys != "" && len(card.Choices) == 0 {
+			body = append(body, "", t.theme.muted.Render(keys))
+		}
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(tint.GetForeground()).
 		Padding(0, 1).Width(t.width - 3)

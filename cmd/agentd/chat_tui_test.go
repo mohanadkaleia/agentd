@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -127,7 +128,7 @@ func TestNewChatAnswersAndApprovesFromACard(t *testing.T) {
 	s.waitFor("chat")
 	s.waitFor("◦ Approval 1 · approved")
 	out := s.leave()
-	for _, want := range []string{"agentd", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● chat", "Your projects keep running"} {
+	for _, want := range []string{"agentd", "While you were away (1)", "> hello", "◦ Approval 1 · approved", "● chat", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -223,8 +224,8 @@ func TestNewChatFitsANarrowTerminal(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(blocks[1], "╭") || !strings.Contains(blocks[1], "e edit") {
-		t.Fatalf("an open proposal is not a box with its keys:\n%s", blocks[1])
+	if !strings.Contains(blocks[1], "╭") || !strings.Contains(blocks[1], "Proposal 3") {
+		t.Fatalf("an open proposal is not a box:\n%s", blocks[1])
 	}
 	if dialog := blocks[len(blocks)-1]; !strings.Contains(dialog, "❯ 1. Yes, approve") || !strings.Contains(dialog, "2. Edit it first") {
 		t.Fatalf("the proposal dialog lacks its choices:\n%s", dialog)
@@ -318,12 +319,12 @@ func TestNewChatAsksForAModelOnce(t *testing.T) {
 	ui := tuiFor(t, 80)
 	ui.status.alive = false
 	var started []string
-	ui.startServer = func(_ context.Context, _ *sql.DB, model string) (string, error) {
+	ui.startServer = func(_ context.Context, _ *sql.DB, model string) (*launched, error) {
 		if model == "" {
-			return "", errNoModel
+			return nil, errNoModel
 		}
 		started = append(started, model)
-		return "/tmp/serve.log", nil
+		return &launched{log: "/tmp/serve.log", done: make(chan struct{})}, nil
 	}
 	ui.models = func(context.Context) []string { return []string{"anthropic", "ollama/qwen2.5:7b"} }
 	ui.c.app = &app.App{}
@@ -381,7 +382,7 @@ func TestNewChatStreamsFromARunningServer(t *testing.T) {
 	})
 	tokenFile := filepath.Join(t.TempDir(), "api-token")
 	os.WriteFile(tokenFile, []byte(token+"\n"), 0o600)
-	if err := system.Beat(w.ctx, w.db, system.Liveness{PID: 1, At: time.Now(), Listen: strings.TrimPrefix(srv.URL, "http://"), TokenFile: tokenFile}); err != nil {
+	if err := system.Beat(w.ctx, w.db, system.Liveness{PID: 1, Build: buildMark(), At: time.Now(), Listen: strings.TrimPrefix(srv.URL, "http://"), TokenFile: tokenFile}); err != nil {
 		t.Fatal(err)
 	}
 	w.setReply(func(model.Request) model.Message { return model.Message{Content: "BLOCK"} })
@@ -409,7 +410,9 @@ func TestNewChatStartsTheServerWhenAsked(t *testing.T) {
 	ui := tuiFor(t, 80)
 	ui.status.alive = false
 	ui.c.app = &app.App{}
-	ui.startServer = func(context.Context, *sql.DB, string) (string, error) { return "/tmp/serve.log", nil }
+	ui.startServer = func(context.Context, *sql.DB, string) (*launched, error) {
+		return &launched{log: "/tmp/serve.log", done: make(chan struct{})}, nil
+	}
 	if view := ui.View(); !strings.Contains(view, "ctrl+s to start it") {
 		t.Fatalf("status line:\n%s", view)
 	}
@@ -432,15 +435,27 @@ func TestStartServerUsesTheLastLaunch(t *testing.T) {
 	if err := system.Launched(w.ctx, w.db, system.Launch{Args: []string{"-model", "ollama/x", "serve"}, Dir: t.TempDir()}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if log, err := startServer(w.ctx, w.db, ""); err != nil || log == "" {
-		t.Fatalf("starting the way serve last ran: %q, %v", log, err)
+	l, err := startServer(w.ctx, w.db, "")
+	if err != nil {
+		t.Fatalf("starting the way serve last ran: %v", err)
+	}
+	oldDB := dbFile
+	t.Cleanup(func() { dbFile = oldDB })
+	dbFile = "some/agentd.db"
+	abs, _ := filepath.Abs(dbFile)
+	if got := withDB([]string{"-db", "elsewhere.db", "-model", "m", "--db=x", "serve"}); strings.Join(got, " ") != "-db "+abs+" -model m serve" {
+		t.Fatalf("a started server is not told the database in use: %v", got)
+	}
+	// /usr/bin/true exits at once without serving: that is reported, with no long wait.
+	if err := awaitServer(w.ctx, w.db, l, time.Minute); err == nil || !strings.Contains(err.Error(), "could not start") {
+		t.Fatalf("a server that exited at once: %v", err)
 	}
 }
 
 // /model opens a picker of serve's models, marks the current one, and choosing sets it.
 func TestNewChatModelPicker(t *testing.T) {
 	w := newChatWorld(t, false)
-	live := system.Liveness{PID: 1, At: time.Now(), Models: []system.ModelInfo{
+	live := system.Liveness{PID: 1, Build: buildMark(), At: time.Now(), Models: []system.ModelInfo{
 		{ID: "anthropic/claude-opus-5-5", Alias: "opus"},
 		{ID: "anthropic/claude-sonnet-5-5", Alias: "sonnet"},
 		{ID: "anthropic/claude-haiku-5-5", Alias: "haiku"},
@@ -486,4 +501,91 @@ func TestNewChatModelPicker(t *testing.T) {
 	if view := ui.View(); !strings.Contains(view, "❯ 3. Sonnet 5.5 ✔") {
 		t.Fatalf("the picker does not start on the current model:\n%s", view)
 	}
+}
+
+func TestNewChatShowsEveryRowOfALongDraft(t *testing.T) {
+	ui := tuiFor(t, 60)
+	for _, r := range "one two three four five six seven eight nine ten eleven twelve thirteen fourteen" {
+		ui.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	view := ui.View()
+	if !strings.Contains(view, "> one two") || !strings.Contains(view, "fourteen") {
+		t.Fatalf("a wrapped draft lost a row:\n%s", view)
+	}
+	rows := strings.Count(view, "\n")
+	ui.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if got := strings.Count(ui.View(), "\n"); got != rows+1 {
+		t.Fatalf("a new line added %d rows", got-rows)
+	}
+	ui.in.SetValue("")
+	if got := strings.Count(ui.View(), "\n"); got != rows-1 {
+		t.Fatalf("an empty composer is %d rows shorter than a two-row draft", rows-got)
+	}
+}
+
+func TestNewChatKeepsWhatWasWrittenBeforeAnInterruption(t *testing.T) {
+	ui := tuiFor(t, 80)
+	var said strings.Builder
+	ui.printed = func(block string) { said.WriteString(block + "\n") }
+	ui.Update(tuiDelta{TaskID: "t1", Text: "Rivers are long"})
+	notice, _ := json.Marshal(chat.Text{Text: "Stopped."})
+	ui.polled(tuiPolled{msgs: []chat.Message{{ID: "n", Seq: 2, Kind: chat.KindNotice, Author: chat.Agent, TurnTaskID: "t1", Body: notice}}})
+	ui.Update(tuiPrinted{})
+	if out := said.String(); !strings.Contains(out, "● Rivers are long") || !strings.Contains(out, "cut short") ||
+		strings.Index(out, "Rivers") > strings.Index(out, "Stopped.") {
+		t.Fatalf("the interrupted text was not kept above the notice:\n%s", out)
+	}
+	if strings.Contains(ui.View(), "Rivers") {
+		t.Fatalf("the interrupted text is still in the live region:\n%s", ui.View())
+	}
+}
+
+func TestNewChatSummarisesALongAbsence(t *testing.T) {
+	ui := tuiFor(t, 80)
+	ui.c.app = app.New(newChatWorld(t, false).db, nil, "", tools.Registry{}, time.Now)
+	var said strings.Builder
+	ui.printed = func(block string) { said.WriteString(block + "\n") }
+	var away []chat.Message
+	for i := 1; i <= 20; i++ {
+		text, _ := json.Marshal(chat.Text{Text: fmt.Sprintf("note %d.", i)})
+		away = append(away, chat.Message{ID: fmt.Sprint(i), Seq: int64(i), Kind: chat.KindNotice, Author: chat.Agent, Body: text})
+	}
+	card := cardMessage(chat.KindApproval, "pending", chat.Card{N: 1, Title: "Send the email"})
+	card.Seq = 3
+	away[2] = card
+	ui.Update(tuiLoaded{away: away, last: 20, status: tuiStatus{alive: true}})
+	ui.Update(tuiPrinted{})
+	out := said.String()
+	for _, want := range []string{"While you were away (20)", "Send the email", "earlier messages not shown", "note 20.", "note 17."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "note 5.") {
+		t.Fatalf("an old note was printed in full:\n%s", out)
+	}
+	if ui.dialog == nil {
+		t.Fatal("the waiting approval opened no dialog")
+	}
+}
+
+func TestNewChatRestartSaysWhyTheServerDidNotStart(t *testing.T) {
+	w := newChatWorld(t, false)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := w.tui()
+	os.MkdirAll(stateDir(), 0o700)
+	log := filepath.Join(stateDir(), "serve.log")
+	os.WriteFile(log, []byte("agentd: unknown model provider \"bogus\"\n"), 0o600)
+	s.ui.startServer = func(context.Context, *sql.DB, string) (*launched, error) {
+		done := make(chan struct{})
+		close(done)
+		return &launched{log: log, done: done}, nil
+	}
+	s.waitFor("agentd")
+	s.say("/restart")
+	s.waitFor(`could not start: unknown model provider "bogus"`)
+	if strings.Contains(s.view(), "starting the server") {
+		t.Fatalf("the chat still says it is starting:\n%s", s.view())
+	}
+	s.leave()
 }

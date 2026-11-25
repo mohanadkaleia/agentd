@@ -55,18 +55,29 @@ email or a web page and expect it to be treated as data.
 ## In the interactive session
 
 - `agentd` with no command opens this session. On start it shows a box with your jobs, the
-  model and where the data is kept, then what arrived since you were last here, decisions first.
+  model and where the data is kept, then what arrived since you were last here. After a long absence it prints what needs a
+  decision and the latest few messages, and says how many it left out
+  (`agentd chat -history` prints them).
 - When no server is running, the chat starts one in the background: with the model flags you
   gave, else the way `agentd serve` last ran, else it asks you once to pick from the models it
   finds (Ollama's pulled models, and Claude when a key is set). It adds
   `-listen 127.0.0.1:7777` when that address is free. The log is
-  `~/.local/state/agentd/serve.log`; if the server does not come up, the chat shows the log's
-  last line. **Ctrl-S** tries again.
+  `~/.local/state/agentd/serve.log` (`agentd logs` prints it). If the server cannot start, the
+  chat says why at once, from the server's own last words. **Ctrl-S** tries again.
+- `/restart` stops the server and starts it again the same way. The line under the input says
+  `older server build` when the program on disk is newer than the one the server runs.
+  From the shell: `agentd start`, `agentd stop`, `agentd restart`, `agentd status`.
+- When agentd is installed as a login service (`deploy/install.sh`), that service is the server:
+  the chat uses its data and never starts a second one, and `/restart` first gives the service
+  the build you are running when yours is newer.
 - The input line sits between two rules at the bottom. **Enter** sends. **Ctrl-J**, **Alt-Enter**
   or a line ending in `\` adds a line; pasted text keeps its lines. **Up** and **Down** recall
   earlier input. **?** at an empty line lists the keys. **Ctrl-L** clears the screen.
 - Type `/` to see every command with what it does; **Tab** or **Enter** completes the one selected.
-- The line under the input shows the model, how many items wait on you, the emergency stop when
+- While agentd works, one line says which step it is on and for how long. A step tried several
+  times is printed once. What was written before you interrupt a reply stays on screen, marked
+  `cut short`.
+- The line under the input shows the model, how many job tasks are running, how many items wait on you, the emergency stop when
   it is on, and whether a server is running.
 - Replies are written to the screen as the model produces them when the server has `-listen` set
   (the chat reads the API token file the server uses); otherwise each reply appears when complete.

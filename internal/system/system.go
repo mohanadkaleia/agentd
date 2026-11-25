@@ -82,6 +82,10 @@ type Liveness struct {
 	// Models and Tiers are serve's configured models, so other commands can check a choice.
 	Models []ModelInfo       `json:"models,omitempty"`
 	Tiers  map[string]string `json:"tiers,omitempty"`
+	// Exe and Build identify the executable serve runs, so a newer build on disk shows.
+	Exe     string    `json:"exe,omitempty"`
+	Build   string    `json:"build,omitempty"`
+	Started time.Time `json:"started,omitempty"`
 }
 
 type ModelInfo struct {

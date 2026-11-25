@@ -121,6 +121,8 @@ if [ -n "$mcp_config" ]; then
     echo "  mcp:     $mcp_config (check it first: agentd mcp check -config \"$mcp_config\"; server logs in $logs/mcp-*.log)"
 fi
 echo "  skills:  $support/skills/*.md"
-echo "  status:  AGENTD_DB=\"$support/agentd.db\" \"$support/bin/agentd\" status"
-echo "  logs:    tail -f \"$logs/agentd.log\""
-echo "  stop:    deploy/uninstall.sh"
+echo "  chat:    agentd            (every agentd command now uses this service and its data)"
+echo "  status:  agentd status"
+echo "  logs:    agentd logs -f    ($logs/agentd.log)"
+echo "  update:  make build && agentd restart"
+echo "  stop:    agentd stop       (until the next login; deploy/uninstall.sh removes the service)"

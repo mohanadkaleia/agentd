@@ -77,7 +77,7 @@ func newChatWorld(t *testing.T, serving bool) *chatWorld {
 		close(done)
 		return w
 	}
-	if err := system.Beat(ctx, w.db, system.Liveness{PID: 1, At: time.Now()}); err != nil {
+	if err := system.Beat(ctx, w.db, system.Liveness{PID: 1, Build: buildMark(), At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	go func() {
@@ -432,7 +432,7 @@ func TestAProposalCardEndsTheWait(t *testing.T) {
 // /model in the chat lists and accepts serve's models, though the chat process configures none.
 func TestChatModelCommandSeesServeModels(t *testing.T) {
 	w := newChatWorld(t, false)
-	live := system.Liveness{PID: 1, At: time.Now(), Models: []system.ModelInfo{
+	live := system.Liveness{PID: 1, Build: buildMark(), At: time.Now(), Models: []system.ModelInfo{
 		{ID: "anthropic/claude-opus-5-5", Alias: "opus"},
 		{ID: "anthropic/claude-sonnet-5-5", Alias: "sonnet"},
 	}}

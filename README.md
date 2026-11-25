@@ -21,8 +21,11 @@ and a model. Pick the model by your laptop:
    ```bash
    git clone https://github.com/mohanadkaleia/agentd.git
    cd agentd
-   go build -o bin/agentd ./cmd/agentd
+   make install       # builds bin/agentd and links it into ~/.local/bin
    ```
+
+   `make build` only builds. Without `~/.local/bin` on your `PATH`, type `./bin/agentd`
+   wherever this page says `agentd`.
 
 2. Get the model. For Ollama: install it from [ollama.com](https://ollama.com), open the app (or
    run `ollama serve`), then:
@@ -36,7 +39,7 @@ and a model. Pick the model by your laptop:
 3. Run it:
 
    ```bash
-   ./bin/agentd
+   agentd
    ```
 
    That is the whole start. agentd opens the chat, asks once which model to use (it lists
@@ -44,20 +47,40 @@ and a model. Pick the model by your laptop:
    background. Later runs start the server the same way without asking. Leaving the chat
    stops nothing; your jobs keep running.
 
-   To type `agentd` from any folder, put it on your `PATH`, for example
-   `ln -s "$PWD/bin/agentd" ~/.local/bin/agentd`. Away from a folder that holds an
-   `agentd.db`, agentd keeps its data in `~/.local/share/agentd/`.
+   agentd keeps its data in the login service's folder when that is installed (below),
+   else in `agentd.db` in the current folder when there is one, else in
+   `~/.local/share/agentd/`. The chat's first box shows which.
+
+4. The server, when you need to look at it:
+
+   ```bash
+   agentd status        # is it running, your jobs, what waits on you
+   agentd logs -f       # what the background server writes
+   agentd restart       # after an update; jobs resume where they stopped
+   agentd stop
+   agentd help          # the short list; agentd help all for everything
+   ```
+
+   After `make build`, the chat says when the server still runs the older build; `/restart`
+   in the chat (or `agentd restart`) loads the new one.
+
+   **Keep it running across restarts of the Mac:** `deploy/install.sh ollama/qwen2.5:7b`
+   installs agentd as a login service that macOS starts at login and keeps running. From
+   then on there is one agent: `agentd` from any folder talks to that service and its data
+   (`~/Library/Application Support/agentd/`), `agentd stop`, `start` and `restart` act on the
+   service, and `agentd restart` after `make build` gives it the new build.
 
    To run the server yourself instead (a second machine, a service, other flags):
-   `./bin/agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777`. The chat never
-   starts a second server next to one that is running.
+   `agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777`. The chat never starts a
+   second server next to one that is running.
 
 **If something is off**
 
 | You see | Do this |
 |---|---|
 | `address already in use` | another program has port 7777: use `-listen 127.0.0.1:7788` (and that port in the web address) |
-| `I could not reach the model (... connection refused)` | Ollama is not running: open the app or run `ollama serve`, then send the message again |
+| `The server could not start: ...` | the reason follows the colon; `agentd logs` shows more |
+| `I could not reach the model: Ollama is not running` | open the Ollama app or run `ollama serve`, then send the message again |
 | `model '...' not found` | run `ollama pull` with the exact name you passed to `-model` |
 | Ollama runs on another computer | start agentd with `OLLAMA_HOST=192.168.1.20 ./bin/agentd ...`; that computer runs `OLLAMA_HOST=0.0.0.0 ollama serve` |
 

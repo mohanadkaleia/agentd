@@ -37,6 +37,32 @@ import (
 	"agentd/internal/tools"
 )
 
+// help is what `agentd help` prints; usage, below, lists every command.
+const help = `agentd runs your standing jobs in the background and asks before it acts.
+
+  agentd                       open the chat; starts the server when none is running
+  agentd chat "message"        send one message, print the reply, exit
+
+Server
+  agentd start | stop | restart   the background server; jobs resume where they stopped
+  agentd logs [-f] [-n 40]        what the background server wrote
+  agentd status                   the server, jobs, tasks and what waits on you
+
+Jobs
+  agentd create job.md            create a job from a file (docs/guide.md); or ask in the chat
+  agentd show | pause | resume <job-id>
+  agentd approve | reject <approval-id>
+  agentd halt [reason] | unhalt   emergency stop: nothing runs until lifted
+
+Connections
+  agentd models                   models in use and whether their credentials are present
+  agentd mcp add <name> <url>     connect an MCP server (agentd mcp presets lists ready ones)
+  agentd gmail auth | ntfy setup | channel pair telegram
+
+  agentd help all                 every command with its flags
+  agentd version
+`
+
 const usage = `Talk to agentd: agentd
 
 Run alone in a terminal, agentd opens the chat and starts its server in the background
@@ -72,7 +98,10 @@ commands:
   create [-dry-run] <job.md|job.json>  create a project or responsibility, with its routes and schedules
   export <assignment-id> [-format md]  write an assignment back as a job file (md or json)
   show <assignment-id>                 state, spend, open tasks, recent activity, next expected action
-  status                               show assignments, tasks, actions, approvals
+  start | stop | restart               the background server (the chat starts it by itself)
+  logs [-f] [-n 40]                    what the background server wrote
+  status [-all]                        the server, your jobs and what waits on you; -all lists every record
+  help [all] | version
   retry <task-id> [note]               continue a blocked task in its existing run
   resolve <action-id> happened|not-happened [note]
                                        settle an action whose outcome could not be determined
@@ -123,6 +152,20 @@ func (e *exitError) Error() string { return e.msg }
 
 func run() error {
 	syscall.Umask(0o077)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-version", "-v":
+			fmt.Println(version())
+			return nil
+		case "help", "--help", "-help", "-h":
+			if len(os.Args) > 2 && os.Args[2] == "all" {
+				fmt.Print(usage)
+			} else {
+				fmt.Print(help)
+			}
+			return nil
+		}
+	}
 	global := flag.NewFlagSet("agentd", flag.ContinueOnError)
 	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	dbPath := global.String("db", defaultDB(), "SQLite database path (default: agentd.db here if it exists, else the one in your home directory)")
@@ -149,19 +192,26 @@ func run() error {
 		*modelSpec = entries[0].spec
 	}
 	args := global.Args()
-	if len(args) == 0 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+	if len(args) == 0 && (term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) || piped(os.Stdin)) {
 		args = []string{"chat"}
 	}
 	if len(args) == 0 {
-		global.Usage()
-		return fmt.Errorf("missing command")
+		fmt.Fprint(os.Stderr, help)
+		return &exitError{code: 2}
+	}
+	if !knownCommand(args[0]) {
+		msg := fmt.Sprintf("unknown command %q.", args[0])
+		if near := nearestCommand(args[0]); near != "" {
+			msg += fmt.Sprintf(" Did you mean %q?", near)
+		}
+		return &exitError{code: 2, msg: msg + " Run `agentd help` for the list."}
 	}
 	if exe, err := os.Executable(); err == nil {
 		flags := os.Args[1 : len(os.Args)-len(global.Args())]
 		serveCommand = append(append([]string{exe}, flags...), "serve")
 		serveHasModel = *modelSpec != ""
 	}
-	chatDBPath = *dbPath
+	dbFile = *dbPath
 
 	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	if args[0] == "chat" {
@@ -185,7 +235,16 @@ func run() error {
 	}
 	defer db.Close()
 	if args[0] == "chat" {
+		if *modelSpec != "" {
+			// A wrong model name should stop here, not in a server started later.
+			if _, err := newProvider(*modelSpec, *effort); err != nil {
+				return &exitError{code: 2, msg: err.Error()}
+			}
+		}
 		return chatCommand(ctx, db, args[1:], os.Stdin, os.Stdout)
+	}
+	if args[0] == "start" || args[0] == "stop" || args[0] == "restart" || args[0] == "logs" {
+		return serverCommand(ctx, db, args[0], args[1:], os.Stdout)
 	}
 
 	if args[0] == "mcp" {
@@ -214,6 +273,7 @@ func run() error {
 	every := cmd.Duration("every", 0, "schedule interval, e.g. 24h")
 	dryRun := cmd.Bool("dry-run", false, "create: check the job file and print it normalised, creating nothing")
 	format := cmd.String("format", "md", "export: md or json")
+	all := cmd.Bool("all", false, "status: list every assignment, task, event, schedule, action and approval")
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -276,6 +336,14 @@ func run() error {
 
 	switch args[0] {
 	case "serve":
+		// Two servers on one database would run every task twice.
+		if l, alive, err := system.Alive(ctx, db, time.Now()); err != nil {
+			return err
+		} else if alive && l.PID != os.Getpid() {
+			if proc, err := os.FindProcess(l.PID); err == nil && proc.Signal(syscall.Signal(0)) == nil {
+				return fmt.Errorf("agentd is already serving this database (pid %d). `agentd restart` restarts it; `agentd stop` stops it", l.PID)
+			}
+		}
 		host, _ := os.Hostname()
 		log.Info("agentd serving", "db", *dbPath, "workers", *workers)
 		stopAPI, err := startAPI(ctx, a, *listen, *tokenFile, log)
@@ -304,7 +372,7 @@ func run() error {
 		if err := system.Launched(ctx, db, system.Launch{Args: os.Args[1:], Dir: dir}, time.Now()); err != nil {
 			log.Error("recording how serve was started", "err", err)
 		}
-		go beat(ctx, db, system.Liveness{Listen: *listen, TokenFile: tokenPath, MCPConfig: *mcpConfig, Models: models, Tiers: tierMap}, log)
+		go beat(ctx, db, system.Liveness{Exe: buildExe, Build: buildMark(), Started: time.Now(), Listen: *listen, TokenFile: tokenPath, MCPConfig: *mcpConfig, Models: models, Tiers: tierMap}, log)
 		// A changed MCP config is loaded by starting again in place: tools are registered
 		// once, at start, so that no tool can appear or change under a running task.
 		serving, stopServing := context.WithCancel(ctx)
@@ -375,7 +443,17 @@ func run() error {
 		fmt.Println(msg)
 		return nil
 	case "status":
-		return status(ctx, a)
+		if *all {
+			return status(ctx, a)
+		}
+		fmt.Println(serverLine(ctx, db))
+		summary, err := a.Chat.Command(ctx, "", "cli", "/status")
+		if err != nil {
+			return err
+		}
+		fmt.Print("\n" + sanitize(summary))
+		fmt.Println("\nEvery task, event, action and approval: agentd status -all")
+		return nil
 	case "confirm":
 		if cmd.NArg() < 2 {
 			return fmt.Errorf("confirm needs a project id and a criterion id")
@@ -479,12 +557,65 @@ func run() error {
 		fmt.Println("schedule", id)
 		return nil
 	default:
-		global.Usage()
-		return fmt.Errorf("unknown command %q", args[0])
+		return &exitError{code: 2, msg: fmt.Sprintf("unknown command %q. Run `agentd help` for the list.", args[0])}
 	}
 }
 
+// commands is every command name, to tell a typing mistake from a real command.
+var commands = strings.Fields(`chat serve start stop restart logs gmail ntfy mcp halt unhalt create export show status
+	retry resolve channel models task tell answer approve reject policy pause resume confirm complete cancel revoke
+	notifications event route schedule`)
+
+func knownCommand(name string) bool {
+	for _, c := range commands {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestCommand is the command a mistyped name most likely meant, if any is close.
+func nearestCommand(name string) string {
+	best, bestD := "", max(1, len(name)/3)+1
+	for _, c := range commands {
+		if strings.HasPrefix(c, name) && len(name) >= 2 {
+			return c
+		}
+		if d := editDistance(name, c); d < bestD {
+			best, bestD = c, d
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := []int{i}
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur = append(cur, min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost))
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+// piped reports whether f is a pipe or a file, so that `echo ... | agentd` sends a message.
+func piped(f *os.File) bool {
+	st, err := f.Stat()
+	return err == nil && (st.Mode()&os.ModeNamedPipe != 0 || st.Mode().IsRegular())
+}
+
 func status(ctx context.Context, a *app.App) error {
+	fmt.Println(serverLine(ctx, a.DB))
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
 	sections := []struct {
@@ -575,12 +706,17 @@ func newProvider(spec, effort string) (model.Provider, error) {
 	return nil, fmt.Errorf("unknown model provider %q", name)
 }
 
-// defaultDB is the database agentd uses when none is named: agentd.db in this directory
-// when there is one, as before, and otherwise one in the home directory, so that agentd
-// run from anywhere opens the same conversation.
+// defaultDB is the database agentd uses when none is named: the login service's when it
+// is installed, else agentd.db in this directory when there is one, and otherwise one in
+// the home directory, so that agentd run from anywhere opens the same conversation.
 func defaultDB() string {
 	if v := os.Getenv("AGENTD_DB"); v != "" {
 		return v
+	}
+	// One agent per account: when agentd is installed as a login service, its database is
+	// the one every command uses.
+	if serviceInstalled() {
+		return serviceDB()
 	}
 	if _, err := os.Stat("agentd.db"); err == nil {
 		return "agentd.db"

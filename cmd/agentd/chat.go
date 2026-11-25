@@ -335,6 +335,13 @@ var toolWords = map[string]string{
 	"list_assignments": "looking at your projects", "get_assignment": "reading a project", "get_task": "reading a task",
 	"list_waiting_on_owner": "checking what waits on you", "recent_activity": "reading recent activity",
 	"get_usage": "checking spend", "list_tools": "checking available tools",
+	"propose_assignment": "drafting a job", "propose_task": "drafting a task", "pause_assignment": "pausing a job",
+	"web_read": "reading a web page", "web_search": "searching the web", "gmail_search": "searching your mail",
+	"gmail_read": "reading an email", "gmail_draft": "drafting an email", "gmail_send": "sending an email",
+	"send_email": "sending an email", "notify": "sending you a notification", "update_state": "saving its notes",
+	"portfolio_positions": "reading your holdings", "ask_owner": "asking you a question",
+	"propose_policy": "drafting a policy change", "propose_resume": "proposing to resume a job",
+	"propose_route": "drafting an event rule", "propose_schedule": "drafting a schedule",
 }
 
 type toolCall struct{ id, tool, status string }
@@ -343,7 +350,10 @@ func (t toolCall) words() string {
 	if words := toolWords[t.tool]; words != "" {
 		return words
 	}
-	return "using " + t.tool
+	if server, tool, ok := strings.Cut(t.tool, "__"); ok {
+		return "using " + strings.ReplaceAll(tool, "_", " ") + " on " + server
+	}
+	return "using " + strings.ReplaceAll(t.tool, "_", " ")
 }
 
 func (c *chatClient) toolCalls(ctx context.Context, turn string) ([]toolCall, error) {

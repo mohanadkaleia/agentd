@@ -329,7 +329,7 @@ func explain(r tasks.Released) string {
 	case strings.HasPrefix(cause, "step limit"):
 		return "I stopped before finishing: " + cause + ". Ask again, more narrowly. " + retry
 	case strings.HasPrefix(cause, "model"):
-		return "I could not reach the model (" + strings.TrimPrefix(cause, "model: ") + "). " + retry
+		return modelTrouble(strings.TrimPrefix(cause, "model: ")) + " " + retry
 	case strings.Contains(cause, "model policy"):
 		return "No configured model is allowed for this conversation by the chat's model policy. Change it with agentd policy."
 	case cause == "":
@@ -484,4 +484,24 @@ func (s *Service) checkClaims(ctx context.Context, tx *sql.Tx, conv, turn, reply
 		Body: body("Nothing is waiting for your approval: no proposal was created in this conversation. " +
 			"Ask again to have it drafted as a proposal."), RefKind: "drafts", RefID: turn, CreatedAt: s.Now()})
 	return err
+}
+
+// modelTrouble says what went wrong with a model call in words the owner can act on,
+// keeping the provider's own message at the end.
+func modelTrouble(cause string) string {
+	lower := strings.ToLower(cause)
+	said := " (" + cause + ")."
+	switch {
+	case strings.HasPrefix(cause, "ollama") && (strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host")):
+		return "I could not reach the model: Ollama is not running. Open the Ollama app or run `ollama serve`" + said
+	case strings.HasPrefix(cause, "ollama") && strings.Contains(lower, "not found"):
+		return "I could not reach the model: Ollama does not have it. Pull it with `ollama pull <name>`, or pick another with /model" + said
+	case strings.Contains(lower, "401") || strings.Contains(lower, "authentication") || strings.Contains(lower, "invalid x-api-key") || strings.Contains(lower, "api key"):
+		return "I could not reach the model: the API key was refused or is missing. Check it with `agentd models`" + said
+	case strings.Contains(lower, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "overloaded"):
+		return "I could not reach the model: the provider is busy or the rate limit is reached. Wait a minute" + said
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "I could not reach the model: it took too long to answer" + said
+	}
+	return "I could not reach the model" + said
 }
