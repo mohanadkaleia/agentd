@@ -436,3 +436,54 @@ func TestStartServerUsesTheLastLaunch(t *testing.T) {
 		t.Fatalf("starting the way serve last ran: %q, %v", log, err)
 	}
 }
+
+// /model opens a picker of serve's models, marks the current one, and choosing sets it.
+func TestNewChatModelPicker(t *testing.T) {
+	w := newChatWorld(t, false)
+	live := system.Liveness{PID: 1, At: time.Now(), Models: []system.ModelInfo{
+		{ID: "anthropic/claude-opus-5-5", Alias: "opus"},
+		{ID: "anthropic/claude-sonnet-5-5", Alias: "sonnet"},
+		{ID: "anthropic/claude-haiku-5-5", Alias: "haiku"},
+	}, Tiers: map[string]string{"fast": "haiku", "default": "sonnet", "strong": "opus"}}
+	if err := system.Beat(w.ctx, w.db, live); err != nil {
+		t.Fatal(err)
+	}
+	c := &chatClient{app: app.New(w.db, nil, "", tools.Registry{}, time.Now), out: io.Discard, width: 60}
+	var err error
+	if c.conv, err = c.app.Chat.Default(w.ctx); err != nil {
+		t.Fatal(err)
+	}
+	ui := newTUI(w.ctx, c, false)
+	ui.status.alive, ui.guard, ui.width = true, 0, 60
+	if cmd := ui.submit("/model"); cmd != nil || ui.dialog == nil {
+		t.Fatal("/model did not open the picker")
+	}
+	view := ui.View()
+	for _, want := range []string{"Select model", "❯ 1. Automatic ✔", "Haiku 5.5 for chat", "2. Opus 5.5", "3. Sonnet 5.5", "smart and fast"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("picker lacks %q:\n%s", want, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 60 {
+			t.Fatalf("a line is %d columns wide in a 60 column terminal:\n%s", lipgloss.Width(line), view)
+		}
+	}
+	ui.dialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	cmd, _ := ui.dialogKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("choosing Sonnet did nothing")
+	}
+	if posted, ok := cmd().(tuiPosted); !ok || posted.err != nil {
+		t.Fatalf("choosing Sonnet: %#v", posted)
+	}
+	var model string
+	w.db.QueryRow(`SELECT COALESCE(model, '') FROM conversations WHERE id = ?`, c.conv).Scan(&model)
+	if model != "sonnet" {
+		t.Fatalf("conversation model is %q, want sonnet", model)
+	}
+	ui.submit("/model")
+	if view := ui.View(); !strings.Contains(view, "❯ 3. Sonnet 5.5 ✔") {
+		t.Fatalf("the picker does not start on the current model:\n%s", view)
+	}
+}

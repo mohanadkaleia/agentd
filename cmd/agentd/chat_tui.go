@@ -748,7 +748,9 @@ func (t *tui) newest(fresh bool) *chat.Message {
 // highlighted choice; a number only moves the highlight, and typing anything else puts the
 // dialog aside and goes to the composer, so text meant as a message never decides a card.
 type tuiDialog struct {
-	title  string
+	title string
+	// sub is a muted line under the title.
+	sub    string
 	tint   lipgloss.Style
 	opts   []tuiOption
 	at     int
@@ -758,7 +760,9 @@ type tuiDialog struct {
 
 type tuiOption struct {
 	label string
-	run   func() tea.Cmd
+	// note is muted text after the label; labels with notes are aligned.
+	note string
+	run  func() tea.Cmd
 	// stay keeps the dialog open after the choice.
 	stay bool
 }
@@ -1057,6 +1061,10 @@ func (t *tui) submit(text string) tea.Cmd {
 		return t.quit()
 	case "/clear":
 		return tea.ClearScreen
+	case "/model":
+		if t.modelPicker() {
+			return nil
+		}
 	}
 	// Adding and removing a server asks for secrets and answers, so it runs as the same
 	// command a terminal would, with the chat stepping aside.
@@ -1201,13 +1209,31 @@ var tuiKeys = [][2]string{
 func (t *tui) dialogView() string {
 	d := t.dialog
 	inner := t.width - 7
-	body := []string{d.tint.Bold(true).Render(t.c.clip(d.title, inner)), ""}
+	body := []string{d.tint.Bold(true).Render(t.c.clip(d.title, inner))}
+	if d.sub != "" {
+		body = append(body, t.theme.muted.Render(t.c.clip(d.sub, inner)))
+	}
+	body = append(body, "")
+	width := 0
+	for _, o := range d.opts {
+		width = max(width, lipgloss.Width(o.label))
+	}
 	for i, o := range d.opts {
-		line := t.c.clip(fmt.Sprintf("%d. %s", i+1, o.label), inner-2)
+		label := fmt.Sprintf("%d. %s", i+1, o.label)
+		if o.note != "" {
+			label += strings.Repeat(" ", width-lipgloss.Width(o.label)+2)
+		}
+		label = t.c.clip(label, inner-2)
+		note := ""
+		if o.note != "" {
+			if room := inner - 2 - lipgloss.Width(label); room > 3 {
+				note = t.theme.muted.Render(t.c.clip(o.note, room))
+			}
+		}
 		if i == d.at {
-			body = append(body, t.theme.accent.Render("❯ "+line))
+			body = append(body, t.theme.accent.Render("❯ "+label)+note)
 		} else {
-			body = append(body, "  "+line)
+			body = append(body, "  "+label+note)
 		}
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(d.tint.GetForeground()).
