@@ -64,8 +64,8 @@ var refundProposal = map[string]any{
 	"first_task": map[string]any{"title": "Ask the airline for the refund", "objective": "Email the refunds desk and get the refund."},
 }
 
-// owner's front desk, scripted as a dialogue keyed by what the owner said.
-func frontDesk(owner string, req model.Request) model.Message {
+// owner's chat, scripted as a dialogue keyed by what the owner said.
+func chatTurn(owner string, req model.Request) model.Message {
 	result, afterTool := chattest.LastTool(req)
 	switch {
 	case strings.Contains(owner, "refund for my cancelled flight"):
@@ -149,7 +149,7 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 			return hook(ctx, tx, r)
 		}
 	})
-	w.Agent.Turn, w.Agent.Work = frontDesk, refundTask
+	w.Agent.Turn, w.Agent.Work = chatTurn, refundTask
 
 	// Day 0: a sentence becomes a proposal; the owner approves; a crash in between.
 	w.Say("Please get me a refund for my cancelled flight LH123.")
@@ -167,7 +167,7 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 	}
 	w.Settle()
 	w.Restart()
-	w.Agent.Turn, w.Agent.Work = frontDesk, refundTask
+	w.Agent.Turn, w.Agent.Work = chatTurn, refundTask
 	w.Settle()
 	if n := w.Count(`SELECT COUNT(*) FROM assignments WHERE builtin IS NULL`); n != 1 {
 		t.Fatalf("assignments after the crash = %d, want exactly one", n)
@@ -196,7 +196,7 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 	w.Say("Hi, how is it going with the refund?")
 	w.Settle()
 	w.Restart()
-	w.Agent.Turn, w.Agent.Work = frontDesk, refundTask
+	w.Agent.Turn, w.Agent.Work = chatTurn, refundTask
 	w.Settle()
 	replies := w.Replies()
 	last := replies[len(replies)-1]
@@ -226,15 +226,15 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 
 	// Mid-week: the emergency stop through the thread.
 	w.Advance(48 * time.Hour)
-	calls := w.Agent.Calls("front desk") + w.Agent.Calls("work")
+	calls := w.Agent.Calls("chat") + w.Agent.Calls("work")
 	if out, ok := w.Command("/halt checking something"); !ok {
 		t.Fatal(out)
 	}
 	w.Say("are you there?")
 	w.Settle()
 	status, _ := w.Command("/status")
-	if !strings.Contains(status, "EMERGENCY STOP") || w.Agent.Calls("front desk")+w.Agent.Calls("work") != calls {
-		t.Fatalf("during the stop: %q, %d model calls", status, w.Agent.Calls("front desk")+w.Agent.Calls("work")-calls)
+	if !strings.Contains(status, "EMERGENCY STOP") || w.Agent.Calls("chat")+w.Agent.Calls("work") != calls {
+		t.Fatalf("during the stop: %q, %d model calls", status, w.Agent.Calls("chat")+w.Agent.Calls("work")-calls)
 	}
 	if reports := w.Of(chat.KindReport); !hasTitle(reports, "Emergency stop set") {
 		t.Fatal("no card for the emergency stop")
@@ -246,10 +246,10 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 
 	// The chat budget runs out: commands and cards keep working.
 	w.Agent.Cost = 1_000_000
-	desk, _ := w.App.Chat.FrontDesk(w.Ctx)
-	tight := chat.FrontDeskPolicy()
+	chatAsg, _ := w.App.Chat.ChatAssignment(w.Ctx)
+	tight := chat.ChatPolicy()
 	tight.Limits = policy.Limits{MaxLLMSpendUSD: 0.5, BudgetPeriod: policy.Duration{Duration: 720 * time.Hour}}
-	if _, err := w.App.Assignments.SetPolicy(w.Ctx, desk, tight, "owner"); err != nil {
+	if _, err := w.App.Assignments.SetPolicy(w.Ctx, chatAsg, tight, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	w.Say("anything new?")
@@ -272,21 +272,21 @@ func TestAWeekOfWorkingTogetherThroughChat(t *testing.T) {
 	}
 
 	metrics := map[string]int{
-		"turns":                     w.Count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND priority = ?`, desk, tasks.PriorityInteractive),
-		"model_calls":               w.Agent.Calls("front desk") + w.Agent.Calls("work"),
-		"proposals":                 len(w.Of(chat.KindProposal)),
-		"proposals_confirmed":       w.Count(`SELECT COUNT(*) FROM approvals ap JOIN actions a ON a.id = ap.action_id WHERE a.tool_name LIKE 'propose_%' AND ap.status = 'approved'`),
-		"approvals":                 w.Count(`SELECT COUNT(*) FROM approvals WHERE status = 'approved'`),
-		"emails_sent":               w.Count(`SELECT COUNT(*) FROM mock_mailbox`),
-		"notes_delivered":           w.Count(`SELECT COUNT(*) FROM owner_notes WHERE delivered_at IS NOT NULL`),
-		"questions_asked":           w.Count(`SELECT COUNT(*) FROM questions`),
-		"replies":                   len(w.Replies()),
-		"spend_front_desk_microusd": w.Count(`SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage WHERE assignment_id = ?`, desk),
-		"spend_project_microusd":    w.Count(`SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage WHERE assignment_id = ?`, project),
-		"duplicate_emails":          w.Count(`SELECT COUNT(*) - COUNT(DISTINCT body) FROM mock_mailbox`),
-		"duplicate_replies":         w.Count(`SELECT COUNT(*) FROM (SELECT turn_task_id FROM conversation_messages WHERE author = 'agent' GROUP BY turn_task_id HAVING COUNT(*) > 1)`),
-		"duplicate_assignments":     w.Count(`SELECT COUNT(*) - COUNT(DISTINCT name) FROM assignments`),
-		"duplicate_notes":           w.Count(`SELECT COUNT(*) - COUNT(DISTINCT id) FROM owner_notes`),
+		"turns":                  w.Count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND priority = ?`, chatAsg, tasks.PriorityInteractive),
+		"model_calls":            w.Agent.Calls("chat") + w.Agent.Calls("work"),
+		"proposals":              len(w.Of(chat.KindProposal)),
+		"proposals_confirmed":    w.Count(`SELECT COUNT(*) FROM approvals ap JOIN actions a ON a.id = ap.action_id WHERE a.tool_name LIKE 'propose_%' AND ap.status = 'approved'`),
+		"approvals":              w.Count(`SELECT COUNT(*) FROM approvals WHERE status = 'approved'`),
+		"emails_sent":            w.Count(`SELECT COUNT(*) FROM mock_mailbox`),
+		"notes_delivered":        w.Count(`SELECT COUNT(*) FROM owner_notes WHERE delivered_at IS NOT NULL`),
+		"questions_asked":        w.Count(`SELECT COUNT(*) FROM questions`),
+		"replies":                len(w.Replies()),
+		"spend_chat_microusd":    w.Count(`SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage WHERE assignment_id = ?`, chatAsg),
+		"spend_project_microusd": w.Count(`SELECT COALESCE(SUM(cost_micros), 0) FROM model_usage WHERE assignment_id = ?`, project),
+		"duplicate_emails":       w.Count(`SELECT COUNT(*) - COUNT(DISTINCT body) FROM mock_mailbox`),
+		"duplicate_replies":      w.Count(`SELECT COUNT(*) FROM (SELECT turn_task_id FROM conversation_messages WHERE author = 'agent' GROUP BY turn_task_id HAVING COUNT(*) > 1)`),
+		"duplicate_assignments":  w.Count(`SELECT COUNT(*) - COUNT(DISTINCT name) FROM assignments`),
+		"duplicate_notes":        w.Count(`SELECT COUNT(*) - COUNT(DISTINCT id) FROM owner_notes`),
 	}
 	report, _ := json.Marshal(metrics)
 	t.Logf("chat scenario metrics: %s", report)

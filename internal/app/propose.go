@@ -23,7 +23,7 @@ import (
 // ProposalCeilingUSD is the budget above which a proposal card warns the owner.
 const ProposalCeilingUSD = 20
 
-// A proposal is a front desk tool whose call is a draft: it always waits for the owner's
+// A proposal is a chat tool whose call is a draft: it always waits for the owner's
 // approval (tools.OwnerConfirmed), and on approval applies the draft through the same code
 // the CLI and API use, in one transaction that also records which action applied it, so a
 // crash can be reconciled with certainty.
@@ -42,7 +42,7 @@ func (p *proposal) Definition() model.ToolDefinition {
 	return model.ToolDefinition{Name: p.name, Description: p.desc, InputSchema: json.RawMessage(p.schema)}
 }
 func (p *proposal) Effect() tools.Effect { return tools.EffectWrite }
-func (p *proposal) OnlyFor() string      { return chat.FrontDeskKey }
+func (p *proposal) OnlyFor() string      { return chat.ChatKey }
 func (p *proposal) NeedsOwner()          {}
 
 func (p *proposal) Resource(args json.RawMessage) (string, error) {
@@ -117,7 +117,7 @@ func (p *pauser) Definition() model.ToolDefinition {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"assignment_id":{"type":"string"},"reason":{"type":"string"}},"required":["assignment_id"]}`)}
 }
 func (p *pauser) Effect() tools.Effect { return tools.EffectWrite }
-func (p *pauser) OnlyFor() string      { return chat.FrontDeskKey }
+func (p *pauser) OnlyFor() string      { return chat.ChatKey }
 func (p *pauser) Resource(args json.RawMessage) (string, error) {
 	var in target
 	if err := json.Unmarshal(args, &in); err != nil {
@@ -134,7 +134,7 @@ func (p *pauser) Execute(ctx context.Context, call tools.Invocation) (tools.Resu
 		return tools.Result{}, fmt.Errorf("%w: %v", tools.ErrNotExecuted, err)
 	}
 	reason := strings.TrimSpace("paused from chat: " + in.Reason)
-	if err := p.app.Assignments.Pause(ctx, in.AssignmentID, assignments.PausedByUser, reason, "front-desk"); err != nil {
+	if err := p.app.Assignments.Pause(ctx, in.AssignmentID, assignments.PausedByUser, reason, "chat"); err != nil {
 		return tools.Result{}, fmt.Errorf("%w: %v", tools.ErrNotExecuted, err)
 	}
 	return tools.Result{Output: json.RawMessage(`{"paused":true}`)}, nil

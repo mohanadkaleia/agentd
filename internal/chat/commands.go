@@ -70,7 +70,7 @@ func Commands() []CommandHelp {
 }
 
 // Command runs one owner slash command. It never calls a model, so it works while the
-// model is down, the front desk is paused or out of budget, and (unless it starts work)
+// model is down, the chat is paused or out of budget, and (unless it starts work)
 // during an emergency stop.
 func (s *Service) Command(ctx context.Context, conv, channel, line string) (string, error) {
 	fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "/"))
@@ -461,7 +461,7 @@ func (s *Service) cmdNew(ctx context.Context, _ call) (string, error) {
 	return "Started conversation " + id + ".", nil
 }
 
-// resolveAssignment accepts an id or a unique name, never the front desk.
+// resolveAssignment accepts an id or a unique name, never the chat.
 func (s *Service) resolveAssignment(ctx context.Context, ref string) (string, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM assignments WHERE builtin IS NULL AND (id = ? OR name = ?)
 		ORDER BY id = ? DESC, status IN ('active', 'paused') DESC, created_at DESC`, ref, ref, ref)

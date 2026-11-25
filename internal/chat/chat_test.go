@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"agentd/internal/tasks"
 	"agentd/internal/testutil"
 	"agentd/internal/tools"
+	"agentd/migrations"
 )
 
 type provider struct {
@@ -60,14 +62,14 @@ func (p *provider) last() model.Request {
 }
 
 type world struct {
-	t     *testing.T
-	ctx   context.Context
-	clock *testutil.Clock
-	app   *app.App
-	model *provider
-	send  *sendTool
-	conv  string
-	desk  string
+	t       *testing.T
+	ctx     context.Context
+	clock   *testutil.Clock
+	app     *app.App
+	model   *provider
+	send    *sendTool
+	conv    string
+	chatAsg string
 }
 
 func newWorld(t *testing.T) *world {
@@ -75,7 +77,7 @@ func newWorld(t *testing.T) *world {
 	db := testutil.Open(t, testutil.DBPath(t))
 	w.app = app.New(db, w.model, "cloud", tools.NewRegistry(w.send), w.clock.Now)
 	var err error
-	if w.desk, err = w.app.Chat.FrontDesk(w.ctx); err != nil {
+	if w.chatAsg, err = w.app.Chat.ChatAssignment(w.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if w.conv, err = w.app.Chat.Default(w.ctx); err != nil {
@@ -161,7 +163,7 @@ func TestSameClientMessageMakesOneTurn(t *testing.T) {
 	if again.ID != first.ID || again.Seq != first.Seq {
 		t.Fatalf("retried post returned %+v, want the stored %+v", again, first)
 	}
-	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.desk); n != 1 {
+	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.chatAsg); n != 1 {
 		t.Fatalf("turns = %d, want 1", n)
 	}
 	w.drain()
@@ -196,7 +198,7 @@ func TestReplyWrittenOnceWhenTheProcessDiesBeforeCommitting(t *testing.T) {
 	if w.model.count() != 1 {
 		t.Fatalf("model calls = %d, want the run resumed (1 call), not restarted", w.model.count())
 	}
-	if n := w.count(`SELECT COUNT(*) FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.assignment_id = ?`, w.desk); n != 1 {
+	if n := w.count(`SELECT COUNT(*) FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.assignment_id = ?`, w.chatAsg); n != 1 {
 		t.Fatalf("runs = %d, want 1", n)
 	}
 }
@@ -216,7 +218,7 @@ func TestMessagesDuringATurnJoinTheNextTurn(t *testing.T) {
 		return model.Message{Content: fmt.Sprintf("reply %d", w.model.calls)}, nil
 	}
 	w.work()
-	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.desk); n != 2 {
+	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.chatAsg); n != 2 {
 		t.Fatalf("turns = %d, want the three later messages in one following turn", n)
 	}
 	w.drain()
@@ -309,7 +311,7 @@ func TestCancelStopsTheTurnAndTheNextOneRuns(t *testing.T) {
 	if err := w.app.Chat.Cancel(w.ctx, w.conv, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND status = 'cancelled'`, w.desk); n != 1 {
+	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ? AND status = 'cancelled'`, w.chatAsg); n != 1 {
 		t.Fatalf("cancelled turns = %d", n)
 	}
 	if notices := w.by(chat.System, chat.KindNotice); len(notices) != 1 || !strings.Contains(notices[0].Text(), "Stopped") {
@@ -372,25 +374,25 @@ func TestLongConversationIsWindowedAndSummarised(t *testing.T) {
 	}
 }
 
-func TestFrontDeskCannotBeEndedButCanBePaused(t *testing.T) {
+func TestChatCannotBeEndedButCanBePaused(t *testing.T) {
 	w := newWorld(t)
-	again, err := w.app.Chat.FrontDesk(w.ctx)
-	if err != nil || again != w.desk {
-		t.Fatalf("FrontDesk again = %q, %v; want the same %q", again, err, w.desk)
+	again, err := w.app.Chat.ChatAssignment(w.ctx)
+	if err != nil || again != w.chatAsg {
+		t.Fatalf("ChatAssignment again = %q, %v; want the same %q", again, err, w.chatAsg)
 	}
-	if err := w.app.Assignments.Revoke(w.ctx, w.desk, "owner"); !errors.Is(err, assignments.ErrBuiltin) {
+	if err := w.app.Assignments.Revoke(w.ctx, w.chatAsg, "owner"); !errors.Is(err, assignments.ErrBuiltin) {
 		t.Fatalf("revoke = %v", err)
 	}
-	if err := w.app.Assignments.Complete(w.ctx, w.desk, "owner"); !errors.Is(err, assignments.ErrBuiltin) {
+	if err := w.app.Assignments.Complete(w.ctx, w.chatAsg, "owner"); !errors.Is(err, assignments.ErrBuiltin) {
 		t.Fatalf("complete = %v", err)
 	}
-	if err := w.app.Assignments.Pause(w.ctx, w.desk, assignments.PausedByUser, "", "owner"); err != nil {
+	if err := w.app.Assignments.Pause(w.ctx, w.chatAsg, assignments.PausedByUser, "", "owner"); err != nil {
 		t.Fatal(err)
 	}
 	w.say("hello")
 	w.drain()
 	if w.model.count() != 0 || len(w.by(chat.System, chat.KindNotice)) != 1 {
-		t.Fatal("a paused front desk replied, or did not say why it is quiet")
+		t.Fatal("a paused chat replied, or did not say why it is quiet")
 	}
 }
 
@@ -571,5 +573,33 @@ func TestMCPCommandListsServersAndNeverAddsFromChat(t *testing.T) {
 	}
 	if out = command("/mcp add notes https://example.com/mcp"); !strings.Contains(out, "in a terminal") {
 		t.Fatalf("/mcp add from a channel that cannot ask for secrets:\n%s", out)
+	}
+}
+
+// A database from before the rename keeps its chat assignment: the migration renames it
+// instead of a second one being created.
+func TestChatRenameMigrationKeepsTheAssignment(t *testing.T) {
+	w := newWorld(t)
+	db := w.app.DB
+	if _, err := db.Exec(`UPDATE assignments SET builtin = 'front-desk', name = 'front-desk' WHERE id = ?`, w.chatAsg); err != nil {
+		t.Fatal(err)
+	}
+	body, err := fs.ReadFile(migrations.FS, "021_chat_rename.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(body)); err != nil {
+		t.Fatal(err)
+	}
+	again, err := w.app.Chat.ChatAssignment(w.ctx)
+	if err != nil || again != w.chatAsg {
+		t.Fatalf("ChatAssignment after the migration = %q, %v; want the same %q", again, err, w.chatAsg)
+	}
+	var name string
+	var n int
+	db.QueryRow(`SELECT name FROM assignments WHERE id = ?`, w.chatAsg).Scan(&name)
+	db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE builtin IS NOT NULL`).Scan(&n)
+	if name != "chat" || n != 1 {
+		t.Fatalf("after the migration: name %q, %d built-in assignments; want chat, 1", name, n)
 	}
 }

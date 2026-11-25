@@ -14,7 +14,7 @@ import (
 )
 
 func replies(req model.Request) model.Message {
-	return model.Message{Content: "hello from the front desk"}
+	return model.Message{Content: "hello from the chat"}
 }
 
 func (e *env) conversation() string {

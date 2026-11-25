@@ -286,7 +286,7 @@ func run() error {
 			a.Deliverer.Channel = ch
 			log.Info("notifications deliver via ntfy")
 		}
-		if _, err := a.Chat.FrontDesk(ctx); err != nil {
+		if _, err := a.Chat.ChatAssignment(ctx); err != nil {
 			return err
 		}
 		logPolicyWarnings(ctx, a, log)

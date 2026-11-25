@@ -1,5 +1,5 @@
 // Package chat is the owner's conversation with agentd. Each owner message becomes one
-// turn: an ordinary task of the built-in front desk assignment, so turns are leased,
+// turn: an ordinary task of the built-in chat assignment, so turns are leased,
 // checkpointed, budgeted and audited like any other work. The package never calls a model
 // itself.
 package chat
@@ -22,7 +22,7 @@ import (
 	"agentd/internal/tasks"
 )
 
-const FrontDeskKey = "front-desk"
+const ChatKey = "chat"
 
 const (
 	Owner  = "owner"
@@ -105,7 +105,7 @@ var ProposeTools = []string{"propose_assignment", "propose_policy", "propose_sch
 
 const PauseTool = "pause_assignment"
 
-func FrontDeskPolicy() policy.Policy {
+func ChatPolicy() policy.Policy {
 	rules := map[string]policy.Rule{PauseTool: {Mode: policy.Allow}, ForwardTool: {Mode: policy.Allow}}
 	for _, name := range ReadTools {
 		rules[name] = policy.Rule{Mode: policy.Allow}
@@ -117,13 +117,13 @@ func FrontDeskPolicy() policy.Policy {
 		Limits: policy.Limits{MaxLLMSpendUSD: 5, BudgetPeriod: policy.Duration{Duration: 720 * time.Hour}}}
 }
 
-// FrontDesk returns the id of the built-in assignment that runs conversation turns,
+// ChatAssignment returns the id of the built-in assignment that runs conversation turns,
 // creating it the first time.
-func (s *Service) FrontDesk(ctx context.Context) (string, error) {
-	return s.Assignments.EnsureBuiltin(ctx, FrontDeskKey, assignments.NewResponsibility{
-		Name:      FrontDeskKey,
+func (s *Service) ChatAssignment(ctx context.Context) (string, error) {
+	return s.Assignments.EnsureBuiltin(ctx, ChatKey, assignments.NewResponsibility{
+		Name:      ChatKey,
 		Objective: "Talk with the owner: answer questions about agentd's work from its records, and propose new work for the owner to confirm.",
-		Policy:    FrontDeskPolicy(),
+		Policy:    ChatPolicy(),
 		Notifications: assignments.NotificationPolicy{MinSeverity: assignments.SeverityAttention,
 			DedupWindow: policy.Duration{Duration: 24 * time.Hour}, MaxPerDay: 10},
 	})
@@ -191,7 +191,7 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 			})
 		}
 	}
-	desk, err := s.FrontDesk(ctx)
+	chatAsg, err := s.ChatAssignment(ctx)
 	if err != nil {
 		return Message{}, err
 	}
@@ -217,7 +217,7 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 	}
 	m := Message{ID: ids.New("msg"), ConversationID: p.ConversationID, Author: Owner, Kind: KindText,
 		Body: reply(text, p.ReplyTo), Channel: p.Channel, ClientMsgID: p.ClientMsgID, CreatedAt: now}
-	turn, parked, err := s.turnFor(ctx, tx, desk, m)
+	turn, parked, err := s.turnFor(ctx, tx, chatAsg, m)
 	if err != nil {
 		return Message{}, err
 	}
@@ -231,11 +231,11 @@ func (s *Service) Post(ctx context.Context, p Post) (Message, error) {
 			return Message{}, err
 		}
 	}
-	if err := audit.Record(ctx, tx, now, desk, "owner", "chat.message_received", m.ID,
+	if err := audit.Record(ctx, tx, now, chatAsg, "owner", "chat.message_received", m.ID,
 		map[string]any{"conversation": m.ConversationID, "channel": m.Channel, "bytes": len(text)}); err != nil {
 		return Message{}, err
 	}
-	if err := s.explainWait(ctx, tx, desk, m.ConversationID); err != nil {
+	if err := s.explainWait(ctx, tx, chatAsg, m.ConversationID); err != nil {
 		return Message{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -310,7 +310,7 @@ func reply(text, to string) json.RawMessage {
 // turnFor picks the turn a new owner message belongs to: a turn that has not started yet,
 // or a new one, parked when another turn of this conversation is still open. A turn waiting
 // for the owner's decision on a card does not hold up the conversation.
-func (s *Service) turnFor(ctx context.Context, tx *sql.Tx, desk string, m Message) (string, bool, error) {
+func (s *Service) turnFor(ctx context.Context, tx *sql.Tx, chatAsg string, m Message) (string, bool, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, EXISTS (SELECT 1 FROM runs r WHERE r.task_id = t.id)
 		FROM tasks t WHERE t.id IN (SELECT DISTINCT turn_task_id FROM conversation_messages
 			WHERE conversation_id = ? AND author = 'owner')
@@ -343,7 +343,7 @@ func (s *Service) turnFor(ctx context.Context, tx *sql.Tx, desk string, m Messag
 	if steps == 0 {
 		steps = 8
 	}
-	id, err := s.Tasks.CreateTx(ctx, tx, tasks.NewTask{AssignmentID: desk, OriginKey: "chat:" + m.ID,
+	id, err := s.Tasks.CreateTx(ctx, tx, tasks.NewTask{AssignmentID: chatAsg, OriginKey: "chat:" + m.ID,
 		Title: "Reply in conversation", Objective: "Reply to the owner's latest message.",
 		Priority: tasks.PriorityInteractive, MaxSteps: steps, ModelTier: "fast"})
 	return id, open > 0, err

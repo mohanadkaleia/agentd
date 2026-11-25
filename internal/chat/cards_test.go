@@ -67,7 +67,7 @@ func (w *world) pendingSend(to string) (project, task string) {
 	}
 	w.model.reply = func(req model.Request) (model.Message, error) {
 		if strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
-			return model.Message{Content: "front desk reply"}, nil
+			return model.Message{Content: "chat reply"}, nil
 		}
 		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {
 			return model.Message{Content: "sent"}, nil
@@ -236,7 +236,7 @@ func TestEveryCommandWorksWithoutAModel(t *testing.T) {
 	if r := w.command("/aprove 1"); !w.failed(r) || !strings.Contains(r.Text(), "/approve") {
 		t.Fatalf("unknown command = %s", r.Text())
 	}
-	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.desk); n != 0 {
+	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.chatAsg); n != 0 {
 		t.Fatalf("slash commands started %d turns", n)
 	}
 }
@@ -287,7 +287,7 @@ func TestYesAsADirectReplyApprovesThatCardOnly(t *testing.T) {
 	if got[0].Status != "approved" || got[1].Status != "pending" {
 		t.Fatalf("card statuses = %s, %s; want approved, pending", got[0].Status, got[1].Status)
 	}
-	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.desk); n != 1 {
+	if n := w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.chatAsg); n != 1 {
 		t.Fatalf("turns = %d; want the longer reply treated as an ordinary message", n)
 	}
 }

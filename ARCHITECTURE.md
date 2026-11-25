@@ -189,8 +189,8 @@ Each layer removes work before the next, more expensive one:
 23. An MCP server never gets model access, the owner's attention or files through the protocol: agentd offers no sampling, elicitation or roots, sends no server instructions to a model, and starts a local server with only `PATH`, `HOME` and its configured environment.
 24. One owner message makes at most one conversation turn, across retries, reconnects and crashes: the message and its turn are written in one transaction, and a repeated client message id returns the stored message. A conversation runs one turn at a time; messages that arrive meanwhile wait for the next turn, which sees all of them in order. A turn waiting for the owner's decision on a card does not hold up the next one. A turn's reply is written in the transaction that completes its task, and a turn that fails or is cancelled leaves a message saying so.
 25. Only the owner decides an approval, through code: a button, the CLI, the API, a slash command, or a direct reply to an approval card that is exactly `approve`, `yes`, `reject` or `no`. No tool approves, and only the owner's own messages are parsed for commands, never text from a model, a tool or an email. A decision from a card is refused unless the approval is still pending and its argument hash still matches the card.
-26. Chat grants nothing by itself. The front desk can draft a new assignment, a policy, a schedule, a route, a task or a resume, but each draft is an action whose decision is fixed in code to the owner's approval: a policy that allows a propose tool is refused when it is set, and ignored at dispatch. A draft takes effect only through the same code `agentd create` and `agentd policy` use, in one transaction that records which action applied it, so a crash is reconciled without guessing. Lifting the emergency stop, revoking, cancelling, completing, confirming a criterion, resolving an outcome and accepting an MCP tool have no tool at all. Only pausing, which narrows what runs, takes effect without approval.
-27. Text reaches a task as an instruction only as the owner's own words, copied by code: a note (`agentd tell`, `/tell`, the API, or the front desk's `forward_owner_message`, which chooses only the target) or an answer to the task's own question. A note is appended to the run at a step boundary, after pending tool results, in a transaction fenced on the lease, exactly once; a task cannot complete while a note is unread. A note changes no tool, permission or budget.
+26. Chat grants nothing by itself. The chat can draft a new assignment, a policy, a schedule, a route, a task or a resume, but each draft is an action whose decision is fixed in code to the owner's approval: a policy that allows a propose tool is refused when it is set, and ignored at dispatch. A draft takes effect only through the same code `agentd create` and `agentd policy` use, in one transaction that records which action applied it, so a crash is reconciled without guessing. Lifting the emergency stop, revoking, cancelling, completing, confirming a criterion, resolving an outcome and accepting an MCP tool have no tool at all. Only pausing, which narrows what runs, takes effect without approval.
+27. Text reaches a task as an instruction only as the owner's own words, copied by code: a note (`agentd tell`, `/tell`, the API, or the chat's `forward_owner_message`, which chooses only the target) or an answer to the task's own question. A note is appended to the run at a step boundary, after pending tool results, in a transaction fenced on the lease, exactly once; a task cannot complete while a note is unread. A note changes no tool, permission or budget.
 29. A model choice narrows within policy and never widens it. A run's model comes from the owner's choice for the task, then for the conversation, then the assignment's preference, then the task's tier, then the default, and every candidate passes the assignment's `models` limits first; only the owner (by command, CLI, API or web) or the assignment file can make a choice, escalation after a failed run moves one tier up within the same limits, and no tool writes a choice. The choice is recorded with the run, and a change applies at a step boundary only when the transcript holds no provider-private data.
 28. A chat channel on a third-party service hears only the one sender paired with a single-use, short-lived code, in a direct chat; anything else gets a fixed refusal or is ignored, and nothing from it is stored or reaches a model. The service credential lives in the keychain or an owner-only file, never in the database, logs or errors. What may be done from the phone (deciding, and separately anything that widens authority, off by default) and how much is sent there (minimal, summary, full; local-only work never above minimal) are decided by `internal/chat`, not by the adapter; buttons carry only a card number and a hash prefix.
 
@@ -311,7 +311,7 @@ How a turn runs:
    instead and never makes a turn.
 2. The interactive worker claims the turn at once (or within 200 ms when the message came from
    another process).
-3. Its opening messages are built by code: the front desk prompt, the situation block, the summary,
+3. Its opening messages are built by code: the chat prompt, the situation block, the summary,
    the ids of the owner's messages, and the recent window.
 4. The model answers, possibly calling read tools, drafting a proposal (which waits for the owner's
    approval without holding up the conversation), passing an owner message on, or pausing work.
@@ -320,37 +320,37 @@ How a turn runs:
    failure or a cancel leaves a plain message instead. The next queued turn, if any, starts.
 
 `internal/chat` is the owner's conversation with agentd. Each owner message becomes a **turn**: an
-ordinary task of the built-in **front desk** responsibility, so a turn is leased, checkpointed,
+ordinary task of the built-in **chat** responsibility, so a turn is leased, checkpointed,
 budgeted, fenced and audited like any other work, and the runtime knows nothing about chat beyond
 an `Opener` hook that supplies a turn's opening messages and a release hook that records its reply
 (`internal/archtest` keeps the engine from importing `internal/chat`).
 
-- **What the model sees** is built by code each turn: the front desk prompt, a situation block
+- **What the model sees** is built by code each turn: the chat prompt, a situation block
   (live assignments with their next expected step, what waits on the owner, the emergency stop),
   the rolling summary of older conversation, and the most recent 30 messages capped at 32 KB. Only
   the owner's own messages are presented as the owner speaking; the rest is labelled data. When
   enough messages scroll out of that window, a small summary task folds them into the summary. The
   stored conversation is never trimmed.
-- **The front desk** is created at startup (`front-desk`, 5 USD per 30 days). It cannot be
+- **The chat** is created at startup (`chat`, 5 USD per 30 days). It cannot be
   completed or revoked; pausing it stops replies but keeps messages. Its default policy offers no
   tools that reach outside agentd. The owner may add tools with `agentd policy` like any assignment,
-  but the front desk reads project content that may carry injected text, so a mail, web or MCP tool
+  but the chat reads project content that may carry injected text, so a mail, web or MCP tool
   there is a path from that text to the outside world.
-- **Read tools** let the front desk answer "what is going on?": `list_assignments`,
+- **Read tools** let the chat answer "what is going on?": `list_assignments`,
   `get_assignment`, `get_task`, `list_waiting_on_owner`, `recent_activity`, `get_usage` and
-  `list_tools`. They see every assignment, so they are `tools.Restricted` to the front desk: the
+  `list_tools`. They see every assignment, so they are `tools.Restricted` to the chat: the
   runtime never offers them elsewhere and the gateway denies them elsewhere whatever a policy says.
   `get_task` returns a digest (tools called and their status, the last agent message) and shows one
   action's raw result only when asked, wrapped as untrusted data. Values under secret-looking keys
   and keychain references are redacted, results are paged at about 12 KB, every result carries the
   time it was read, and a turn may make at most 20 read calls.
-- **Local-only work** is withheld rather than forcing the front desk local: when the turn's model is
+- **Local-only work** is withheld rather than forcing the chat local: when the turn's model is
   not local, an assignment with `models.local_only` appears only by name and status, in the
   situation block and in every read tool.
 - **Responsiveness.** Turns run at a higher priority, and `serve` runs one extra worker that takes
   only interactive tasks, so a turn never waits behind long work. A message posted in the same
   process wakes it at once; one written by another process is picked up within 200 ms.
-- While the emergency stop is on, or the front desk is paused or out of budget, messages are still
+- While the emergency stop is on, or the chat is paused or out of budget, messages are still
   stored, no model is called, and the conversation gets one notice saying why and what to run.
 - **Cards.** A projector in housekeeping reads the audit log after a saved cursor and writes cards
   into the conversation: approvals (numbered per conversation, with the exact arguments and hash),
@@ -362,7 +362,7 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
 - **Slash commands** (`/status`, `/show`, `/waiting`, `/approve`, `/reject`, `/pause`, `/resume`,
   `/halt`, `/unhalt`, `/retry`, `/usage`, `/new`, `/help`) are parsed by `internal/chat` for every
   client, never reach a model, and call the same stores the CLI and API call. They work when the
-  model is down or the front desk is out of budget; during an emergency stop only `/retry` (which
+  model is down or the chat is out of budget; during an emergency stop only `/retry` (which
   would start work) is refused. Numbers in `/approve 2` are the card's fixed number in that
   conversation, so a number never shifts to a different item.
 - **Proposals.** `propose_assignment`, `propose_policy`, `propose_schedule`, `propose_route`,
@@ -462,6 +462,6 @@ an `Opener` hook that supplies a turn's opening messages and a release hook that
 | `internal/api` | Authenticated HTTP API and SSE activity stream. |
 | `internal/system` | Emergency stop flag. |
 | `internal/overview` | State, spend, recent activity and next expected action for one assignment. |
-| `internal/chat` | The owner's conversation: messages, turns as front desk tasks, the model's view, summaries. |
+| `internal/chat` | The owner's conversation: messages, turns as chat tasks, the model's view, summaries. |
 | `internal/model/*` | Provider-neutral model interface and adapters (Anthropic, Ollama, and a scripted model for tests). |
 | `internal/store`, `migrations/` | SQLite open, migrations (including safe table rebuilds). |

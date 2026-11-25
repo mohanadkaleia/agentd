@@ -24,9 +24,9 @@ the chat budget is used up:
 | `/model [task] [model or tier or auto]` | see or choose the model for this conversation or a task |
 | `/new`, `/help` | new conversation, this list |
 
-The conversation is answered by a built-in assignment, the **front desk** (`agentd status` shows it
+The conversation is answered by a built-in assignment, the **chat** (`agentd status` shows it
 as built in). It has its own budget, 5 USD per 30 days, so talking never spends a project's money;
-change it with `agentd policy <front-desk-id> policy.md`. By default it may only read agentd's
+change it with `agentd policy <chat-id> policy.md`. By default it may only read agentd's
 records, draft proposals, pass on your messages and pause; giving it more tools (mail, web, MCP)
 means text it reads in projects could reach those tools, so do that deliberately.
 

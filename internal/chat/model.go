@@ -27,11 +27,11 @@ func (s *Service) SetConversationModel(ctx context.Context, conv, value, by stri
 	if err != nil {
 		return "", err
 	}
-	desk, err := s.FrontDesk(ctx)
+	chatAsg, err := s.ChatAssignment(ctx)
 	if err != nil {
 		return "", err
 	}
-	a, err := s.Assignments.Get(ctx, desk)
+	a, err := s.Assignments.Get(ctx, chatAsg)
 	if err != nil {
 		return "", err
 	}
@@ -41,7 +41,7 @@ func (s *Service) SetConversationModel(ctx context.Context, conv, value, by stri
 			return "", fmt.Errorf("tier %q is not mapped to a model", choice)
 		}
 		if a.Policy.Models.LocalOnly && !strings.HasSuffix(s.Runtime.Describe(choice), "(local)") {
-			return "", errors.New("the conversation is limited to local models by the front desk's policy")
+			return "", errors.New("the conversation is limited to local models by the chat's policy")
 		}
 		if s.Runtime.Egress(s.Runtime.ModelID, choice) {
 			warning = " This sends the conversation, and what agentd tells it about your work, to a cloud provider."
@@ -54,7 +54,7 @@ func (s *Service) SetConversationModel(ctx context.Context, conv, value, by stri
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", ErrNotFound
 	}
-	if err := audit.Record(ctx, s.DB, s.Now(), desk, by, "chat.model_set", conv, map[string]string{"model": choice}); err != nil {
+	if err := audit.Record(ctx, s.DB, s.Now(), chatAsg, by, "chat.model_set", conv, map[string]string{"model": choice}); err != nil {
 		return "", err
 	}
 	if choice == "" {

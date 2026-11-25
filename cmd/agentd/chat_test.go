@@ -38,7 +38,7 @@ func (w *chatWorld) Complete(ctx context.Context, req model.Request) (model.Resp
 	w.mu.Lock()
 	reply := w.reply
 	w.mu.Unlock()
-	msg := model.Message{Content: "hello from the front desk"}
+	msg := model.Message{Content: "hello from the chat"}
 	if reply != nil {
 		msg = reply(req)
 	}
@@ -65,7 +65,7 @@ func newChatWorld(t *testing.T, serving bool) *chatWorld {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &chatWorld{t: t, ctx: ctx, db: testutil.Open(t, testutil.DBPath(t))}
 	w.serve = app.New(w.db, w, "cloud", tools.NewRegistry(&approvalTool{}), time.Now)
-	if _, err := w.serve.Chat.FrontDesk(ctx); err != nil {
+	if _, err := w.serve.Chat.ChatAssignment(ctx); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
@@ -130,7 +130,7 @@ func (w *chatWorld) pendingApproval() {
 	}
 	w.setReply(func(req model.Request) model.Message {
 		if strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
-			return model.Message{Content: "front desk"}
+			return model.Message{Content: "chat"}
 		}
 		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {
 			return model.Message{Content: "done"}
@@ -160,7 +160,7 @@ func (w *chatWorld) pendingApproval() {
 func TestOneShotPrintsTheReply(t *testing.T) {
 	w := newChatWorld(t, true)
 	out, err := w.chat("", "hello")
-	if code(err) != 0 || !strings.Contains(out, "hello from the front desk") {
+	if code(err) != 0 || !strings.Contains(out, "hello from the chat") {
 		t.Fatalf("exit %d, output %q", code(err), out)
 	}
 }
@@ -347,7 +347,7 @@ func TestInteractiveSessionAnswersAndApprovesFromACard(t *testing.T) {
 	w.pendingApproval()
 	out := w.session(say("a"), say("hello"))
 	for _, want := range []string{"1 waiting on you", "While you were away (1)", "[1] APPROVAL", "(a)pprove",
-		"Approved [1]", "front desk", "Your projects keep running"} {
+		"Approved [1]", "chat", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("session output lacks %q:\n%s", want, out)
 		}
@@ -403,7 +403,7 @@ func TestAnIdleStandardInputIsNotWaitedFor(t *testing.T) {
 	go func() { done <- runChat(w.ctx, w.db, []string{"hello"}, idle, &out, false, false, 80) }()
 	select {
 	case err := <-done:
-		if err != nil || !strings.Contains(out.String(), "hello from the front desk") {
+		if err != nil || !strings.Contains(out.String(), "hello from the chat") {
 			t.Fatalf("err %v, output %q", err, out.String())
 		}
 	case <-time.After(10 * time.Second):

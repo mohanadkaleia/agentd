@@ -6,7 +6,7 @@ Everything agentd can do, one feature per section. Start with the [README](../RE
 
 Talking to agentd is the main way to use it: in the terminal (`agentd chat`), in the web app, or
 from a Telegram bot on your phone. See [chat.md](chat.md) for the commands, the cards, what agentd
-can and cannot do from chat, the front desk and its budget, the terminal client's flags, exit codes
+can and cannot do from chat, the chat's budget, the terminal client's flags, exit codes
 and JSON output, and phone setup.
 
 - **Cards** bring everything that needs you into the conversation: approvals, proposals,

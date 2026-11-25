@@ -226,7 +226,7 @@ func TestReplyToAQuestionCardAnswersIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	q, _ := ask.Get(w.ctx, w.app.DB, card.RefID)
-	if q.Status != ask.Answered || q.Answer != "XY123" || w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.desk) != 0 {
+	if q.Status != ask.Answered || q.Answer != "XY123" || w.count(`SELECT COUNT(*) FROM tasks WHERE assignment_id = ?`, w.chatAsg) != 0 {
 		t.Fatalf("question = %+v", q)
 	}
 }

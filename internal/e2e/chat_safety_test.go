@@ -63,7 +63,7 @@ func TestInjectedMailCanAtMostProduceACard(t *testing.T) {
 		}
 		return chattest.Call("r", "read_mail", map[string]string{})
 	}
-	// A front desk that does whatever it reads, the worst case.
+	// A chat that does whatever it reads, the worst case.
 	w.Agent.Turn = func(owner string, req model.Request) model.Message {
 		result, after := chattest.LastTool(req)
 		switch {

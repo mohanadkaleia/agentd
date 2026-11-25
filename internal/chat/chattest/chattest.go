@@ -1,4 +1,4 @@
-// Package chattest runs conversations with agentd in tests: a scripted model whose front desk
+// Package chattest runs conversations with agentd in tests: a scripted model whose chat
 // turns read as a dialogue keyed by the owner's words, a fake clock, and helpers to send
 // messages, run turns and work, read cards and simulate a restart.
 package chattest
@@ -18,7 +18,7 @@ import (
 	"agentd/internal/tools"
 )
 
-// Agent is a scripted model. Front desk turns go to Turn with the owner's latest message;
+// Agent is a scripted model. Chat turns go to Turn with the owner's latest message;
 // every other task goes to Work. Cost is charged per call, in micro-dollars.
 type Agent struct {
 	mu    sync.Mutex
@@ -33,19 +33,19 @@ func (a *Agent) Complete(_ context.Context, req model.Request) (model.Response, 
 	if a.calls == nil {
 		a.calls = map[string]int{}
 	}
-	desk := FrontDesk(req)
+	chatTurn := IsChatTurn(req)
 	key := "work"
-	if desk {
-		key = "front desk"
+	if chatTurn {
+		key = "chat"
 	}
 	a.calls[key]++
 	turn, work, cost := a.Turn, a.Work, a.Cost
 	a.mu.Unlock()
 	msg := model.Message{Content: "ok"}
 	switch {
-	case desk && turn != nil:
+	case chatTurn && turn != nil:
 		msg = turn(OwnerSaid(req), req)
-	case !desk && work != nil:
+	case !chatTurn && work != nil:
 		msg = work(req)
 	}
 	stop := model.StopEnd
@@ -55,15 +55,15 @@ func (a *Agent) Complete(_ context.Context, req model.Request) (model.Response, 
 	return model.Response{Message: msg, StopReason: stop, Usage: model.Usage{CostMicros: cost}}, nil
 }
 
-// Calls counts model calls, for the front desk ("front desk") or other work ("work").
+// Calls counts model calls, for the chat ("chat") or other work ("work").
 func (a *Agent) Calls(kind string) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.calls[kind]
 }
 
-// FrontDesk reports whether a request is a conversation turn.
-func FrontDesk(req model.Request) bool {
+// IsChatTurn reports whether a request is a conversation turn.
+func IsChatTurn(req model.Request) bool {
 	return len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent")
 }
 
@@ -124,7 +124,7 @@ func (w *World) Start() {
 	}
 	w.App = app.New(db, w.Agent, "cloud", registry, w.Clock.Now)
 	var err error
-	if _, err = w.App.Chat.FrontDesk(w.Ctx); err != nil {
+	if _, err = w.App.Chat.ChatAssignment(w.Ctx); err != nil {
 		w.T.Fatal(err)
 	}
 	if w.Conv, err = w.App.Chat.Default(w.Ctx); err != nil {

@@ -30,15 +30,15 @@ const (
 	actionBytes     = 4 << 10
 )
 
-// Reads are the front desk's read-only view over agentd's records. They see every
-// assignment, so they run only for the front desk (tools.Restricted).
+// Reads are the chat's read-only view over agentd's records. They see every
+// assignment, so they run only for the chat (tools.Restricted).
 type Reads struct {
 	DB      *sql.DB
 	Runtime *runtime.Runtime
 	Now     func() time.Time
 }
 
-// ReadTools lists the read tool names, which the front desk's default policy allows.
+// ReadTools lists the read tool names, which the chat's default policy allows.
 var ReadTools = []string{"list_assignments", "get_assignment", "get_task", "list_waiting_on_owner",
 	"recent_activity", "get_usage", "list_tools"}
 
@@ -83,7 +83,7 @@ func (t *readTool) Definition() model.ToolDefinition         { return t.def }
 func (t *readTool) Effect() tools.Effect                     { return tools.EffectRead }
 func (t *readTool) Resource(json.RawMessage) (string, error) { return "", nil }
 func (t *readTool) NoResource() bool                         { return true }
-func (t *readTool) OnlyFor() string                          { return FrontDeskKey }
+func (t *readTool) OnlyFor() string                          { return ChatKey }
 func (t *readTool) Reconcile(context.Context, tools.Invocation) (tools.Result, tools.Finding, error) {
 	return tools.Result{}, tools.Unknown, nil
 }
@@ -181,7 +181,7 @@ func (r *Reads) listAssignments(ctx context.Context, v view, raw json.RawMessage
 	return page(items, args.Offset, "assignments"), nil
 }
 
-func (r *Reads) frontDeskOrMissing(a assignments.Assignment, err error) error {
+func (r *Reads) chatOrMissing(a assignments.Assignment, err error) error {
 	if errors.Is(err, assignments.ErrNotFound) || (err == nil && a.Builtin != "") {
 		return fmt.Errorf("%w: no project or responsibility with that id", errNotFound)
 	}
@@ -196,7 +196,7 @@ func (r *Reads) getAssignment(ctx context.Context, v view, raw json.RawMessage) 
 		return nil, err
 	}
 	a, err := r.Runtime.Assignments.Get(ctx, args.ID)
-	if err := r.frontDeskOrMissing(a, err); err != nil {
+	if err := r.chatOrMissing(a, err); err != nil {
 		return nil, err
 	}
 	if withheld(a, v) {

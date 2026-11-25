@@ -32,7 +32,7 @@ func (s *Service) summary(ctx context.Context, conv string) (string, error) {
 
 // maybeSummarize queues a summary task once enough messages have scrolled out of the
 // model's window. The model's view is windowed; the conversation itself is never trimmed.
-func (s *Service) maybeSummarize(ctx context.Context, tx *sql.Tx, desk, conv string) error {
+func (s *Service) maybeSummarize(ctx context.Context, tx *sql.Tx, chatAsg, conv string) error {
 	limit, _ := s.windowSize()
 	batch := s.SummarizeBatch
 	if batch <= 0 {
@@ -49,7 +49,7 @@ func (s *Service) maybeSummarize(ctx context.Context, tx *sql.Tx, desk, conv str
 	if pending.Valid || target-through < int64(batch) {
 		return nil
 	}
-	id, err := s.Tasks.CreateTx(ctx, tx, tasks.NewTask{AssignmentID: desk,
+	id, err := s.Tasks.CreateTx(ctx, tx, tasks.NewTask{AssignmentID: chatAsg,
 		OriginKey: fmt.Sprintf("chat-summary:%s:%d", conv, target), Title: "Summarise conversation",
 		Objective: "Update the conversation summary.", AllowedTools: []string{}, MaxSteps: 2})
 	if err != nil {

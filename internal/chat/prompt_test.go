@@ -16,8 +16,8 @@ func TestIdentityFileReplacesOnlyTheIdentity(t *testing.T) {
 	if !strings.HasPrefix(got, "You are agentd, the owner's personal agent") || !strings.Contains(got, safety) {
 		t.Fatalf("default prompt:\n%s", got)
 	}
-	if strings.Contains(got, "You are agentd's front desk") {
-		t.Fatal("the default prompt still calls agentd a front desk")
+	if strings.Contains(strings.ToLower(got), "front desk") {
+		t.Fatal("the prompt still mentions the old name, the front desk")
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, IdentityFile), []byte("You are Jarvis. Be witty.\n"), 0o600); err != nil {

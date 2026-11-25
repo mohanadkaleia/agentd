@@ -124,10 +124,10 @@ func TestNewChatAnswersAndApprovesFromACard(t *testing.T) {
 	s.say("a")
 	s.waitFor("Approved [1]")
 	s.say("hello")
-	s.waitFor("front desk")
+	s.waitFor("chat")
 	s.waitFor("◦ Approval 1 · approved")
 	out := s.leave()
-	for _, want := range []string{"agentd", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
+	for _, want := range []string{"agentd", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● chat", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -146,7 +146,7 @@ func TestNewChatNeverApprovesFromALetterInsideAMessage(t *testing.T) {
 	s := w.tui()
 	s.waitFor("Approval 1")
 	s.say("a quick question")
-	s.waitFor("front desk")
+	s.waitFor("chat")
 	s.say("a")
 	s.say("approve it a")
 	s.leave()

@@ -131,7 +131,7 @@ func TestInjectedTextInATranscriptStaysData(t *testing.T) {
 	if !strings.Contains(full, "attacker@") || !strings.Contains(full, "untrusted data") {
 		t.Fatalf("action result = %s, want the text wrapped as untrusted data", full)
 	}
-	if n := w.count(`SELECT COUNT(*) FROM actions WHERE assignment_id = ? AND tool_name NOT IN ('get_task')`, w.desk); n != 0 {
+	if n := w.count(`SELECT COUNT(*) FROM actions WHERE assignment_id = ? AND tool_name NOT IN ('get_task')`, w.chatAsg); n != 0 {
 		t.Fatalf("the turn made %d other calls after reading injected text", n)
 	}
 }

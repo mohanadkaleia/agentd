@@ -61,7 +61,7 @@ func (s *Service) cmdTell(ctx context.Context, c call) (string, error) {
 	return "Sent to " + task + ". " + when, nil
 }
 
-// Forward is the front desk's way to pass the owner's own words to a task or a question.
+// Forward is the chat's way to pass the owner's own words to a task or a question.
 // The model picks only the target: the text is copied by code from the owner's message.
 type Forward struct{ s *Service }
 
@@ -83,7 +83,7 @@ func (f *Forward) Definition() model.ToolDefinition {
 }
 
 func (f *Forward) Effect() tools.Effect { return tools.EffectWrite }
-func (f *Forward) OnlyFor() string      { return FrontDeskKey }
+func (f *Forward) OnlyFor() string      { return ChatKey }
 func (f *Forward) NoResource() bool     { return true }
 
 func (f *Forward) Resource(raw json.RawMessage) (string, error) {

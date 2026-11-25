@@ -17,11 +17,11 @@ import (
 	"agentd/internal/tasks"
 )
 
-// Opening builds what the model sees at the start of a turn: the front desk prompt, a
+// Opening builds what the model sees at the start of a turn: the chat prompt, a
 // situation block built from agentd's records, the summary of older conversation, and the
 // most recent messages. It implements runtime.Opener.
 func (s *Service) Opening(ctx context.Context, t tasks.Task, a assignments.Assignment, local bool) ([]model.Message, bool, error) {
-	if a.Builtin != FrontDeskKey {
+	if a.Builtin != ChatKey {
 		return nil, false, nil
 	}
 	var conv string
@@ -331,7 +331,7 @@ func explain(r tasks.Released) string {
 	case strings.HasPrefix(cause, "model"):
 		return "I could not reach the model (" + strings.TrimPrefix(cause, "model: ") + "). " + retry
 	case strings.Contains(cause, "model policy"):
-		return "No configured model is allowed for this conversation by the front desk's model policy. Change it with agentd policy."
+		return "No configured model is allowed for this conversation by the chat's model policy. Change it with agentd policy."
 	case cause == "":
 		return "This turn stopped without a reply. " + retry
 	}
@@ -339,8 +339,8 @@ func explain(r tasks.Released) string {
 }
 
 // explainWait adds one notice when the conversation cannot be answered right now: the
-// emergency stop is set, or the front desk is paused (by the owner or by its budget).
-func (s *Service) explainWait(ctx context.Context, tx *sql.Tx, desk, conv string) error {
+// emergency stop is set, or the chat is paused (by the owner or by its budget).
+func (s *Service) explainWait(ctx context.Context, tx *sql.Tx, chatAsg, conv string) error {
 	var reason sql.NullString
 	var since int64
 	err := tx.QueryRowContext(ctx, `SELECT value, updated_at FROM system_state WHERE key = 'halted'`).Scan(&reason, &since)
@@ -352,7 +352,7 @@ func (s *Service) explainWait(ctx context.Context, tx *sql.Tx, desk, conv string
 			"Replies are paused: the emergency stop is on (%s). Your messages are saved and will be answered after: agentd unhalt", reason.String))
 	}
 	var status, pausedBy, statusReason sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT status, paused_by, status_reason FROM assignments WHERE id = ?`, desk).
+	if err := tx.QueryRowContext(ctx, `SELECT status, paused_by, status_reason FROM assignments WHERE id = ?`, chatAsg).
 		Scan(&status, &pausedBy, &statusReason); err != nil {
 		return err
 	}
@@ -361,14 +361,14 @@ func (s *Service) explainWait(ctx context.Context, tx *sql.Tx, desk, conv string
 	}
 	var pausedAt int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM audit_log WHERE assignment_id = ? AND operation LIKE '%.paused'`,
-		desk).Scan(&pausedAt); err != nil {
+		chatAsg).Scan(&pausedAt); err != nil {
 		return err
 	}
-	text := "Replies are paused because the front desk is paused. Your messages are saved. Resume with: agentd resume " + desk
+	text := "Replies are paused because the chat is paused. Your messages are saved. Resume with: agentd resume " + chatAsg
 	if pausedBy.String == assignments.PausedByBudget {
 		text = fmt.Sprintf("Replies are paused: the chat budget is used up (%s). Your messages are saved. "+
-			"Raise the front desk's limits.max_llm_spend_usd with: agentd policy %s <policy.json>. Slash commands keep working.",
-			statusReason.String, desk)
+			"Raise the chat's limits.max_llm_spend_usd with: agentd policy %s <policy.json>. Slash commands keep working.",
+			statusReason.String, chatAsg)
 	}
 	return s.notice(ctx, tx, conv, fmt.Sprintf("paused:%d", pausedAt), text)
 }
@@ -403,7 +403,7 @@ func (s *Service) Tick(ctx context.Context) error {
 	if len(open) == 0 {
 		return nil
 	}
-	desk, err := s.FrontDesk(ctx)
+	chatAsg, err := s.ChatAssignment(ctx)
 	if err != nil {
 		return err
 	}
@@ -412,7 +412,7 @@ func (s *Service) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := s.explainWait(ctx, tx, desk, conv); err != nil {
+		if err := s.explainWait(ctx, tx, chatAsg, conv); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -436,7 +436,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// recentProposals tells the front desk how the owner decided its recent drafts.
+// recentProposals tells the chat how the owner decided its recent drafts.
 func (s *Service) recentProposals(ctx context.Context) (string, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT a.tool_name, a.resource, ap.status FROM approvals ap
 		JOIN actions a ON a.id = ap.action_id JOIN assignments f ON f.id = a.assignment_id

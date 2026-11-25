@@ -27,7 +27,7 @@ func refundSpec() map[string]any {
 			"completion": map[string]any{"criteria": []any{map[string]any{"id": "refund", "description": "Refund received",
 				"event": map[string]any{"source": "bank", "kind": "transaction.posted"}}}},
 		},
-		"first_task": map[string]any{"title": "Ask the airline", "objective": "Email the airline's refund desk."},
+		"first_task": map[string]any{"title": "Ask the airline", "objective": "Email the airline's refund chatAsg."},
 	}
 }
 
@@ -117,13 +117,13 @@ func TestCrashAfterCreationIsReconciledToOneAssignment(t *testing.T) {
 
 func TestProposalsAlwaysNeedTheOwner(t *testing.T) {
 	w := newCardWorld(t)
-	allow := chat.FrontDeskPolicy()
+	allow := chat.ChatPolicy()
 	allow.Tools["propose_assignment"] = policy.Rule{Mode: policy.Allow}
-	if _, err := w.app.Assignments.SetPolicy(w.ctx, w.desk, allow, "owner"); !errors.Is(err, assignments.ErrInvalid) {
-		t.Fatalf("a front desk policy allowing propose_assignment = %v, want refused", err)
+	if _, err := w.app.Assignments.SetPolicy(w.ctx, w.chatAsg, allow, "owner"); !errors.Is(err, assignments.ErrInvalid) {
+		t.Fatalf("a chat policy allowing propose_assignment = %v, want refused", err)
 	}
 	body, _ := json.Marshal(allow)
-	w.app.DB.Exec(`UPDATE assignments SET policy_json = ? WHERE id = ?`, string(body), w.desk)
+	w.app.DB.Exec(`UPDATE assignments SET policy_json = ? WHERE id = ?`, string(body), w.chatAsg)
 	w.propose("refund please", "propose_assignment", refundSpec())
 	if status, _ := w.action("propose_assignment"); status != "pending_approval" || w.assignments() != 0 {
 		t.Fatalf("hand-edited allow: action %s, %d assignments", status, w.assignments())
@@ -140,7 +140,7 @@ func TestBadDraftsFailBeforeTheOwnerIsAsked(t *testing.T) {
 		},
 		"no budget":   func(s map[string]any) { s["policy"].(map[string]any)["limits"] = map[string]any{} },
 		"no criteria": func(s map[string]any) { delete(s, "completion") },
-		"front desk tool": func(s map[string]any) {
+		"chat tool": func(s map[string]any) {
 			s["policy"].(map[string]any)["tools"].(map[string]any)["list_assignments"] = map[string]any{"mode": "allow"}
 		},
 	} {
