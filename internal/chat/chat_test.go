@@ -432,7 +432,7 @@ func TestTurnIsClaimedQuicklyWhileOrdinaryWorkersAreBusy(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	p := &provider{reply: func(req model.Request) (model.Message, error) {
-		if !strings.HasPrefix(req.Messages[0].Content, "You are agentd's front desk") {
+		if !strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
 			<-release
 		}
 		return model.Message{Content: "ok"}, nil

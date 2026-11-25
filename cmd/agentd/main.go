@@ -263,6 +263,7 @@ func run() error {
 		return err
 	}
 	a := app.New(db, provider, *modelSpec, registry, time.Now)
+	a.Chat.PromptDir = filepath.Dir(*dbPath)
 	if err := configureModels(a, entries, tiers, *effort); err != nil {
 		return err
 	}

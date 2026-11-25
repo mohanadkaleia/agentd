@@ -50,6 +50,8 @@ type Service struct {
 	Assignments *assignments.Store
 	Runtime     *runtime.Runtime
 	Now         func() time.Time
+	// PromptDir holds the owner's identity.md, which replaces the default identity; empty uses the default.
+	PromptDir string
 	// Wake tells the interactive worker in this process that a turn is ready.
 	Wake func()
 	// Edit applies an owner-edited version of a pending proposal (approval id, new arguments).

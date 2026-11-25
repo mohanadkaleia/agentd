@@ -64,7 +64,7 @@ func (a *Agent) Calls(kind string) int {
 
 // FrontDesk reports whether a request is a conversation turn.
 func FrontDesk(req model.Request) bool {
-	return len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "You are agentd's front desk")
+	return len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent")
 }
 
 // OwnerSaid returns the owner's latest words in a turn's request.

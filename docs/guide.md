@@ -17,6 +17,11 @@ and JSON output, and phone setup.
 - **Questions**: a job whose policy allows `ask_owner` can ask you something and wait, using no
   model calls while it waits. Answer on the card, with `/answer <n> <text>`, or with
   `agentd answer <question-id> "text"`.
+- **Personality**: who agentd says it is and how it talks comes from
+  [`internal/chat/prompts/identity.md`](../internal/chat/prompts/identity.md). To change it, put
+  your own `identity.md` next to the database (`~/.local/share/agentd/identity.md` by default).
+  It applies from the next reply, with no rebuild or restart. The safety rules in
+  [`prompts/rules.md`](../internal/chat/prompts/rules.md) are always sent and cannot be replaced.
 
 ## Choosing a model
 

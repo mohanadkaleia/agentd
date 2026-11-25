@@ -66,7 +66,7 @@ func (w *world) pendingSend(to string) (project, task string) {
 		w.t.Fatal(err)
 	}
 	w.model.reply = func(req model.Request) (model.Message, error) {
-		if strings.HasPrefix(req.Messages[0].Content, "You are agentd's front desk") {
+		if strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
 			return model.Message{Content: "front desk reply"}, nil
 		}
 		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {

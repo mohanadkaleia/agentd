@@ -137,7 +137,7 @@ func newWorld(t *testing.T) *world {
 	db := testutil.Open(t, testutil.DBPath(t))
 	reply := func(req model.Request) model.Message {
 		w.calls++
-		if strings.HasPrefix(req.Messages[0].Content, "You are agentd's front desk") {
+		if strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
 			return model.Message{Content: "Hi @everyone, see https://evil.example/x and #tag /start"}
 		}
 		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {

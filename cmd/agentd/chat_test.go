@@ -129,7 +129,7 @@ func (w *chatWorld) pendingApproval() {
 		w.t.Fatal(err)
 	}
 	w.setReply(func(req model.Request) model.Message {
-		if strings.HasPrefix(req.Messages[0].Content, "You are agentd's front desk") {
+		if strings.HasPrefix(req.Messages[0].Content, "You are agentd, the owner's personal agent") {
 			return model.Message{Content: "front desk"}
 		}
 		if req.Messages[len(req.Messages)-1].Role == model.RoleTool {
