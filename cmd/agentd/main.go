@@ -37,7 +37,10 @@ import (
 	"agentd/internal/tools"
 )
 
-const usage = `Talk to agentd: agentd chat
+const usage = `Talk to agentd: agentd
+
+Run alone in a terminal, agentd opens the chat and starts its server in the background
+when none is running.
 
 usage: agentd [-db path] [-model spec | -models a=spec,b=spec] [-tier fast=a] [-fallback-models specs] [-effort level] <command> [args]
 
@@ -122,7 +125,7 @@ func run() error {
 	syscall.Umask(0o077)
 	global := flag.NewFlagSet("agentd", flag.ContinueOnError)
 	global.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	dbPath := global.String("db", envOr("AGENTD_DB", "agentd.db"), "SQLite database path")
+	dbPath := global.String("db", defaultDB(), "SQLite database path (default: agentd.db here if it exists, else the one in your home directory)")
 	modelSpec := global.String("model", envOr("AGENTD_MODEL", ""), "model provider and id, needed by serve")
 	effort := global.String("effort", "high", "reasoning effort for Anthropic models")
 	fallbackSpecs := global.String("fallback-models", envOr("AGENTD_FALLBACK_MODELS", ""), "comma-separated models to try when the main one fails before a run's first reply")
@@ -156,7 +159,9 @@ func run() error {
 	if exe, err := os.Executable(); err == nil {
 		flags := os.Args[1 : len(os.Args)-len(global.Args())]
 		serveCommand = append(append([]string{exe}, flags...), "serve")
+		serveHasModel = *modelSpec != ""
 	}
+	chatDBPath = *dbPath
 
 	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	if args[0] == "chat" {
@@ -192,7 +197,7 @@ func run() error {
 	cmd := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	workers := cmd.Int("workers", 3, "concurrent workers")
 	listen := cmd.String("listen", "", "HTTP API address, e.g. 127.0.0.1:7777 (off when empty)")
-	tokenFile := cmd.String("token-file", "api-token", "file holding the API bearer token; created on first use")
+	tokenFile := cmd.String("token-file", filepath.Join(filepath.Dir(*dbPath), "api-token"), "file holding the API bearer token; created on first use")
 	gmailPoll := cmd.Duration("gmail-poll", time.Minute, "how often to check Gmail for new mail (0 disables)")
 	holdings := cmd.String("holdings", envOr("AGENTD_HOLDINGS", ""), "JSON holdings snapshot that portfolio_positions reads (off when empty)")
 	mcpConfig := cmd.String("mcp-config", envOr("AGENTD_MCP_CONFIG", ""), "JSON file listing MCP servers whose tools to register (off when empty)")
@@ -293,6 +298,10 @@ func run() error {
 		tokenPath := ""
 		if *listen != "" && os.Getenv("AGENTD_API_TOKEN") == "" {
 			tokenPath, _ = filepath.Abs(*tokenFile)
+		}
+		dir, _ := os.Getwd()
+		if err := system.Launched(ctx, db, system.Launch{Args: os.Args[1:], Dir: dir}, time.Now()); err != nil {
+			log.Error("recording how serve was started", "err", err)
 		}
 		go beat(ctx, db, system.Liveness{Listen: *listen, TokenFile: tokenPath, MCPConfig: *mcpConfig, Models: models, Tiers: tierMap}, log)
 		// A changed MCP config is loaded by starting again in place: tools are registered
@@ -563,6 +572,31 @@ func newProvider(spec, effort string) (model.Provider, error) {
 		return ollama.New(ollama.Config{Model: id, BaseURL: os.Getenv("OLLAMA_HOST")}), nil
 	}
 	return nil, fmt.Errorf("unknown model provider %q", name)
+}
+
+// defaultDB is the database agentd uses when none is named: agentd.db in this directory
+// when there is one, as before, and otherwise one in the home directory, so that agentd
+// run from anywhere opens the same conversation.
+func defaultDB() string {
+	if v := os.Getenv("AGENTD_DB"); v != "" {
+		return v
+	}
+	if _, err := os.Stat("agentd.db"); err == nil {
+		return "agentd.db"
+	}
+	dir := os.Getenv("XDG_DATA_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "agentd.db"
+		}
+		dir = filepath.Join(home, ".local", "share")
+	}
+	dir = filepath.Join(dir, "agentd")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "agentd.db"
+	}
+	return filepath.Join(dir, "agentd.db")
 }
 
 func envOr(key, fallback string) string {

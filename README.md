@@ -33,19 +33,24 @@ and a model. Pick the model by your laptop:
 
    For Claude: `export ANTHROPIC_API_KEY=...` in the terminal you use for step 3.
 
-3. Start agentd, and leave this terminal open:
+3. Run it:
 
    ```bash
-   ./bin/agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777
-   # or: ./bin/agentd -model anthropic serve -listen 127.0.0.1:7777
+   ./bin/agentd
    ```
 
-4. Check it, in a second terminal in the same folder:
+   That is the whole start. agentd opens the chat, asks once which model to use (it lists
+   what Ollama has pulled, and Claude when a key is set), and starts its own server in the
+   background. Later runs start the server the same way without asking. Leaving the chat
+   stops nothing; your jobs keep running.
 
-   ```bash
-   ./bin/agentd chat "/help"          # lists commands; works even without a model
-   ./bin/agentd chat "say hi"         # one reply from the model
-   ```
+   To type `agentd` from any folder, put it on your `PATH`, for example
+   `ln -s "$PWD/bin/agentd" ~/.local/bin/agentd`. Away from a folder that holds an
+   `agentd.db`, agentd keeps its data in `~/.local/share/agentd/`.
+
+   To run the server yourself instead (a second machine, a service, other flags):
+   `./bin/agentd -model ollama/qwen2.5:7b serve -listen 127.0.0.1:7777`. The chat never
+   starts a second server next to one that is running.
 
 **If something is off**
 
@@ -62,19 +67,17 @@ See [Choosing a model](docs/guide.md#choosing-a-model).
 
 ## Talk to it
 
-In a second terminal, in the same folder:
-
 ```bash
-./bin/agentd chat
+./bin/agentd
 ```
 
 Say what you want, for example *"Every morning, read https://go.dev/blog and tell me if there is a
 new post."* agentd drafts the job and shows it as a **proposal**: what it may do without asking,
 what needs your approval, its budget, and when it runs. Nothing happens until you approve it:
-type `a` (or `/approve 1`). Then ask *"how is it going?"* whenever you like.
+press **Enter** on *Yes, approve* (or type `/approve 1`). Then ask *"how is it going?"* whenever you like.
 
 The same conversation is in the web app: open http://127.0.0.1:7777 and paste the token that
-`cat api-token` prints (the file is in the agentd folder). Type `/help` for commands that always
+`cat api-token` prints (the file sits next to `agentd.db`). Type `/help` for commands that always
 work, even without a model.
 
 Drafting a job needs a capable model. In our tests `qwen3.5:27b` drafted, corrected and confirmed a
@@ -92,7 +95,8 @@ summarizes the newest post:
 ./bin/agentd create docs/examples/first-job.md
 ```
 
-Everything lives in `agentd.db` in the current folder; delete it to start over.
+Everything lives in one file: `agentd.db` in the current folder when there is one, else
+`~/.local/share/agentd/agentd.db`. The chat's first box shows which; delete it to start over.
 
 ## Run it as a background service (macOS)
 

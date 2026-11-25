@@ -371,8 +371,8 @@ func TestALetterNeverApprovesUnlessTheCardIsTheLastThingShown(t *testing.T) {
 }
 
 func TestUsageListsChat(t *testing.T) {
-	if !strings.HasPrefix(usage, "Talk to agentd: agentd chat") || !strings.Contains(usage, "-no-wait") {
-		t.Fatal("usage does not lead with agentd chat")
+	if !strings.HasPrefix(usage, "Talk to agentd: agentd\n") || !strings.Contains(usage, "-no-wait") {
+		t.Fatal("usage does not lead with the chat")
 	}
 }
 

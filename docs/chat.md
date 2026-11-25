@@ -54,24 +54,34 @@ email or a web page and expect it to be treated as data.
 
 ## In the interactive session
 
-- On start: one line of status, then what arrived since you were last here, decisions first.
-  `agentd` with no command opens this session too.
-- The input box stays at the bottom. **Enter** sends. **Ctrl-J**, **Alt-Enter** or a line ending
-  in `\` adds a line; pasted text keeps its lines. **Up** and **Down** recall earlier input.
+- `agentd` with no command opens this session. On start it shows a box with your jobs, the
+  model and where the data is kept, then what arrived since you were last here, decisions first.
+- When no server is running, the chat starts one in the background: with the model flags you
+  gave, else the way `agentd serve` last ran, else it asks you once to pick from the models it
+  finds (Ollama's pulled models, and Claude when a key is set). It adds
+  `-listen 127.0.0.1:7777` when that address is free. The log is
+  `~/.local/state/agentd/serve.log`; if the server does not come up, the chat shows the log's
+  last line. **Ctrl-S** tries again.
+- The input line sits between two rules at the bottom. **Enter** sends. **Ctrl-J**, **Alt-Enter**
+  or a line ending in `\` adds a line; pasted text keeps its lines. **Up** and **Down** recall
+  earlier input. **?** at an empty line lists the keys. **Ctrl-L** clears the screen.
 - Type `/` to see every command with what it does; **Tab** or **Enter** completes the one selected.
-- The line under the box always shows the model, how many items wait on you, the emergency stop
-  when it is on, and whether a server is running. With no server, **Ctrl-S** starts `agentd serve`
-  in the background with the flags this chat was started with; its log is
-  `~/.local/state/agentd/serve.log`.
+- The line under the input shows the model, how many items wait on you, the emergency stop when
+  it is on, and whether a server is running.
 - Replies are written to the screen as the model produces them when the server has `-listen` set
   (the chat reads the API token file the server uses); otherwise each reply appears when complete.
-- **Esc** or **Ctrl-C** while agentd is working stops that turn. **Ctrl-C** twice, or **Ctrl-D**,
-  at an empty box leaves. Leaving stops nothing: your projects keep running.
-- An open approval, proposal or question is a box. When it is the last thing shown, **Tab** gives
-  it the focus and then one key decides: `a` approve, `r` reject, `d` details, `e` edit, or a
-  number for a question's choice. **Esc** gives the focus back. Without the focus a letter is only
-  a decision when it is the whole message, so a sentence can never approve anything. Otherwise use
-  `/approve <n>` or `/reject <n>`. A decided card is repeated as one line with its outcome.
+- **Esc** or **Ctrl-C** while agentd is working interrupts that turn. **Esc** twice clears what
+  you typed. **Ctrl-C** twice, or **Ctrl-D**, at an empty line leaves. Leaving stops nothing:
+  your jobs keep running.
+- An open approval, proposal or question is printed as a box, and a short list of choices takes
+  the input's place: *Yes, approve*, *No, reject*, *Show the details* (plus *Edit it first* for a
+  proposal, or the choices of a question). **Up**, **Down** or a number moves the highlight and
+  **Enter** takes it; a number alone decides nothing. The list opens by itself only when you are
+  not typing, and ignores Enter for its first half second. Typing any text puts the list aside
+  and goes to the input, so a sentence can never approve anything; **Esc** does the same, and
+  **Tab** at an empty line brings the list back. The earlier ways still work: a single letter
+  (`a`, `r`, `d`, `e`) sent as the whole message right after the card, or `/approve <n>` and
+  `/reject <n>`. A decided card is repeated as one line with its outcome.
 - `agentd chat -ui classic` is the earlier plain line prompt; it is also used when `TERM=dumb`.
 - Ask for new work in plain words ("get me a refund for flight LH123"). agentd drafts it and shows a
   proposal card: what it may do without asking, what needs your approval, its budget, and when it is

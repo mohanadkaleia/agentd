@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -50,6 +52,7 @@ func (w *chatWorld) tui() *tuiSession {
 		w.t.Fatal(err)
 	}
 	s := &tuiSession{t: w.t, ui: newTUI(w.ctx, c, false), done: make(chan error, 1)}
+	s.ui.guard = 0
 	s.ui.printed = func(block string) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -88,6 +91,17 @@ func (s *tuiSession) waitFor(want string) {
 	}
 }
 
+func (s *tuiSession) waitForView(want string) {
+	s.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(s.view(), want) {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("the chat never drew %q:\n%s", want, s.view())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func (s *tuiSession) leave() string {
 	s.t.Helper()
 	s.p.Send(tea.KeyMsg{Type: tea.KeyCtrlD})
@@ -113,7 +127,7 @@ func TestNewChatAnswersAndApprovesFromACard(t *testing.T) {
 	s.waitFor("front desk")
 	s.waitFor("◦ Approval 1 · approved")
 	out := s.leave()
-	for _, want := range []string{"Baseet", "While you were away (1)", "a approve", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
+	for _, want := range []string{"Baseet", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -157,6 +171,7 @@ func tuiFor(t *testing.T, width int) *tui {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	ui := newTUI(t.Context(), &chatClient{width: width}, false)
 	ui.status.alive = true
+	ui.guard = 0
 	return ui
 }
 
@@ -193,7 +208,14 @@ func TestNewChatFitsANarrowTerminal(t *testing.T) {
 		ui.render(cardMessage(chat.KindProposal, "pending", chat.Card{N: 3, Title: long, Text: long, Assignment: "airline-refund"})),
 		ui.render(cardMessage(chat.KindApproval, "approved", chat.Card{N: 4, Title: long})),
 		ui.View(),
+		ui.welcome(tuiStatus{jobs: 2, waiting: 1, model: strings.Repeat("model", 20)}),
 	}
+	ui.in.SetValue("")
+	blocks = append(blocks, ui.View())
+	ui.help = true
+	blocks = append(blocks, ui.View())
+	ui.dialog = ui.cardDialog(cardMessage(chat.KindProposal, "pending", chat.Card{N: 3, Title: long}))
+	blocks = append(blocks, ui.View())
 	for _, block := range blocks {
 		for _, line := range strings.Split(block, "\n") {
 			if lipgloss.Width(line) > 60 {
@@ -203,6 +225,9 @@ func TestNewChatFitsANarrowTerminal(t *testing.T) {
 	}
 	if !strings.Contains(blocks[1], "╭") || !strings.Contains(blocks[1], "e edit") {
 		t.Fatalf("an open proposal is not a box with its keys:\n%s", blocks[1])
+	}
+	if dialog := blocks[len(blocks)-1]; !strings.Contains(dialog, "❯ 1. Yes, approve") || !strings.Contains(dialog, "2. Edit it first") {
+		t.Fatalf("the proposal dialog lacks its choices:\n%s", dialog)
 	}
 	if strings.Contains(blocks[2], "\n") || !strings.Contains(blocks[2], "approved") {
 		t.Fatalf("a decided card is not one line:\n%s", blocks[2])
@@ -237,21 +262,92 @@ func TestNewChatRendersMarkdown(t *testing.T) {
 	}
 }
 
-func TestNewChatDecidesAFocusedCardWithOneKey(t *testing.T) {
+func TestNewChatDecidesFromTheDialog(t *testing.T) {
 	w := newChatWorld(t, true)
 	w.pendingApproval()
 	s := w.tui()
-	s.waitFor("Approval 1")
+	s.waitForView("❯ 1. Yes, approve")
+	// Typing puts the dialog aside: the r goes to the composer and rejects nothing.
 	s.p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	s.waitForView("> r")
 	s.p.Send(tea.KeyMsg{Type: tea.KeyBackspace})
+	s.waitForView("tab to decide Approval 1")
 	s.p.Send(tea.KeyMsg{Type: tea.KeyTab})
-	s.p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	s.waitForView("❯ 1. Yes, approve")
+	s.p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	s.waitForView("❯ 2. No, reject")
+	s.p.Send(tea.KeyMsg{Type: tea.KeyUp})
+	s.p.Send(tea.KeyMsg{Type: tea.KeyEnter})
 	s.waitFor("Approved [1]")
 	s.leave()
 	var status string
 	w.db.QueryRow(`SELECT status FROM approvals`).Scan(&status)
 	if status != "approved" {
-		t.Fatalf("approval = %s; a typed r must not reject, and tab then a must approve", status)
+		t.Fatalf("approval = %s; a typed r must not reject, and enter on Yes must approve", status)
+	}
+}
+
+func TestNewChatDialogIgnoresEnterJustAfterItOpens(t *testing.T) {
+	ui := tuiFor(t, 80)
+	ui.guard = time.Hour
+	card := cardMessage(chat.KindApproval, "pending", chat.Card{N: 1, Title: "Send the email"})
+	card.Seq = 7
+	ui.open[7] = card
+	ui.offer()
+	if ui.dialog == nil {
+		t.Fatal("a waiting card opened no dialog")
+	}
+	if _, cmd := ui.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil || ui.dialog == nil {
+		t.Fatal("enter decided a card in the moment its dialog opened")
+	}
+	ui.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	ui.offer()
+	if ui.dialog != nil {
+		t.Fatal("a dialog put aside with esc opened again by itself")
+	}
+	ui.in.SetValue("")
+	ui.dismissed = map[int64]bool{}
+	ui.in.SetValue("typing")
+	ui.offer()
+	if ui.dialog != nil {
+		t.Fatal("a dialog opened while the owner was typing")
+	}
+}
+
+func TestNewChatAsksForAModelOnce(t *testing.T) {
+	ui := tuiFor(t, 80)
+	ui.status.alive = false
+	var started []string
+	ui.startServer = func(_ context.Context, _ *sql.DB, model string) (string, error) {
+		if model == "" {
+			return "", errNoModel
+		}
+		started = append(started, model)
+		return "/tmp/serve.log", nil
+	}
+	ui.models = func(context.Context) []string { return []string{"anthropic", "ollama/qwen2.5:7b"} }
+	ui.c.app = &app.App{}
+	ui.Update(ui.start("")())
+	if view := ui.View(); !strings.Contains(view, "Which model") || !strings.Contains(view, "2. ollama/qwen2.5:7b") {
+		t.Fatalf("no model picker:\n%s", view)
+	}
+	ui.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := ui.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || ui.dialog != nil || !ui.starting {
+		t.Fatal("picking a model started nothing")
+	}
+	if ui.start("ollama/qwen2.5:7b") != nil {
+		t.Fatal("a second start ran while one was under way")
+	}
+	ui.starting = false
+	if ui.start("ollama/qwen2.5:7b")(); len(started) != 1 || started[0] != "ollama/qwen2.5:7b" {
+		t.Fatalf("started = %v", started)
+	}
+	var said strings.Builder
+	ui.printed = func(block string) { said.WriteString(block) }
+	ui.Update(tuiModels{})
+	if ui.dialog != nil || !strings.Contains(said.String(), "No model found") {
+		t.Fatalf("with no model available the chat did not say what to do: %q", said.String())
 	}
 }
 
@@ -312,8 +408,8 @@ func TestNewChatStreamsFromARunningServer(t *testing.T) {
 func TestNewChatStartsTheServerWhenAsked(t *testing.T) {
 	ui := tuiFor(t, 80)
 	ui.status.alive = false
-	started := 0
-	ui.startServer = func() (string, error) { started++; return "/tmp/serve.log", nil }
+	ui.c.app = &app.App{}
+	ui.startServer = func(context.Context, *sql.DB, string) (string, error) { return "/tmp/serve.log", nil }
 	if view := ui.View(); !strings.Contains(view, "ctrl+s to start it") {
 		t.Fatalf("status line:\n%s", view)
 	}
@@ -321,5 +417,22 @@ func TestNewChatStartsTheServerWhenAsked(t *testing.T) {
 	ui.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil || !strings.Contains(ui.View(), "starting the server") {
 		t.Fatalf("ctrl+s did not start the server:\n%s", ui.View())
+	}
+}
+
+func TestStartServerUsesTheLastLaunch(t *testing.T) {
+	w := newChatWorld(t, false)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	old, had := serveCommand, serveHasModel
+	t.Cleanup(func() { serveCommand, serveHasModel = old, had })
+	serveCommand, serveHasModel = []string{"/usr/bin/true", "serve"}, false
+	if _, err := startServer(w.ctx, w.db, ""); err != errNoModel {
+		t.Fatalf("with no model and no earlier launch: %v", err)
+	}
+	if err := system.Launched(w.ctx, w.db, system.Launch{Args: []string{"-model", "ollama/x", "serve"}, Dir: t.TempDir()}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if log, err := startServer(w.ctx, w.db, ""); err != nil || log == "" {
+		t.Fatalf("starting the way serve last ran: %q, %v", log, err)
 	}
 }

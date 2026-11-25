@@ -126,3 +126,41 @@ func Alive(ctx context.Context, db *sql.DB, now time.Time) (Liveness, bool, erro
 	}
 	return l, now.Sub(l.At) < StaleAfter, nil
 }
+
+const launchKey = "serve.launch"
+
+// Launch is how `agentd serve` was last started, so the chat can start it the same way.
+// It holds command-line arguments only; secrets are never passed as arguments.
+type Launch struct {
+	Args []string `json:"args"`
+	Dir  string   `json:"dir"`
+}
+
+// Launched records how serve was started. Unlike the liveness record it outlives serve.
+func Launched(ctx context.Context, db *sql.DB, l Launch, now time.Time) error {
+	body, err := json.Marshal(l)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+		launchKey, string(body), now.UnixMilli())
+	return err
+}
+
+// LastLaunch returns how serve was last started, if it ever was.
+func LastLaunch(ctx context.Context, db *sql.DB) (Launch, bool, error) {
+	var l Launch
+	var body string
+	err := db.QueryRowContext(ctx, `SELECT value FROM system_state WHERE key = ?`, launchKey).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, false, nil
+	}
+	if err != nil {
+		return l, false, err
+	}
+	if err := json.Unmarshal([]byte(body), &l); err != nil {
+		return l, false, err
+	}
+	return l, len(l.Args) > 0, nil
+}

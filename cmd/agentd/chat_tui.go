@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -36,7 +38,7 @@ import (
 // passes through sanitize before it reaches the terminal.
 
 const (
-	tuiMaxWidth    = 100
+	tuiMaxWidth    = 120
 	tuiMaxRows     = 8
 	tuiMenuRows    = 6
 	tuiIdlePoll    = 400 * time.Millisecond
@@ -44,14 +46,26 @@ const (
 	tuiStatusEvery = time.Second
 	tuiQuitWindow  = 2 * time.Second
 	tuiPartialRows = 12
-	tuiStartWait   = 8 * time.Second
+	tuiStartWait   = 15 * time.Second
+	// tuiGuard is how long a dialog that opened by itself ignores Enter, so that a key
+	// already on its way to the composer cannot decide anything.
+	tuiGuard  = 500 * time.Millisecond
+	tuiListen = "127.0.0.1:7777"
 )
 
 const tuiDownHint = "No server is running, so nothing will answer. Press ctrl+s to start one in the background."
 
 // serveCommand is this executable with the same global flags and the serve command; the
-// chat runs it when the owner asks it to start the server.
-var serveCommand []string
+// chat runs it to start the server. serveHasModel says whether those flags name a model.
+var (
+	serveCommand  []string
+	serveHasModel bool
+	// chatDBPath is the database in use, shown when the chat opens.
+	chatDBPath string
+)
+
+// errNoModel means no server can be started until the owner picks a model.
+var errNoModel = errors.New("no model is set")
 
 type tuiStatus struct {
 	jobs, waiting int
@@ -112,16 +126,25 @@ type tui struct {
 	partialTask string
 	deltas      chan chat.Delta
 	// open holds the cards still waiting for a decision, to notice when one is decided.
-	open  map[int64]chat.Message
-	focus bool
-	// startServer starts a background server and says where its log is.
-	startServer func() (string, error)
+	open map[int64]chat.Message
+	// dialog, when set, takes the composer's place: a card to decide or a model to pick.
+	dialog    *tuiDialog
+	dismissed map[int64]bool
+	guard     time.Duration
+	help      bool
+	// startServer starts a background server and says where its log is. models lists the
+	// models found on this machine. autoStart starts a server when the chat opens.
+	startServer func(ctx context.Context, db *sql.DB, model string) (string, error)
+	models      func(ctx context.Context) []string
+	autoStart   bool
 	starting    bool
+	serveLog    string
 
 	status     tuiStatus
 	statusAt   time.Time
 	hint       string
 	quitArmed  time.Time
+	escArmed   time.Time
 	warnedDown bool
 	quitting   bool
 
@@ -148,6 +171,7 @@ type (
 		err    error
 	}
 	tuiDelta   chat.Delta
+	tuiModels  struct{ list []string }
 	tuiStarted struct {
 		log string
 		err error
@@ -168,6 +192,7 @@ type (
 
 func (c *chatClient) tui(ctx context.Context, in *os.File) error {
 	t := newTUI(ctx, c, c.color && lipgloss.HasDarkBackground())
+	t.autoStart = true
 	go t.stream()
 	_, err := tea.NewProgram(t, tea.WithContext(ctx), tea.WithInput(in), tea.WithOutput(c.out)).Run()
 	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
@@ -179,11 +204,12 @@ func (c *chatClient) tui(ctx context.Context, in *os.File) error {
 func newTUI(ctx context.Context, c *chatClient, dark bool) *tui {
 	t := &tui{ctx: ctx, c: c, theme: newTheme(c.color, dark), hist: loadHistory(), histAt: -1,
 		seen: map[string]bool{}, sent: map[string]bool{}, open: map[int64]chat.Message{},
-		deltas: make(chan chat.Delta, 256), startServer: startServer}
+		dismissed: map[int64]bool{}, guard: tuiGuard,
+		deltas: make(chan chat.Delta, 256), startServer: startServer, models: detectModels}
 	in := textarea.New()
 	in.ShowLineNumbers = false
 	in.CharLimit = 0
-	in.Placeholder = "Message Baseet"
+	in.Placeholder = "Tell Baseet what you want handled"
 	in.SetPromptFunc(2, func(line int) string {
 		if line == 0 {
 			return "> "
@@ -204,13 +230,13 @@ func newTUI(ctx context.Context, c *chatClient, dark bool) *tui {
 func (t *tui) resize(width int) {
 	t.width = max(min(width, tuiMaxWidth), 30)
 	t.c.width = t.width
-	t.in.SetWidth(t.width - 4)
+	t.in.SetWidth(t.width - 1)
 	t.fit()
 }
 
 // fit sizes the composer to its text, up to tuiMaxRows.
 func (t *tui) fit() {
-	per := max(t.width-6, 10)
+	per := max(t.width-3, 10)
 	rows := 0
 	for _, line := range strings.Split(t.in.Value(), "\n") {
 		rows += max(1, (lipgloss.Width(line)+per)/per)
@@ -292,10 +318,29 @@ func (t *tui) streamOnce() {
 	}
 }
 
-// startServer runs `agentd serve` in the background, detached from this terminal.
-func startServer() (string, error) {
+// startServer runs `agentd serve` in the background, detached from this terminal: with
+// the model just picked, else with this command's own model flags, else the way serve
+// last ran. Without any of those it returns errNoModel.
+func startServer(ctx context.Context, db *sql.DB, model string) (string, error) {
 	if len(serveCommand) == 0 || stateDir() == "" {
 		return "", errors.New("cannot start the server from here; run `agentd serve` in another terminal")
+	}
+	args, dir := append([]string{}, serveCommand[1:]...), ""
+	switch {
+	case model != "":
+		args = append(append(args[:len(args)-1], "-model", model), "serve")
+		args = withListen(args)
+	case serveHasModel:
+		args = withListen(args)
+	default:
+		last, ok, err := system.LastLaunch(ctx, db)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", errNoModel
+		}
+		args, dir = last.Args, last.Dir
 	}
 	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
 		return "", err
@@ -306,13 +351,91 @@ func startServer() (string, error) {
 		return "", err
 	}
 	defer log.Close()
-	cmd := exec.Command(serveCommand[0], serveCommand[1:]...)
+	cmd := exec.Command(serveCommand[0], args...)
+	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
 	return path, cmd.Process.Release()
+}
+
+// withListen adds the local API address, which streaming and the web page need, when the
+// address is free.
+func withListen(args []string) []string {
+	l, err := net.Listen("tcp", tuiListen)
+	if err != nil {
+		return args
+	}
+	l.Close()
+	return append(args, "-listen", tuiListen)
+}
+
+// detectModels lists the models this machine can use right now: Claude when a key is
+// set, and whatever a local Ollama has pulled.
+func detectModels(ctx context.Context) []string {
+	var out []string
+	if os.Getenv("ANTHROPIC_API_KEY") != "" || keychainSecret("agentd", "anthropic-api-key") != "" {
+		out = append(out, "anthropic")
+	}
+	host := os.Getenv("OLLAMA_HOST")
+	if host == "" {
+		host = "127.0.0.1:11434"
+	}
+	if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(host, "/")+"/api/tags", nil)
+	if err != nil {
+		return out
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out
+	}
+	defer res.Body.Close()
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&tags) != nil {
+		return out
+	}
+	for _, m := range tags.Models {
+		if m.Name != "" && !strings.Contains(m.Name, "embed") {
+			out = append(out, "ollama/"+m.Name)
+		}
+	}
+	return out
+}
+
+// start starts the background server, asking for a model first when none is known.
+func (t *tui) start(model string) tea.Cmd {
+	if t.status.alive || t.starting {
+		return nil
+	}
+	t.starting = true
+	return func() tea.Msg {
+		log, err := t.startServer(t.ctx, t.c.app.DB, model)
+		if errors.Is(err, errNoModel) {
+			return tuiModels{list: t.models(t.ctx)}
+		}
+		return tuiStarted{log: log, err: err}
+	}
+}
+
+// lastLogLine is the last thing the server wrote to its log, to say why it did not start.
+func lastLogLine(path string) string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	return sanitize(lines[len(lines)-1])
 }
 
 func (t *tui) load() tea.Msg {
@@ -342,7 +465,10 @@ func (c *chatClient) status(ctx context.Context) (tuiStatus, error) {
 		return s, err
 	}
 	s.halted = st.Halted
-	s.alive, err = c.alive(ctx)
+	l, alive, err := system.Alive(ctx, c.app.DB, time.Now())
+	if s.alive = alive; alive && s.model == "" && len(l.Models) > 0 {
+		s.model = l.Models[0].ID
+	}
 	return s, err
 }
 
@@ -475,13 +601,21 @@ func (t *tui) update(msg tea.Msg) tea.Cmd {
 			t.emit(t.theme.bad.Render("✗ " + t.c.wrap(sanitize(msg.err.Error()), 2)))
 			return nil
 		}
-		t.emit(t.theme.muted.Render("· Starting agentd in the background. Its log is " + msg.log))
+		t.serveLog = msg.log
 		return tea.Tick(tuiStartWait, func(time.Time) tea.Msg { return tuiStartCheck{} })
 	case tuiStartCheck:
 		if t.starting && !t.status.alive {
-			t.emit(t.theme.bad.Render("✗ " + t.c.wrap("The server did not start. Its log says why; a common cause is that no model is set (agentd -model ... chat).", 2)))
+			why := "The server did not start. Its log is " + t.serveLog
+			if last := lastLogLine(t.serveLog); last != "" {
+				why += " and ends with: " + last
+			}
+			t.emit(t.theme.bad.Render("✗ " + t.c.wrap(why, 2)))
 		}
 		t.starting = false
+		return nil
+	case tuiModels:
+		t.starting = false
+		t.pickModel(msg.list)
 		return nil
 	case tuiEdited:
 		if msg.err != nil {
@@ -508,8 +642,11 @@ func (t *tui) loaded(l tuiLoaded) tea.Cmd {
 		return nil
 	}
 	t.status, t.statusAt = l.status, time.Now()
-	t.emit(t.theme.accent.Bold(true).Render("Baseet") + t.theme.muted.Render(" · "+plural(l.status.jobs, "job")+" · / for commands"))
-	if !l.status.alive {
+	t.emit(t.welcome(l.status))
+	var start tea.Cmd
+	if !l.status.alive && t.autoStart {
+		start = t.start("")
+	} else if !l.status.alive {
 		t.emit(t.theme.warn.Render("· " + t.c.wrap(tuiDownHint, 2)))
 		t.warnedDown = true
 	}
@@ -520,13 +657,14 @@ func (t *tui) loaded(l tuiLoaded) tea.Cmd {
 			t.emit(t.render(m))
 		}
 	} else if l.last == 0 {
-		t.emit(t.theme.muted.Render("  Tell me what you want handled, for example: chase my airline refund every Friday."))
+		t.emit(t.theme.muted.Render("  Try: chase my airline refund every Friday."))
 	}
 	t.c.mu.Lock()
 	t.c.after = max(t.c.after, l.last)
 	t.c.mu.Unlock()
 	t.c.markRead(t.ctx)
-	return t.tick()
+	t.offer()
+	return tea.Batch(t.tick(), start)
 }
 
 func (t *tui) polled(p tuiPolled) {
@@ -556,7 +694,7 @@ func (t *tui) polled(p tuiPolled) {
 	for _, call := range p.tools {
 		if !t.seen[call.id] {
 			t.seen[call.id] = true
-			t.emit(t.theme.muted.Render("  ⏵ " + sanitize(call.words())))
+			t.emit(t.theme.good.Render("●") + " " + t.theme.muted.Render(sanitize(call.words())))
 		}
 	}
 	for _, m := range p.msgs {
@@ -576,9 +714,12 @@ func (t *tui) polled(p tuiPolled) {
 			}
 		}
 	}
-	if t.focused() == nil {
-		t.focus = false
+	if t.dialog != nil && t.dialog.seq != 0 {
+		if _, open := t.open[t.dialog.seq]; !open {
+			t.dialog = nil
+		}
 	}
+	t.offer()
 }
 
 // show records a message as shown: how far the conversation has been read, which open
@@ -590,12 +731,12 @@ func (t *tui) show(m chat.Message) {
 	}
 }
 
-// focused is the card Tab gives the focus to: the newest one still waiting for a decision.
-// The focus line names it, so it need not be the last thing shown.
-func (t *tui) focused() *chat.Message {
+// newest is the newest card still waiting for a decision; with fresh set, the newest one
+// the owner has not already put aside.
+func (t *tui) newest(fresh bool) *chat.Message {
 	var newest *chat.Message
 	for _, m := range t.open {
-		if newest == nil || m.Seq > newest.Seq {
+		if (newest == nil || m.Seq > newest.Seq) && !(fresh && t.dismissed[m.Seq]) {
 			card := m
 			newest = &card
 		}
@@ -603,52 +744,152 @@ func (t *tui) focused() *chat.Message {
 	return newest
 }
 
-// focusKey handles a key while a card has the focus. It reports whether the key was used;
-// any other key gives the focus back to the composer and is handled there.
-func (t *tui) focusKey(msg tea.KeyMsg) (tea.Cmd, bool) {
-	card := t.focused()
-	t.focus = false
-	if card == nil || msg.Paste {
-		return nil, false
+// A dialog is a short list of choices shown in place of the composer. Enter takes the
+// highlighted choice; a number only moves the highlight, and typing anything else puts the
+// dialog aside and goes to the composer, so text meant as a message never decides a card.
+type tuiDialog struct {
+	title  string
+	tint   lipgloss.Style
+	opts   []tuiOption
+	at     int
+	seq    int64
+	opened time.Time
+}
+
+type tuiOption struct {
+	label string
+	run   func() tea.Cmd
+	// stay keeps the dialog open after the choice.
+	stay bool
+}
+
+// offer opens the dialog for a card that has just arrived, unless the owner is typing.
+func (t *tui) offer() {
+	if t.dialog != nil || t.in.Value() != "" {
+		return
 	}
+	if card := t.newest(true); card != nil {
+		t.dialog = t.cardDialog(*card)
+		t.dialog.opened = time.Now()
+	}
+}
+
+func (t *tui) cardDialog(m chat.Message) *tuiDialog {
+	card := m.Card()
+	n := card.N
+	post := func(format string) func() tea.Cmd {
+		return func() tea.Cmd { return t.post(fmt.Sprintf(format, n)) }
+	}
+	tint := map[string]lipgloss.Style{chat.KindApproval: t.theme.warn, chat.KindProposal: t.theme.accent, chat.KindQuestion: t.theme.violet}[m.Kind]
+	d := &tuiDialog{title: t.cardName(m) + " · " + sanitize(card.Title), tint: tint, seq: m.Seq}
+	approve := tuiOption{label: "Yes, approve", run: post("/approve %d")}
+	reject := tuiOption{label: "No, reject", run: post("/reject %d")}
+	details := tuiOption{label: "Show the details", stay: true, run: func() tea.Cmd {
+		t.emit(t.theme.muted.Render(t.c.details(m)))
+		return nil
+	}}
+	switch m.Kind {
+	case chat.KindQuestion:
+		for _, choice := range card.Choices {
+			answer := fmt.Sprintf("/answer %d %s", n, choice)
+			d.opts = append(d.opts, tuiOption{label: sanitize(choice), run: func() tea.Cmd {
+				t.emit("\n" + t.theme.muted.Render("> "+sanitize(answer)))
+				return t.post(answer)
+			}})
+		}
+		d.opts = append(d.opts, tuiOption{label: "Type my own answer", run: func() tea.Cmd {
+			t.in.SetValue(fmt.Sprintf("/answer %d ", n))
+			t.in.CursorEnd()
+			t.fit()
+			return nil
+		}})
+	case chat.KindProposal:
+		edit := tuiOption{label: "Edit it first", run: func() tea.Cmd {
+			run := &editorRun{card: card}
+			return tea.Exec(run, func(error) tea.Msg { return tuiEdited{n: n, text: run.text, err: run.err} })
+		}}
+		d.opts = []tuiOption{approve, edit, reject, details}
+	default:
+		d.opts = []tuiOption{approve, reject, details}
+	}
+	return d
+}
+
+// pickModel asks which model to start the server with, the first time agentd runs.
+func (t *tui) pickModel(list []string) {
+	if len(list) == 0 {
+		t.emit(t.theme.warn.Render("· " + t.c.wrap("No model found, so nothing can answer yet. Either install Ollama and pull a model "+
+			"(ollama pull qwen2.5:7b), or set ANTHROPIC_API_KEY. Then run agentd again, or name one: agentd -model ollama/qwen2.5:7b", 2)))
+		t.warnedDown = true
+		return
+	}
+	d := &tuiDialog{title: "Which model should Baseet use?", tint: t.theme.accent}
+	for _, m := range list {
+		d.opts = append(d.opts, tuiOption{label: sanitize(m), run: func() tea.Cmd { return t.start(m) }})
+	}
+	t.dialog = d
+}
+
+func (t *tui) closeDialog() {
+	if t.dialog != nil && t.dialog.seq != 0 {
+		t.dismissed[t.dialog.seq] = true
+	}
+	t.dialog = nil
+}
+
+// dialogKey handles a key while a dialog is open. It reports whether the key was used; a
+// typed character closes the dialog and is handled by the composer instead.
+func (t *tui) dialogKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	d := t.dialog
 	k := msg.String()
 	switch {
-	case k == "esc" || k == "tab" || k == "ctrl+c":
-		return nil, true
-	case card.Kind == chat.KindQuestion:
-		choices := card.Card().Choices
-		if len(k) == 1 && k[0] >= '1' && int(k[0]-'0') <= len(choices) {
-			answer := fmt.Sprintf("/answer %d %s", card.Card().N, choices[k[0]-'1'])
-			t.emit("\n" + t.theme.muted.Render("> "+sanitize(answer)))
-			return t.post(answer), true
+	case msg.Paste:
+		t.closeDialog()
+		return nil, false
+	case k == "up" || k == "shift+tab":
+		d.at = (d.at + len(d.opts) - 1) % len(d.opts)
+	case k == "down" || k == "tab":
+		d.at = (d.at + 1) % len(d.opts)
+	case k == "esc" || k == "ctrl+c":
+		t.closeDialog()
+	case k == "enter":
+		if time.Since(d.opened) < t.guard {
+			return nil, true
 		}
-	case len(k) == 1 && strings.Contains("arde", k):
-		if cmd, ok := t.decide(k, card); ok {
-			return cmd, true
+		opt := d.opts[d.at]
+		if !opt.stay {
+			t.closeDialog()
 		}
+		return opt.run(), true
+	case len(k) == 1 && k[0] >= '1' && int(k[0]-'0') <= len(d.opts):
+		d.at = int(k[0] - '1')
+	case msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace || k == "ctrl+d":
+		t.closeDialog()
+		return nil, false
 	}
-	return nil, false
+	return nil, true
 }
 
 func (t *tui) key(msg tea.KeyMsg) tea.Cmd {
 	t.hint = ""
-	if t.focus {
-		if cmd, used := t.focusKey(msg); used {
+	if t.dialog != nil {
+		if cmd, used := t.dialogKey(msg); used {
 			return cmd
 		}
 	}
 	draft := t.in.Value()
 	menu := t.matches()
+	if help := t.help; help || (draft == "" && msg.String() == "?" && !msg.Paste) {
+		t.help = !help
+		if msg.String() == "?" || msg.String() == "esc" {
+			return nil
+		}
+	}
 	switch msg.String() {
 	case "ctrl+s":
-		if !t.status.alive && !t.starting {
-			t.starting = true
-			return func() tea.Msg {
-				log, err := t.startServer()
-				return tuiStarted{log: log, err: err}
-			}
-		}
-		return nil
+		return t.start("")
+	case "ctrl+l":
+		return tea.ClearScreen
 	case "ctrl+c":
 		switch {
 		case draft != "":
@@ -674,12 +915,18 @@ func (t *tui) key(msg tea.KeyMsg) tea.Cmd {
 		if t.running() {
 			return t.stop()
 		}
+		if draft != "" && time.Since(t.escArmed) < tuiQuitWindow {
+			t.clear()
+		} else if draft != "" {
+			t.escArmed = time.Now()
+			t.hint = "press esc again to clear"
+		}
 		return nil
 	case "tab":
 		if len(menu) > 0 {
 			t.complete(menu)
-		} else if draft == "" && t.focused() != nil {
-			t.focus = true
+		} else if card := t.newest(false); draft == "" && card != nil {
+			t.dialog = t.cardDialog(*card)
 		}
 		return nil
 	case "up", "down":
@@ -903,31 +1150,22 @@ func (t *tui) view() string {
 		rows = append(rows, t.theme.accent.Render("●")+" "+strings.Join(lines, "\n  "), "")
 	}
 	if t.running() {
-		state := "Working"
+		state := "Working…"
 		if t.stopping {
-			state = "Stopping"
+			state = "Interrupting…"
 		} else if !t.status.alive {
-			state = "Saved; waiting for the server"
+			state = "Saved; waiting for the server…"
 		}
-		rows = append(rows, " "+t.spin.View()+" "+state+t.theme.muted.Render(
-			fmt.Sprintf(" · %s · esc to stop", time.Since(t.started).Round(time.Second))), "")
+		rows = append(rows, t.spin.View()+" "+t.theme.accent.Render(state)+t.theme.muted.Render(
+			fmt.Sprintf(" (%s · esc to interrupt)", time.Since(t.started).Round(time.Second))), "")
 	}
-	if card := t.focused(); t.focus && card != nil {
-		keys := "a approve · r reject · d details · esc back"
-		switch {
-		case card.Kind == chat.KindProposal:
-			keys = "a approve · r reject · e edit · d details · esc back"
-		case card.Kind == chat.KindQuestion && len(card.Card().Choices) > 0:
-			keys = fmt.Sprintf("1 to %d to answer · esc back", len(card.Card().Choices))
-		case card.Kind == chat.KindQuestion:
-			keys = fmt.Sprintf("esc, then /answer %d <text>", card.Card().N)
-		}
-		rows = append(rows, xansi.Truncate(" "+t.theme.warn.Bold(true).Render("▸ "+t.cardName(*card))+t.theme.muted.Render("  "+keys), t.width-1, "…"))
+	if t.dialog != nil {
+		return strings.Join(append(rows, t.dialogView()), "\n")
 	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(t.width - 2)
-	box = box.BorderForeground(t.theme.muted.GetForeground())
-	rows = append(rows, box.Render(t.in.View()))
-	if menu := t.matches(); len(menu) > 0 {
+	rule := t.theme.muted.Render(strings.Repeat("─", t.width-1))
+	rows = append(rows, rule, t.in.View(), rule)
+	switch menu := t.matches(); {
+	case len(menu) > 0:
 		at := min(t.menu, len(menu)-1)
 		first := max(0, min(at-tuiMenuRows+1, len(menu)-tuiMenuRows))
 		for i := first; i < len(menu) && i < first+tuiMenuRows; i++ {
@@ -939,12 +1177,77 @@ func (t *tui) view() string {
 				rows = append(rows, t.theme.muted.Render(line))
 			}
 		}
+	case t.help:
+		for _, row := range tuiKeys {
+			rows = append(rows, "  "+t.theme.accent.Render(fmt.Sprintf("%-8s", row[0]))+t.theme.muted.Render(" "+t.c.clip(row[1], t.width-12)))
+		}
+	default:
+		rows = append(rows, t.statusLine())
 	}
-	rows = append(rows, t.statusLine())
 	return strings.Join(rows, "\n")
 }
 
+var tuiKeys = [][2]string{
+	{"/", "commands"},
+	{"tab", "decide the newest card"},
+	{"↑ ↓", "earlier messages"},
+	{"ctrl+j", "new line; so does ending a line with \\"},
+	{"esc", "interrupt the reply; twice clears what you typed"},
+	{"ctrl+s", "start the server when it is not running"},
+	{"ctrl+l", "clear the screen"},
+	{"ctrl+c", "twice to leave; your jobs keep running"},
+}
+
+func (t *tui) dialogView() string {
+	d := t.dialog
+	inner := t.width - 7
+	body := []string{d.tint.Bold(true).Render(t.c.clip(d.title, inner)), ""}
+	for i, o := range d.opts {
+		line := t.c.clip(fmt.Sprintf("%d. %s", i+1, o.label), inner-2)
+		if i == d.at {
+			body = append(body, t.theme.accent.Render("❯ "+line))
+		} else {
+			body = append(body, "  "+line)
+		}
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(d.tint.GetForeground()).
+		Padding(0, 1).Width(t.width - 3)
+	keys := "↑↓ or a number to choose · enter to confirm · esc to type instead"
+	return box.Render(strings.Join(body, "\n")) + "\n" + t.theme.muted.Render("  "+t.c.clip(keys, t.width-3))
+}
+
+// welcome is the box printed when the chat opens.
+func (t *tui) welcome(s tuiStatus) string {
+	inner := min(t.width-7, 64)
+	work := plural(s.jobs, "job")
+	if s.waiting > 0 {
+		work += fmt.Sprintf(" · %d waiting on you", s.waiting)
+	}
+	model := "not started yet"
+	if s.model != "" {
+		model = sanitize(s.model)
+	}
+	body := []string{t.theme.accent.Bold(true).Render("◆ Baseet"), "", t.theme.muted.Render(t.c.clip("  "+work, inner)),
+		t.theme.muted.Render(t.c.clip("  model  "+model, inner))}
+	if chatDBPath != "" {
+		path := chatDBPath
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home+"/") {
+			path = "~" + strings.TrimPrefix(path, home)
+		}
+		body = append(body, t.theme.muted.Render(t.c.clip("  data   "+sanitize(path), inner)))
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.theme.accent.GetForeground()).Padding(0, 2, 0, 1)
+	return box.Render(strings.Join(body, "\n")) + "\n" + t.theme.muted.Render("  / for commands · ? for shortcuts")
+}
+
 func (t *tui) statusLine() string {
+	left := t.theme.muted.Render("? for shortcuts")
+	if card := t.newest(false); card != nil && t.in.Value() == "" {
+		left = t.theme.warn.Render("tab to decide " + t.cardName(*card))
+	}
 	if t.hint != "" {
 		return "  " + t.theme.warn.Render(t.c.clip(t.hint, t.width-3))
 	}
@@ -966,15 +1269,11 @@ func (t *tui) statusLine() string {
 	default:
 		parts = append(parts, t.theme.bad.Render("server not running · ctrl+s to start it"))
 	}
-	left := "  " + strings.Join(parts, t.theme.muted.Render(" · "))
-	right := t.theme.muted.Render("/ commands · ctrl+j new line")
-	if card := t.focused(); card != nil && !t.focus && t.in.Value() == "" {
-		right = t.theme.warn.Render("tab to decide " + t.cardName(*card))
+	right := strings.Join(parts, t.theme.muted.Render(" · "))
+	if gap := t.width - 3 - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
+		return "  " + left + strings.Repeat(" ", gap) + right
 	}
-	if gap := t.width - 1 - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
-		return left + strings.Repeat(" ", gap) + right
-	}
-	return left
+	return xansi.Truncate("  "+right, t.width-1, "…")
 }
 
 func remaining(d time.Duration) string {
@@ -1172,8 +1471,8 @@ func (t *tui) card(m chat.Message) string {
 	}
 	if open {
 		keys := map[string]string{
-			chat.KindApproval: "tab, then  a approve   r reject   d details",
-			chat.KindProposal: "tab, then  a approve   r reject   e edit   d details",
+			chat.KindApproval: "a approve · r reject · d details",
+			chat.KindProposal: "a approve · r reject · e edit · d details",
 			chat.KindQuestion: fmt.Sprintf("answer with /answer %d <text>", card.N),
 		}[m.Kind]
 		body = append(body, "", t.theme.muted.Render(keys))
