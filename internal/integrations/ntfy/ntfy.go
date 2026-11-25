@@ -25,7 +25,7 @@ type Channel struct {
 }
 
 func (c *Channel) Send(ctx context.Context, m notify.Message) (string, error) {
-	title, body := "Baseet: "+label(m.Severity), m.Assignment+" needs your attention. Open Baseet to read it."
+	title, body := "agentd: "+label(m.Severity), m.Assignment+" needs your attention. Open agentd to read it."
 	if c.FullContent {
 		title, body = m.Title, clip(m.Body)
 	}
@@ -35,7 +35,7 @@ func (c *Channel) Send(ctx context.Context, m notify.Message) (string, error) {
 	}
 	req.Header.Set("Title", headerText(title))
 	req.Header.Set("Priority", priority(m.Severity))
-	req.Header.Set("Tags", "baseet,"+string(m.Severity))
+	req.Header.Set("Tags", "agentd,"+string(m.Severity))
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}

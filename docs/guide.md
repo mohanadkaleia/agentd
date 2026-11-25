@@ -143,7 +143,7 @@ New inbox mail becomes `gmail / email.received` events (payload: `message_id`, `
 
 ## Obligations
 
-A responsibility can declare what must keep happening, and Baseet checks it from evidence instead
+A responsibility can declare what must keep happening, and agentd checks it from evidence instead
 of trusting its schedules:
 
 ```json

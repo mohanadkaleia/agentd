@@ -29,7 +29,7 @@ func server(t *testing.T, status int) (*ntfy.Channel, *[]received) {
 		io.WriteString(w, `{"id":"msg-1"}`)
 	}))
 	t.Cleanup(srv.Close)
-	return &ntfy.Channel{HTTP: srv.Client(), TopicURL: srv.URL + "/baseet-secret-topic"}, &got
+	return &ntfy.Channel{HTTP: srv.Client(), TopicURL: srv.URL + "/agentd-secret-topic"}, &got
 }
 
 var alert = notify.Message{ID: "ntf_1", Assignment: "Portfolio", Severity: assignments.SeverityAction,
@@ -70,7 +70,7 @@ func TestErrorsAreClassifiedAndNeverShowTheTopic(t *testing.T) {
 			t.Fatalf("%d: err = %v, want permanent=%v", status, err, permanent)
 		}
 	}
-	ch := &ntfy.Channel{HTTP: http.DefaultClient, TopicURL: "http://127.0.0.1:1/baseet-secret-topic"}
+	ch := &ntfy.Channel{HTTP: http.DefaultClient, TopicURL: "http://127.0.0.1:1/agentd-secret-topic"}
 	_, err := ch.Send(context.Background(), alert)
 	if err == nil || strings.Contains(err.Error(), "secret-topic") || errors.Is(err, notify.ErrPermanent) {
 		t.Fatalf("unreachable server err = %v, want a transient error without the topic", err)

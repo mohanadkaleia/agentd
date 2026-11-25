@@ -126,7 +126,7 @@ const stopAll = async () => {
   if (reason !== null) act("Emergency stop", "POST", "/api/system/emergency-stop", { reason });
 };
 const liftStop = async () => {
-  if (await confirmBox("Lift the emergency stop?", "Baseet will start working again.", { confirm: "Lift stop" })) act("Resume", "POST", "/api/system/resume");
+  if (await confirmBox("Lift the emergency stop?", "agentd will start working again.", { confirm: "Lift stop" })) act("Resume", "POST", "/api/system/resume");
 };
 const signOut = async () => { await api("DELETE", "/ui/session").catch(() => {}); state.signedIn = false; state.csrf = null; };
 
@@ -142,7 +142,7 @@ function shell(content) {
     const current = (to) => state.route === to || (to === "/" && state.route.startsWith("/?")) || (to === "/work" && /^\/[at]\//.test(state.route));
     return h("div", { class: "app" }, [
       h("aside", { class: "side" }, [
-        h("a", { class: "brand", href: "#/" }, [mark(), "Baseet"]),
+        h("a", { class: "brand", href: "#/" }, [mark(), "agentd"]),
         h("nav", { "aria-label": "Main" }, items.map(([to, text, ic]) =>
           h("a", { href: "#" + to, class: current(to) ? "active" : "", "aria-current": current(to) ? "page" : null }, [
             icon(ic), h("span", { class: "label" }, text),
@@ -201,7 +201,7 @@ const Login = {
       }
     };
     return () => h("main", { class: "login" }, h("form", { class: "card", onSubmit: submit }, [
-      h("div", { class: "brand" }, [mark(), "Baseet"]),
+      h("div", { class: "brand" }, [mark(), "agentd"]),
       h("h1", "Sign in"),
       h("p", { class: "muted" }, "Paste the API token from the api-token file. It is sent once; the browser keeps only a session cookie it cannot read."),
       h("label", { for: "token" }, "API token"),
@@ -427,7 +427,7 @@ const Inbox = {
           h("p", { class: "muted" }, ["action ", u.id, " · ", link("/t/" + u.task_id, "task")]),
           h("pre", pretty(u.arguments)),
           u.detail ? h("pre", pretty(u.detail)) : null,
-          h("p", "Baseet could not tell whether this happened, so it will not retry it. Check the real system, then:"),
+          h("p", "agentd could not tell whether this happened, so it will not retry it. Check the real system, then:"),
           h("div", { class: "row" }, [h("button", { onClick: () => resolve(u, true) }, "It happened"), h("button", { onClick: () => resolve(u, false) }, "It did not happen")]),
         ])) : h("p", { class: "muted" }, "None."),
         sectionHead("Undelivered notifications", d.notifications.length),
@@ -462,7 +462,7 @@ const Tools = {
       const d = view.data;
       const pending = d.tools.filter((p) => p.status === "new" || p.status === "changed");
       return [
-        pageHead("Tools", "Services Baseet can use, and tool definitions waiting for your review."),
+        pageHead("Tools", "Services agentd can use, and tool definitions waiting for your review."),
         sectionHead("MCP servers", d.servers.length),
         d.servers.length ? h("section", { class: "card scroll-x" }, h("table", h("tbody", d.servers.map((s) => h("tr", [
           h("td", [h("strong", s.server), h("div", { class: "muted" }, s.transport + (s.scopes ? " · scopes " + s.scopes : ""))]),

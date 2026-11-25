@@ -54,7 +54,7 @@ func ntfyCommand(ctx context.Context, args []string) error {
 		if *topic == "" {
 			b := make([]byte, 16)
 			rand.Read(b)
-			*topic = "baseet-" + hex.EncodeToString(b)
+			*topic = "agentd-" + hex.EncodeToString(b)
 		}
 		base, err := url.Parse(*server)
 		if err != nil || base.Scheme != "https" || base.Host == "" {

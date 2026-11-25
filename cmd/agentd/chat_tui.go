@@ -209,7 +209,7 @@ func newTUI(ctx context.Context, c *chatClient, dark bool) *tui {
 	in := textarea.New()
 	in.ShowLineNumbers = false
 	in.CharLimit = 0
-	in.Placeholder = "Tell Baseet what you want handled"
+	in.Placeholder = "Tell agentd what you want handled"
 	in.SetPromptFunc(2, func(line int) string {
 		if line == 0 {
 			return "> "
@@ -823,7 +823,7 @@ func (t *tui) pickModel(list []string) {
 		t.warnedDown = true
 		return
 	}
-	d := &tuiDialog{title: "Which model should Baseet use?", tint: t.theme.accent}
+	d := &tuiDialog{title: "Which model should agentd use?", tint: t.theme.accent}
 	for _, m := range list {
 		d.opts = append(d.opts, tuiOption{label: sanitize(m), run: func() tea.Cmd { return t.start(m) }})
 	}
@@ -1227,7 +1227,7 @@ func (t *tui) welcome(s tuiStatus) string {
 	if s.model != "" {
 		model = sanitize(s.model)
 	}
-	body := []string{t.theme.accent.Bold(true).Render("◆ Baseet"), "", t.theme.muted.Render(t.c.clip("  "+work, inner)),
+	body := []string{t.theme.accent.Bold(true).Render("◆ agentd"), "", t.theme.muted.Render(t.c.clip("  "+work, inner)),
 		t.theme.muted.Render(t.c.clip("  model  "+model, inner))}
 	if chatDBPath != "" {
 		path := chatDBPath

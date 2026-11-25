@@ -127,7 +127,7 @@ func TestNewChatAnswersAndApprovesFromACard(t *testing.T) {
 	s.waitFor("front desk")
 	s.waitFor("◦ Approval 1 · approved")
 	out := s.leave()
-	for _, want := range []string{"Baseet", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
+	for _, want := range []string{"agentd", "While you were away (1)", "a approve", "? for shortcuts", "> hello", "◦ Approval 1 · approved", "● front desk", "Your projects keep running"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -387,7 +387,7 @@ func TestNewChatStreamsFromARunningServer(t *testing.T) {
 	w.setReply(func(model.Request) model.Message { return model.Message{Content: "BLOCK"} })
 	s := w.tui()
 	go s.ui.stream()
-	s.waitFor("Baseet")
+	s.waitFor("agentd")
 	s.say("hello")
 	var turn string
 	deadline := time.Now().Add(10 * time.Second)

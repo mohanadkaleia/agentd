@@ -1,6 +1,6 @@
-# Baseet architecture
+# agentd architecture
 
-Baseet is a personal agent that runs continuously on one Mac mini. `agentd` is its runtime: one Go
+agentd is a personal agent that runs continuously on one Mac mini: one Go
 process, one SQLite database, any model provider. This document is the domain model and the rules
 the code enforces. The README covers installing it; [docs/guide.md](docs/guide.md) covers each feature.
 
@@ -55,9 +55,9 @@ classDiagram
 
 | Concept | What it is | Owns | Does not own |
 |---|---|---|---|
-| **Assignment** | Something Baseet is responsible for. Either a Project or a Responsibility. | Objective, policy (tool rules + limits), status, durable state, budget. | How the work is done. |
+| **Assignment** | Something agentd is responsible for. Either a Project or a Responsibility. | Objective, policy (tool rules + limits), status, durable state, budget. | How the work is done. |
 | **Project** | A finite, goal-driven assignment with explicit completion criteria. | Completion criteria. Ends `completed` or `cancelled`. | Notifications policy, periodic budget. |
-| **Responsibility** | A persistent, potentially indefinite assignment Baseet manages until paused or revoked. | Notification policy, a budget that resets every period. Ends only when `revoked`. | A completion state. It is never "done". |
+| **Responsibility** | A persistent, potentially indefinite assignment agentd manages until paused or revoked. | Notification policy, a budget that resets every period. Ends only when `revoked`. | A completion state. It is never "done". |
 | **Route** | A deterministic rule: events of this source/kind whose payload matches → a task. Optionally groups events by a payload field. | Matching, grouping, which skills the task loads. | Any judgement; it never calls a model. |
 | **Schedule** | A recurring wake-up for an assignment. | Interval, next fire time, skills. | Catch-up: missed slots during downtime fire once. |
 | **Event** | Something that happened outside, stored once per `(source, external_id)`. | Payload (untrusted data). | Instructions. |
@@ -299,7 +299,7 @@ notification outbox, event intake, the audit log as a live SSE stream, usage, an
 The command center (`internal/api/ui`, served at `/`) opens on the conversation (`/api/conversations/...`,
 with a per-conversation SSE stream that wakes on in-process changes and resumes by message sequence)
 and renders every model, tool and project text as text nodes through a small allow-list Markdown
-reader that never produces HTML, images or links. It is a client of this same API through a browser session (HttpOnly cookie plus a CSRF header); it is the only way a phone or dashboard reaches Baseet; it holds no state of its own and goes through
+reader that never produces HTML, images or links. It is a client of this same API through a browser session (HttpOnly cookie plus a CSRF header); it is the only way a phone or dashboard reaches agentd; it holds no state of its own and goes through
 the same stores and gateway as the runtime. Provider-native model payloads never leave the process.
 
 ## Conversation

@@ -1,4 +1,4 @@
-/* Baseet command center. System fonts only and no images: the page's
+/* agentd command center. System fonts only and no images: the page's
    Content-Security-Policy allows nothing from outside this folder. */
 :root {
   --bg: #f6f5f1;

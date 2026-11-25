@@ -2,7 +2,7 @@ import { h, reactive, onMounted, onUnmounted, nextTick } from "/vue.js";
 import { blocks, toolWords, open, merge, countdown, suggest, cardKinds } from "/text.js";
 import { icon } from "/icons.js";
 
-// Chat is the conversation with Baseet: the owner's and agent's messages, cards for
+// Chat is the conversation with agentd: the owner's and agent's messages, cards for
 // what needs the owner, and a composer. Every piece of text from a model, tool or project
 // is rendered as text nodes; nothing is ever inserted as HTML.
 export function makeChat({ state, api, say, shell, refreshShell, mark }) {
@@ -41,7 +41,7 @@ export function makeChat({ state, api, say, shell, refreshShell, mark }) {
           const m = JSON.parse(e.data);
           const fresh = !view.messages.some((x) => x.id === m.id);
           view.messages = merge(view.messages, m);
-          if (fresh && m.author === "agent") view.announce = "Baseet: " + bodyText(m);
+          if (fresh && m.author === "agent") view.announce = "agentd: " + bodyText(m);
           if (fresh && m.author !== "owner") view.tools = [];
           if (m.turn_task_id && m.author !== "owner" && view.partial[m.turn_task_id] !== undefined) {
             const rest = { ...view.partial };
@@ -314,8 +314,8 @@ export function makeChat({ state, api, say, shell, refreshShell, mark }) {
           h("div", { class: "timeline", role: "log", "aria-label": "Conversation", "aria-live": "off" }, [
             view.messages.length ? null : h("div", { class: "hero" }, [
               mark(),
-              h("h2", "What should Baseet work on?"),
-              h("p", { class: "muted lede" }, "Describe it in your own words. Baseet drafts the job, you approve it, and it reports back here. Type /help for commands."),
+              h("h2", "What should agentd work on?"),
+              h("p", { class: "muted lede" }, "Describe it in your own words. agentd drafts the job, you approve it, and it reports back here. Type /help for commands."),
               h("div", { class: "starters" }, starters.map((text) =>
                 h("button", { type: "button", onClick: () => { view.draft = text; store.set(draftKey(), text); focus(); } }, [text, icon("arrow")]))),
             ]),
@@ -346,7 +346,7 @@ export function makeChat({ state, api, say, shell, refreshShell, mark }) {
             h("div", { class: "box" }, [
               h("label", { class: "sr-only", for: "composer" }, "Message"),
               h("textarea", {
-                id: "composer", rows: 1, value: view.draft, placeholder: "Message Baseet",
+                id: "composer", rows: 1, value: view.draft, placeholder: "Message agentd",
                 ref: (el) => { composer = el; },
                 onInput: (e) => { view.draft = e.target.value; store.set(draftKey(), view.draft); },
                 onKeydown: onKey,

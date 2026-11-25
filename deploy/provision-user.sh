@@ -140,7 +140,7 @@ if id "$user" >/dev/null 2>&1; then
         exit 1
     fi
 else
-    run sysadminctl -addUser "$user" -fullName "Baseet agent" -shell /usr/bin/false -home "$home" -password -
+    run sysadminctl -addUser "$user" -fullName "agentd" -shell /usr/bin/false -home "$home" -password -
     run dscl . create "/Users/$user" IsHidden 1
     run createhomedir -c -u "$user"
 fi

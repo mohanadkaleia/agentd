@@ -96,7 +96,7 @@ func authorize(ctx context.Context, c Credentials, endpoint oauth2.Endpoint, ope
 			default:
 			}
 		default:
-			fmt.Fprintln(w, "Baseet is connected to Gmail. You can close this tab.")
+			fmt.Fprintln(w, "agentd is connected to Gmail. You can close this tab.")
 			select {
 			case codes <- q.Get("code"):
 			default:
@@ -122,7 +122,7 @@ func authorize(ctx context.Context, c Credentials, endpoint oauth2.Endpoint, ope
 			return c, err
 		}
 		if tok.RefreshToken == "" {
-			return c, errors.New("google returned no refresh token; remove Baseet's access in your Google account and try again")
+			return c, errors.New("google returned no refresh token; remove agentd's access in your Google account and try again")
 		}
 		c.RefreshToken = tok.RefreshToken
 		return c, nil
